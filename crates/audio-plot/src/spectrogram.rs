@@ -1,6 +1,6 @@
 use audio_signal::signal::Spectrogram;
 use eframe::egui;
-use egui::{Align2, RectAlign, Tooltip};
+
 use egui_plot::{Heatmap, Legend, Plot, PlotPoint};
 
 use crate::native_options_any_thread;
@@ -236,9 +236,9 @@ impl eframe::App for SpectrogramPlot {
 
                 // Map plot coordinates back to the nearest tile to read its dB value.
                 let frame = ((coord.x - self.pos.x) / self.tile_size.0 as f64)
-                    .round() as isize;
+                    .floor() as isize;
                 let freq_bin = ((coord.y - self.pos.y) / self.tile_size.1 as f64)
-                    .round() as isize;
+                    .floor() as isize;
                 let db_value = if frame >= 0
                     && (frame as usize) < self.num_frames
                     && freq_bin >= 0
@@ -261,25 +261,18 @@ impl eframe::App for SpectrogramPlot {
                     format!("{:.0} Hz", freq_hz)
                 };
                 let text = match db_value {
-                    Some(db) => format!("t = {:.3} s   f = {}   {:.1} dB", coord.x, freq_str, db),
-                    None => format!("t = {:.3} s   f = {}", coord.x, freq_str),
+                    Some(db) => format!("t = {:.3} s\nf = {}\n{:.1} dB", coord.x, freq_str, db),
+                    None => format!("t = {:.3} s\nf = {}", coord.x, freq_str),
                 };
-                let anchor = egui::PopupAnchor::Position(
-                    inner.response.rect.right_bottom() - egui::vec2(8.0, 8.0),
-                );
-                let align = RectAlign {
-                    parent: Align2::RIGHT_BOTTOM,
-                    child: Align2::RIGHT_BOTTOM,
-                };
-                let mut tooltip = Tooltip::always_open(
+                let mut tooltip = egui::Tooltip::always_open(
                     ui.ctx().clone(),
                     inner.response.layer_id,
                     inner.response.id.with("hover_tooltip"),
-                    anchor,
+                    egui::PopupAnchor::Pointer,
                 );
-                tooltip.popup = tooltip.popup.align(align);
+                tooltip.popup = tooltip.popup.gap(12.0).width(f32::INFINITY);
                 tooltip.show(|ui: &mut egui::Ui| {
-                    ui.label(text);
+                    ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
                 });
             }
 
