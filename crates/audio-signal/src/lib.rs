@@ -1,4 +1,4 @@
-pub use ndarray::prelude::*;
+pub use ndarray;
 
 pub mod data;
 pub mod signal;
