@@ -429,6 +429,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f93ebbf82d06013f4c41fe71303feb980cddd78496d904d06be627972de51a24"
 
 [[package]]
+name = "audio-dsp"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "audio-plot",
+ "audio-signal",
+ "ndarray",
+ "ndrustfft",
+ "num",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "audio-file"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
