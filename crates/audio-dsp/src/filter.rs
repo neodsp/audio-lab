@@ -64,8 +64,9 @@ pub fn fractional_octave_frequencies(
 /// let freqs: &[f64] = &fb.center_frequencies;
 /// ```
 ///
-/// The sum of all `bands` equals the input delayed by `n_samples / 2` samples
-/// (amplitude-preserving reconstruction).
+/// The sum of all `bands` approximately equals the input delayed by
+/// `n_samples / 2` samples. The final Hann window improves FIR sidelobes but
+/// makes reconstruction approximate rather than exact.
 pub struct OctaveBands {
     /// One FIR impulse response per band: shape `[num_bands, n_samples]`.
     pub impulse_responses: TimeSignal,
@@ -288,8 +289,9 @@ impl OctaveBands {
 /// Design and apply a reconstructing linear-phase fractional octave filter bank.
 ///
 /// Returns one filtered [`TimeSignal`] per band together with the centre
-/// frequencies in Hz. The sum of all bands equals the input delayed by
-/// `n_samples / 2` samples (amplitude-preserving reconstruction).
+/// frequencies in Hz. The sum of all bands approximately equals the input
+/// delayed by `n_samples / 2` samples; the final Hann window trades exact
+/// reconstruction for improved FIR sidelobes.
 ///
 /// Internally this calls [`OctaveBands::design`] followed by
 /// [`OctaveBands::apply`]. Use those directly if you need to apply the same
