@@ -63,8 +63,9 @@ impl SavePlotState {
                 let width = screenshot.width() as u32;
                 let height = screenshot.height() as u32;
 
-                let mut img = image::RgbaImage::from_raw(width, height, screenshot.as_raw().to_vec())
-                    .expect("screenshot buffer size mismatch");
+                let mut img =
+                    image::RgbaImage::from_raw(width, height, screenshot.as_raw().to_vec())
+                        .expect("screenshot buffer size mismatch");
 
                 // Paint over the save button with the panel background color
                 if let Some(button_rect) = self.button_rect {

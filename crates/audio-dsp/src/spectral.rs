@@ -168,17 +168,35 @@ mod tests {
         let signal = TimeSignal::new(arr2(&[[0.0; 16]]), 16.0).unwrap();
 
         assert!(matches!(
-            stft(&signal, &StftConfig { window_size: 0, hop_size: 4, window_fn: WindowFn::Hann }),
+            stft(
+                &signal,
+                &StftConfig {
+                    window_size: 0,
+                    hop_size: 4,
+                    window_fn: WindowFn::Hann
+                }
+            ),
             Err(StftError::WindowSizeZero)
         ));
         assert!(matches!(
-            stft(&signal, &StftConfig { window_size: 8, hop_size: 0, window_fn: WindowFn::Hann }),
+            stft(
+                &signal,
+                &StftConfig {
+                    window_size: 8,
+                    hop_size: 0,
+                    window_fn: WindowFn::Hann
+                }
+            ),
             Err(StftError::HopSizeZero)
         ));
         assert!(matches!(
             stft(
                 &signal,
-                &StftConfig { window_size: 32, hop_size: 8, window_fn: WindowFn::Hann }
+                &StftConfig {
+                    window_size: 32,
+                    hop_size: 8,
+                    window_fn: WindowFn::Hann
+                }
             ),
             Err(StftError::WindowLargerThanSignal { .. })
         ));
@@ -188,7 +206,11 @@ mod tests {
     fn stft_dimensions() {
         // 32 samples, window=8, hop=4 → (32-8)/4+1 = 7 frames, 5 freq bins
         let signal = TimeSignal::new(arr2(&[[1.0; 32]]), 16.0).unwrap();
-        let config = StftConfig { window_size: 8, hop_size: 4, window_fn: WindowFn::Rectangular };
+        let config = StftConfig {
+            window_size: 8,
+            hop_size: 4,
+            window_fn: WindowFn::Rectangular,
+        };
         let spec = stft(&signal, &config).unwrap();
 
         assert_eq!(spec.num_channels(), 1);
@@ -203,7 +225,11 @@ mod tests {
     fn stft_frame_times_and_freq_bins() {
         let signal = TimeSignal::new(arr2(&[[0.0; 16]]), 8.0).unwrap();
         // window=8, hop=4 → (16-8)/4+1 = 3 frames
-        let config = StftConfig { window_size: 8, hop_size: 4, window_fn: WindowFn::Rectangular };
+        let config = StftConfig {
+            window_size: 8,
+            hop_size: 4,
+            window_fn: WindowFn::Rectangular,
+        };
         let spec = stft(&signal, &config).unwrap();
 
         // frame centers: (0*4+4)/8, (1*4+4)/8, (2*4+4)/8 = 0.5, 1.0, 1.5 s
@@ -222,7 +248,11 @@ mod tests {
         // DC bin = window_size and all other bins ≈ 0.
         let window_size = 8;
         let signal = TimeSignal::new(arr2(&[[1.0; 32]]), 16.0).unwrap();
-        let config = StftConfig { window_size, hop_size: 4, window_fn: WindowFn::Rectangular };
+        let config = StftConfig {
+            window_size,
+            hop_size: 4,
+            window_fn: WindowFn::Rectangular,
+        };
         let spec = stft(&signal, &config).unwrap();
 
         for frame in 0..spec.num_frames() {
@@ -240,7 +270,11 @@ mod tests {
     fn stft_multi_channel() {
         let data = arr2(&[[1.0; 32], [2.0; 32]]);
         let signal = TimeSignal::new(data, 16.0).unwrap();
-        let config = StftConfig { window_size: 8, hop_size: 4, window_fn: WindowFn::Rectangular };
+        let config = StftConfig {
+            window_size: 8,
+            hop_size: 4,
+            window_fn: WindowFn::Rectangular,
+        };
         let spec = stft(&signal, &config).unwrap();
 
         assert_eq!(spec.num_channels(), 2);

@@ -143,9 +143,7 @@ impl OctaveBands {
         // Half-width of each transition region (bins).
         // Based on the upper half-bandwidth of band b (centre → upper cut-off).
         let p: Vec<usize> = (0..num_bands)
-            .map(|b| {
-                ((overlap / 2.0) * (k_2[b] as f64 - k_m[b] as f64)).round() as usize
-            })
+            .map(|b| ((overlap / 2.0) * (k_2[b] as f64 - k_m[b] as f64)).round() as usize)
             .collect();
 
         // Magnitude responses: start all-pass (ones)
@@ -244,7 +242,12 @@ impl OctaveBands {
             padded
                 .slice_mut(s![.., ..n_filt])
                 .assign(&self.impulse_responses.time_data());
-            ndfft_r2c(&padded.view(), &mut filter_spectra.view_mut(), &fft_handler, 1);
+            ndfft_r2c(
+                &padded.view(),
+                &mut filter_spectra.view_mut(),
+                &fft_handler,
+                1,
+            );
         }
 
         // Pre-compute spectra of all input channels in one batch FFT
@@ -380,8 +383,7 @@ mod tests {
 
         let x = impulse(n, sr);
         let (bands, _) =
-            reconstructing_fractional_octave_bands(&x, 1, (125.0, 8000.0), 1.0, 0, n_filt)
-                .unwrap();
+            reconstructing_fractional_octave_bands(&x, 1, (125.0, 8000.0), 1.0, 0, n_filt).unwrap();
 
         let n_out = n + n_filt - 1;
         let mut sum = Array1::<f64>::zeros(n_out);

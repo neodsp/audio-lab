@@ -88,7 +88,12 @@ pub(crate) struct FreqSignalPlot {
 }
 
 impl FreqSignalPlot {
-    pub(crate) fn new(signal: &FreqSignal, title: &str, log_freq: bool, display: FreqDisplay) -> Self {
+    pub(crate) fn new(
+        signal: &FreqSignal,
+        title: &str,
+        log_freq: bool,
+        display: FreqDisplay,
+    ) -> Self {
         let freq_bins = signal.freq_bins();
         let channels = signal
             .channel_iter()
@@ -175,7 +180,11 @@ pub fn show_freq_signal(
     Ok(eframe::run_native(
         title,
         native_options_any_thread(),
-        Box::new(|_cc| Ok(Box::new(FreqSignalPlot::new(signal, title, log_freq, display)))),
+        Box::new(|_cc| {
+            Ok(Box::new(FreqSignalPlot::new(
+                signal, title, log_freq, display,
+            )))
+        }),
     )?)
 }
 

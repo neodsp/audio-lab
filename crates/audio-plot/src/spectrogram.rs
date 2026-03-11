@@ -51,12 +51,14 @@ fn draw_colorbar(ui: &mut egui::Ui, db_min: f64, db_max: f64) {
     const MARGIN_Y: f32 = 10.0;
 
     let available = ui.available_size();
-    let (response, painter) =
-        ui.allocate_painter(available, egui::Sense::hover());
+    let (response, painter) = ui.allocate_painter(available, egui::Sense::hover());
 
     let bar_rect = egui::Rect::from_min_max(
         egui::pos2(response.rect.min.x, response.rect.min.y + MARGIN_Y),
-        egui::pos2(response.rect.min.x + BAR_WIDTH, response.rect.max.y - MARGIN_Y),
+        egui::pos2(
+            response.rect.min.x + BAR_WIDTH,
+            response.rect.max.y - MARGIN_Y,
+        ),
     );
     let bar_height = bar_rect.height();
 
@@ -183,11 +185,7 @@ impl eframe::App for SpectrogramPlot {
             if self.num_channels > 1 {
                 ui.horizontal(|ui| {
                     for ch in 0..self.num_channels {
-                        ui.selectable_value(
-                            &mut self.current_channel,
-                            ch,
-                            format!("Channel {ch}"),
-                        );
+                        ui.selectable_value(&mut self.current_channel, ch, format!("Channel {ch}"));
                     }
                 });
             }
@@ -235,16 +233,11 @@ impl eframe::App for SpectrogramPlot {
                 let freq_hz = coord.y;
 
                 // Map plot coordinates back to the nearest tile to read its dB value.
-                let frame = ((coord.x - self.pos.x) / self.tile_size.0 as f64)
-                    .floor() as isize;
-                let freq_bin = ((coord.y - self.pos.y) / self.tile_size.1 as f64)
-                    .floor() as isize;
-                let db_value = if frame >= 0
-                    && (frame as usize) < self.num_frames
-                    && freq_bin >= 0
+                let frame = ((coord.x - self.pos.x) / self.tile_size.0 as f64).floor() as isize;
+                let freq_bin = ((coord.y - self.pos.y) / self.tile_size.1 as f64).floor() as isize;
+                let db_value = if frame >= 0 && (frame as usize) < self.num_frames && freq_bin >= 0
                 {
-                    let num_freq_bins =
-                        self.values[self.current_channel].len() / self.num_frames;
+                    let num_freq_bins = self.values[self.current_channel].len() / self.num_frames;
                     if (freq_bin as usize) < num_freq_bins {
                         let idx = freq_bin as usize * self.num_frames + frame as usize;
                         Some(self.values[self.current_channel][idx])
@@ -275,7 +268,6 @@ impl eframe::App for SpectrogramPlot {
                     ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
                 });
             }
-
         });
 
         self.save.handle_screenshot(ctx);
@@ -299,9 +291,7 @@ pub fn show_spectrogram(
     Ok(eframe::run_native(
         title,
         native_options_any_thread(),
-        Box::new(|_cc| {
-            Ok(Box::new(SpectrogramPlot::new(spectrogram, title, db_floor)))
-        }),
+        Box::new(|_cc| Ok(Box::new(SpectrogramPlot::new(spectrogram, title, db_floor)))),
     )?)
 }
 
