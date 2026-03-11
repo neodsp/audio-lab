@@ -28,7 +28,7 @@ impl FreqSignal {
                 utils::generate_freq_steps(data.ncols(), sample_rate, n_samples),
                 data,
             )
-            .unwrap(),
+            .expect("generate_freq_steps produced invalid data"),
             sample_rate,
             n_samples,
         })
@@ -49,7 +49,7 @@ impl FreqSignal {
                 utils::generate_freq_steps(num_freq_bins, sample_rate, n_samples),
                 Array2::zeros((num_channels, num_freq_bins)),
             )
-            .unwrap(),
+            .expect("generate_freq_steps produced invalid data"),
             sample_rate,
             n_samples,
         })
@@ -115,7 +115,7 @@ impl FreqSignal {
         let fft_handler = R2cFftHandler::<f64>::new(self.num_time_steps());
         let mut time_signal =
             TimeSignal::zeros(self.num_channels(), self.num_time_steps(), self.sample_rate)
-                .unwrap();
+                .expect("generate_time_steps produced invalid data");
         time_signal.set_comment(self.comment());
         ndifft_r2c(
             &self.freq_data(),

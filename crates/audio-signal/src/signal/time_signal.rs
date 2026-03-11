@@ -21,7 +21,7 @@ impl TimeSignal {
                 utils::generate_time_steps(data.shape()[1], sample_rate),
                 data,
             )
-            .unwrap(),
+            .expect("generate_time_steps produced invalid data"),
             sample_rate,
         })
     }
@@ -39,7 +39,7 @@ impl TimeSignal {
                 utils::generate_time_steps(num_time_steps, sample_rate),
                 Array2::zeros((num_channels, num_time_steps)),
             )
-            .unwrap(),
+            .expect("generate_time_steps produced invalid data"),
             sample_rate,
         })
     }
@@ -109,7 +109,7 @@ impl TimeSignal {
             self.sample_rate,
             Some(n_samples),
         )
-        .unwrap();
+        .expect("generate_freq_steps produced invalid data");
         freq_signal.set_comment(self.comment());
         ndfft_r2c(
             &self.time_data(),
