@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
 
-use audio_signal::signal::{Spectrogram, TimeSignal};
+use audio_signal::signal::{Spectrogram, SpectrogramNormalization, TimeSignal};
 use ndarray::prelude::*;
 use ndrustfft::{R2cFftHandler, ndfft_r2c};
 use num::complex::Complex64;
@@ -108,6 +108,8 @@ pub fn stft(signal: &TimeSignal, config: &StftConfig) -> Result<Spectrogram, Stf
     let sample_rate = signal.sample_rate();
 
     let window = compute_window(config.window_fn, window_size);
+    let coherent_gain = window.sum() / window_size as f64;
+    let window_energy = window.iter().map(|w| w * w).sum();
 
     let frame_times = Array1::from_iter(
         (0..num_frames).map(|f| (f * hop_size + window_size / 2) as f64 / sample_rate),
@@ -150,6 +152,7 @@ pub fn stft(signal: &TimeSignal, config: &StftConfig) -> Result<Spectrogram, Stf
         sample_rate,
         window_size,
         hop_size,
+        SpectrogramNormalization::new(coherent_gain, window_energy),
     ))
 }
 
@@ -284,5 +287,52 @@ mod tests {
             let dc_ch1 = spec.channel(1)[[frame, 0]].re;
             assert_abs_diff_eq!(dc_ch1, 2.0 * dc_ch0, epsilon = 1e-10);
         }
+    }
+
+    #[test]
+    fn calibrated_spectra_for_bin_centered_sine() {
+        let sample_rate = 8.0;
+        let window_size = 8;
+        let signal = TimeSignal::new(
+            arr2(&[std::array::from_fn::<f64, 8, _>(|n| {
+                (std::f64::consts::TAU * 2.0 * n as f64 / window_size as f64).sin()
+            })]),
+            sample_rate,
+        )
+        .unwrap();
+        let spec = stft(
+            &signal,
+            &StftConfig {
+                window_size,
+                hop_size: window_size,
+                window_fn: WindowFn::Rectangular,
+            },
+        )
+        .unwrap();
+
+        assert_abs_diff_eq!(spec.raw_magnitude()[[0, 0, 2]], 4.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(spec.amplitude_spectrum()[[0, 0, 2]], 1.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(spec.power_spectrum()[[0, 0, 2]], 0.5, epsilon = 1e-10);
+        assert_abs_diff_eq!(
+            spec.power_spectral_density()[[0, 0, 2]],
+            0.5,
+            epsilon = 1e-10
+        );
+    }
+
+    #[test]
+    fn calibrated_dc_amplitude_is_window_corrected() {
+        let signal = TimeSignal::new(arr2(&[[1.0; 8]]), 8.0).unwrap();
+        let spec = stft(
+            &signal,
+            &StftConfig {
+                window_size: 8,
+                hop_size: 8,
+                window_fn: WindowFn::Hann,
+            },
+        )
+        .unwrap();
+
+        assert_abs_diff_eq!(spec.amplitude_spectrum()[[0, 0, 0]], 1.0, epsilon = 1e-10);
     }
 }

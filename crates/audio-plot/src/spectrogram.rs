@@ -137,7 +137,7 @@ impl SpectrogramPlot {
         let frame_times = spec.frame_times();
         let freq_bins = spec.freq_bins();
 
-        let mag_db = spec.magnitude_db(db_floor);
+        let mag_db = spec.amplitude_spectrum_db(db_floor);
         let db_peak = mag_db.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
         // Flat value arrays: row = freq_bin (0 = lowest), col = frame.
@@ -319,7 +319,8 @@ impl eframe::App for SpectrogramPlot {
 
 /// Show a spectrogram as a color image using the Turbo colormap.
 ///
-/// Values are displayed in dB (20 × log₁₀(magnitude), floored at `db_floor`).
+/// Values are displayed in dB re. calibrated one-sided amplitude spectrum
+/// (20 × log₁₀(amplitude), floored at `db_floor`).
 /// `db_floor` also sets the cold end of the color scale (e.g. `-80.0`);
 /// the hot end is the peak value across all channels.
 ///
@@ -342,7 +343,7 @@ pub fn show_spectrogram(
 mod tests {
     use audio_signal::{
         ndarray::{Array1, Array3},
-        signal::Spectrogram,
+        signal::{Spectrogram, SpectrogramNormalization},
     };
     use num::complex::Complex64;
 
@@ -359,7 +360,15 @@ mod tests {
             });
         let frame_times = Array1::linspace(0.0, 1.5, num_frames);
         let freq_bins = Array1::linspace(0.0, 8000.0, num_freq_bins);
-        Spectrogram::new(data, frame_times, freq_bins, sample_rate, 256, 128)
+        Spectrogram::new(
+            data,
+            frame_times,
+            freq_bins,
+            sample_rate,
+            256,
+            128,
+            SpectrogramNormalization::new(1.0, 256.0),
+        )
     }
 
     #[test]
