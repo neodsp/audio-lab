@@ -117,6 +117,20 @@ impl ComplexData {
     pub fn iter_mut(&mut self) -> ndarray::iter::IterMut<'_, Complex64, Ix2> {
         self.y_data.iter_mut()
     }
+
+    pub fn nearest_x_index(&self, x: f64) -> usize {
+        self.x_data()
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                (*a - x)
+                    .abs()
+                    .partial_cmp(&(*b - x).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(index, _)| index)
+            .unwrap_or(0)
+    }
 }
 
 impl std::fmt::Display for ComplexData {

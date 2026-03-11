@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use ndarray::s;
 
+use audio_signal::math::db_to_gain;
 use audio_signal::signal::{SignalError, TimeSignal};
 
 #[derive(Debug, thiserror::Error)]
@@ -53,10 +54,6 @@ pub fn trim_duration(
     let start_sample = (signal.sample_rate() * start_duration.as_secs_f64()).round() as usize;
     let end_sample = (signal.sample_rate() * end_duration.as_secs_f64()).round() as i64;
     trim_samples(signal, start_sample, end_sample)
-}
-
-fn db_to_gain(level_db: f64) -> f64 {
-    10.0_f64.powf(level_db / 20.0)
 }
 
 pub fn normalize_peak_in_place_linear(signal: &mut TimeSignal, peak_level: f64) {

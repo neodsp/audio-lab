@@ -122,11 +122,10 @@ pub fn stft(signal: &TimeSignal, config: &StftConfig) -> Result<Spectrogram, Stf
     ))
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use approx::assert_abs_diff_eq;
+    use audio_signal::analysis::spectrogram as spec_analysis;
     use audio_signal::signal::TimeSignal;
     use ndarray::arr2;
 
@@ -276,11 +275,23 @@ mod tests {
         )
         .unwrap();
 
-        assert_abs_diff_eq!(spec.raw_magnitude()[[0, 0, 2]], 4.0, epsilon = 1e-10);
-        assert_abs_diff_eq!(spec.amplitude_spectrum()[[0, 0, 2]], 1.0, epsilon = 1e-10);
-        assert_abs_diff_eq!(spec.power_spectrum()[[0, 0, 2]], 0.5, epsilon = 1e-10);
         assert_abs_diff_eq!(
-            spec.power_spectral_density()[[0, 0, 2]],
+            spec_analysis::raw_magnitude(&spec)[[0, 0, 2]],
+            4.0,
+            epsilon = 1e-10
+        );
+        assert_abs_diff_eq!(
+            spec_analysis::amplitude_spectrum(&spec)[[0, 0, 2]],
+            1.0,
+            epsilon = 1e-10
+        );
+        assert_abs_diff_eq!(
+            spec_analysis::power_spectrum(&spec)[[0, 0, 2]],
+            0.5,
+            epsilon = 1e-10
+        );
+        assert_abs_diff_eq!(
+            spec_analysis::power_spectral_density(&spec)[[0, 0, 2]],
             0.5,
             epsilon = 1e-10
         );
@@ -299,6 +310,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_abs_diff_eq!(spec.amplitude_spectrum()[[0, 0, 0]], 1.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(
+            spec_analysis::amplitude_spectrum(&spec)[[0, 0, 0]],
+            1.0,
+            epsilon = 1e-10
+        );
     }
 }

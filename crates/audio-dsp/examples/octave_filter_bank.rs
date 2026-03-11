@@ -1,7 +1,7 @@
 /// Plot the magnitude responses of a reconstructing octave filter bank applied
 /// to an impulse. Each band appears as a separate channel in the frequency plot.
 use audio_dsp::filter_bank::reconstructing_fractional_octave_bands;
-use audio_plot::freq::FreqDisplay;
+use audio_plot::freq::FreqPlotOptions;
 use audio_signal::signal::{FreqSignal, TimeSignal};
 use ndarray::{Array2, s};
 use num::complex::Complex64;
@@ -44,7 +44,6 @@ fn main() -> Result<(), audio_plot::Error> {
     audio_plot::show_freq_signal(
         "Octave filter bank – magnitude responses",
         &freq_signal,
-        true, // logarithmic frequency axis
-        FreqDisplay::Magnitude { db: true },
+        FreqPlotOptions::default(),
     )
 }

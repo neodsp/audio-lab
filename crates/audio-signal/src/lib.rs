@@ -7,8 +7,11 @@ macro_rules! join {
     };
 }
 
+pub mod analysis;
 pub mod data;
 pub mod io;
+pub mod math;
+pub mod ops;
 #[cfg(feature = "audio-io")]
 pub mod playback;
 pub mod signal;

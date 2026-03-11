@@ -1,4 +1,6 @@
-use audio_signal::signal::freq_signal::FreqSignal;
+use audio_signal::{
+    math::gain_to_db, ops::complex as complex_ops, signal::freq_signal::FreqSignal,
+};
 use eframe::egui;
 use egui_plot::{GridInput, GridMark, Legend, Line, Plot, PlotPoint, PlotPoints};
 
@@ -7,41 +9,54 @@ use crate::save::SavePlotState;
 
 const DB_FLOOR: f64 = -120.0;
 
-pub enum PhaseUnit {
-    Radians,
-    Degrees,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FreqValue {
+    Magnitude,
+    MagnitudeDb,
+    PhaseRadians,
+    PhaseDegrees,
 }
 
-pub enum FreqDisplay {
-    Magnitude { db: bool },
-    Phase(PhaseUnit),
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FreqPlotOptions {
+    pub log_freq: bool,
+    pub value: FreqValue,
 }
 
-impl FreqDisplay {
+impl Default for FreqPlotOptions {
+    fn default() -> Self {
+        Self {
+            log_freq: true,
+            value: FreqValue::MagnitudeDb,
+        }
+    }
+}
+
+impl FreqValue {
     fn value(&self, magnitude: f64, phase_radians: f64) -> f64 {
         match self {
-            FreqDisplay::Magnitude { db: true } => (20.0 * magnitude.log10()).max(DB_FLOOR),
-            FreqDisplay::Magnitude { db: false } => magnitude,
-            FreqDisplay::Phase(PhaseUnit::Radians) => phase_radians,
-            FreqDisplay::Phase(PhaseUnit::Degrees) => phase_radians.to_degrees(),
+            FreqValue::MagnitudeDb => gain_to_db(magnitude).max(DB_FLOOR),
+            FreqValue::Magnitude => magnitude,
+            FreqValue::PhaseRadians => phase_radians,
+            FreqValue::PhaseDegrees => phase_radians.to_degrees(),
         }
     }
 
     fn y_label(&self) -> &'static str {
         match self {
-            FreqDisplay::Magnitude { db: true } => "Magnitude (dB)",
-            FreqDisplay::Magnitude { db: false } => "Magnitude",
-            FreqDisplay::Phase(PhaseUnit::Radians) => "Phase (rad)",
-            FreqDisplay::Phase(PhaseUnit::Degrees) => "Phase (deg)",
+            FreqValue::MagnitudeDb => "Magnitude (dB)",
+            FreqValue::Magnitude => "Magnitude",
+            FreqValue::PhaseRadians => "Phase (rad)",
+            FreqValue::PhaseDegrees => "Phase (deg)",
         }
     }
 
     fn format_y(&self, y: f64) -> String {
         match self {
-            FreqDisplay::Magnitude { db: true } => format!("{y:.1} dB"),
-            FreqDisplay::Magnitude { db: false } => format!("{y:.4}"),
-            FreqDisplay::Phase(PhaseUnit::Radians) => format!("{y:.4} rad"),
-            FreqDisplay::Phase(PhaseUnit::Degrees) => format!("{y:.2} deg"),
+            FreqValue::MagnitudeDb => format!("{y:.1} dB"),
+            FreqValue::Magnitude => format!("{y:.4}"),
+            FreqValue::PhaseRadians => format!("{y:.4} rad"),
+            FreqValue::PhaseDegrees => format!("{y:.2} deg"),
         }
     }
 }
@@ -82,29 +97,41 @@ fn spectrum_grid_spacer(input: GridInput) -> Vec<GridMark> {
 
 pub(crate) struct FreqSignalPlot {
     channels: Vec<Vec<PlotPoint>>,
-    log_freq: bool,
-    display: FreqDisplay,
+    options: FreqPlotOptions,
     save: SavePlotState,
 }
 
 impl FreqSignalPlot {
-    pub(crate) fn new(
-        signal: &FreqSignal,
-        title: &str,
-        log_freq: bool,
-        display: FreqDisplay,
-    ) -> Self {
+    pub(crate) fn new(signal: &FreqSignal, title: &str, options: FreqPlotOptions) -> Self {
         let freq_bins = signal.freq_bins();
+        let derived = match options.value {
+            FreqValue::Magnitude => Some(complex_ops::to_magnitude(signal.data())),
+            FreqValue::MagnitudeDb => Some(complex_ops::to_magnitude_db(signal.data())),
+            FreqValue::PhaseRadians | FreqValue::PhaseDegrees => {
+                Some(complex_ops::to_phase(signal.data()))
+            }
+        };
         let channels = signal
             .channel_iter()
-            .map(|ch| {
+            .enumerate()
+            .map(|(ch_index, ch)| {
+                let derived_channel = derived.as_ref().map(|data| data.channel(ch_index));
                 freq_bins
                     .iter()
-                    .zip(ch.iter())
-                    .filter(|&(&f, _)| !log_freq || f > 0.0)
-                    .map(|(&f, c)| {
-                        let x = if log_freq { f.log10() } else { f };
-                        let y = display.value(c.norm(), c.arg());
+                    .zip(ch.iter().enumerate())
+                    .filter(|&(&f, _)| !options.log_freq || f > 0.0)
+                    .map(|(&f, (bin_index, c))| {
+                        let x = if options.log_freq { f.log10() } else { f };
+                        let y = if let Some(channel) = &derived_channel {
+                            let value = channel[bin_index];
+                            if matches!(options.value, FreqValue::PhaseDegrees) {
+                                value.to_degrees()
+                            } else {
+                                value
+                            }
+                        } else {
+                            options.value.value(c.norm(), c.arg())
+                        };
                         PlotPoint::new(x, y)
                     })
                     .collect()
@@ -112,8 +139,7 @@ impl FreqSignalPlot {
             .collect();
         Self {
             channels,
-            log_freq,
-            display,
+            options,
             save: SavePlotState::new(title),
         }
     }
@@ -127,11 +153,11 @@ impl eframe::App for FreqSignalPlot {
         egui::CentralPanel::default().show(ctx, |ui| {
             let mut plot = Plot::new("freq_signal")
                 .x_axis_label("Frequency (Hz)")
-                .y_axis_label(self.display.y_label())
+                .y_axis_label(self.options.value.y_label())
                 .legend(Legend::default());
 
-            if self.log_freq {
-                let display = &self.display;
+            if self.options.log_freq {
+                let value = self.options.value;
                 plot = plot
                     .x_grid_spacer(spectrum_grid_spacer)
                     .x_axis_formatter(|mark, _range| {
@@ -149,7 +175,7 @@ impl eframe::App for FreqSignalPlot {
                         } else {
                             format!("{hz:.1} Hz")
                         };
-                        let y_str = display.format_y(point.y);
+                        let y_str = value.format_y(point.y);
                         if name.is_empty() {
                             format!("{freq_str}\n{y_str}")
                         } else {
@@ -174,17 +200,12 @@ impl eframe::App for FreqSignalPlot {
 pub fn show_freq_signal(
     title: &str,
     signal: &FreqSignal,
-    log_freq: bool,
-    display: FreqDisplay,
+    options: FreqPlotOptions,
 ) -> Result<(), crate::Error> {
     Ok(eframe::run_native(
         title,
         native_options_any_thread(),
-        Box::new(|_cc| {
-            Ok(Box::new(FreqSignalPlot::new(
-                signal, title, log_freq, display,
-            )))
-        }),
+        Box::new(|_cc| Ok(Box::new(FreqSignalPlot::new(signal, title, options)))),
     )?)
 }
 
@@ -217,8 +238,7 @@ mod tests {
         show_freq_signal(
             "Freq Signal (Log, dB)",
             &make_signal(),
-            true,
-            FreqDisplay::Magnitude { db: true },
+            FreqPlotOptions::default(),
         )
         .unwrap();
     }
@@ -229,8 +249,10 @@ mod tests {
         show_freq_signal(
             "Freq Signal (Phase)",
             &make_signal(),
-            true,
-            FreqDisplay::Phase(PhaseUnit::Radians),
+            FreqPlotOptions {
+                log_freq: true,
+                value: FreqValue::PhaseDegrees,
+            },
         )
         .unwrap();
     }
@@ -241,8 +263,10 @@ mod tests {
         show_freq_signal(
             "Freq Signal (Phase, Degrees)",
             &make_signal(),
-            true,
-            FreqDisplay::Phase(PhaseUnit::Degrees),
+            FreqPlotOptions {
+                log_freq: true,
+                value: FreqValue::PhaseDegrees,
+            },
         )
         .unwrap();
     }

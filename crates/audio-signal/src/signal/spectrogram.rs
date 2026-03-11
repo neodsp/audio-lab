@@ -1,4 +1,4 @@
-use ndarray::prelude::*;
+use ndarray::{prelude::*, s};
 use num::complex::Complex64;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -119,74 +119,6 @@ impl Spectrogram {
     /// Complex STFT data for a single frame, shape `(num_channels, num_freq_bins)`.
     pub fn frame(&self, t: usize) -> ArrayView2<'_, Complex64> {
         self.data.slice(s![.., t, ..])
-    }
-
-    fn one_sided_scale(&self, bin: usize) -> f64 {
-        let last_bin = self.num_freq_bins().saturating_sub(1);
-        if bin == 0 || (self.window_size.is_multiple_of(2) && bin == last_bin) {
-            1.0
-        } else {
-            2.0
-        }
-    }
-
-    /// Raw FFT magnitude of the windowed STFT frames.
-    ///
-    /// This is not normalized for FFT size, window attenuation, or one-sided
-    /// spectrum interpretation. Use the calibrated helpers below for
-    /// measurement-oriented analysis.
-    pub fn raw_magnitude(&self) -> Array3<f64> {
-        self.data.map(|c| c.norm())
-    }
-
-    /// Raw FFT magnitude in dB with a floor, preserving the legacy display semantics.
-    pub fn raw_magnitude_db(&self, floor_db: f64) -> Array3<f64> {
-        let floor_linear = 10f64.powf(floor_db / 20.0);
-        self.data.map(|c| 20.0 * c.norm().max(floor_linear).log10())
-    }
-
-    /// One-sided amplitude spectrum corrected for FFT size and window coherent gain.
-    pub fn amplitude_spectrum(&self) -> Array3<f64> {
-        let coherent_sum = self.normalization.coherent_gain * self.window_size as f64;
-        Array3::from_shape_fn(self.data.raw_dim(), |(ch, frame, bin)| {
-            self.data[[ch, frame, bin]].norm() * self.one_sided_scale(bin) / coherent_sum
-        })
-    }
-
-    pub fn amplitude_spectrum_db(&self, floor_db: f64) -> Array3<f64> {
-        let floor_linear = 10f64.powf(floor_db / 20.0);
-        self.amplitude_spectrum()
-            .map(|v| 20.0 * v.max(floor_linear).log10())
-    }
-
-    /// One-sided power spectrum in units of signal^2 per FFT bin.
-    pub fn power_spectrum(&self) -> Array3<f64> {
-        let denom = self.window_size as f64 * self.normalization.window_energy;
-        Array3::from_shape_fn(self.data.raw_dim(), |(ch, frame, bin)| {
-            let mag2 = self.data[[ch, frame, bin]].norm_sqr();
-            mag2 * self.one_sided_scale(bin) / denom
-        })
-    }
-
-    pub fn power_spectrum_db(&self, floor_db: f64) -> Array3<f64> {
-        let floor_linear = 10f64.powf(floor_db / 10.0);
-        self.power_spectrum()
-            .map(|v| 10.0 * v.max(floor_linear).log10())
-    }
-
-    /// One-sided power spectral density estimate in units of signal^2/Hz.
-    pub fn power_spectral_density(&self) -> Array3<f64> {
-        let denom = self.sample_rate * self.normalization.window_energy;
-        Array3::from_shape_fn(self.data.raw_dim(), |(ch, frame, bin)| {
-            let mag2 = self.data[[ch, frame, bin]].norm_sqr();
-            mag2 * self.one_sided_scale(bin) / denom
-        })
-    }
-
-    pub fn power_spectral_density_db(&self, floor_db: f64) -> Array3<f64> {
-        let floor_linear = 10f64.powf(floor_db / 10.0);
-        self.power_spectral_density()
-            .map(|v| 10.0 * v.max(floor_linear).log10())
     }
 }
 
