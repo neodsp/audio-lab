@@ -1,0 +1,15 @@
+[package]
+name = "audio-signal"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+approx.workspace = true
+ndarray.workspace = true
+ndrustfft.workspace = true
+num.workspace = true
+thiserror.workspace = true
+serde = { workspace = true, optional = true }
+
+[features]
+serde = ["dep:serde", "ndarray/serde", "num/serde"]
