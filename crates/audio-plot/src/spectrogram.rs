@@ -1,6 +1,7 @@
 use audio_signal::signal::Spectrogram;
 use eframe::egui;
-use egui_plot::{Plot, PlotImage, PlotPoint};
+use egui::{Align2, RectAlign, Tooltip};
+use egui_plot::{Heatmap, Legend, Plot, PlotPoint};
 
 use crate::native_options_any_thread;
 use crate::save::SavePlotState;
@@ -23,11 +24,11 @@ const TURBO_PALETTE: &[egui::Color32] = &[
     egui::Color32::from_rgb(122, 4, 2),
 ];
 
-fn apply_colormap(value: f32, palette: &[egui::Color32]) -> egui::Color32 {
+fn apply_colormap(t: f32, palette: &[egui::Color32]) -> egui::Color32 {
     if palette.len() < 2 {
         return palette.first().copied().unwrap_or(egui::Color32::BLACK);
     }
-    let v = value.clamp(0.0, 1.0);
+    let v = t.clamp(0.0, 1.0);
     let idx = v * (palette.len() - 1) as f32;
     let lo = idx.floor() as usize;
     let hi = (lo + 1).min(palette.len() - 1);
@@ -35,25 +36,85 @@ fn apply_colormap(value: f32, palette: &[egui::Color32]) -> egui::Color32 {
     let c0 = palette[lo];
     let c1 = palette[hi];
     egui::Color32::from_rgb(
-        lerp_u8(c0.r(), c1.r(), t),
-        lerp_u8(c0.g(), c1.g(), t),
-        lerp_u8(c0.b(), c1.b(), t),
+        (c0.r() as f32 * (1.0 - t) + c1.r() as f32 * t).round() as u8,
+        (c0.g() as f32 * (1.0 - t) + c1.g() as f32 * t).round() as u8,
+        (c0.b() as f32 * (1.0 - t) + c1.b() as f32 * t).round() as u8,
     )
 }
 
-fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 * (1.0 - t) + b as f32 * t).round() as u8
+// ─── Colorbar ─────────────────────────────────────────────────────────────────
+
+fn draw_colorbar(ui: &mut egui::Ui, db_min: f64, db_max: f64) {
+    const BAR_WIDTH: f32 = 16.0;
+    const TICK_LEN: f32 = 5.0;
+    const LABEL_GAP: f32 = 4.0;
+    const MARGIN_Y: f32 = 10.0;
+
+    let available = ui.available_size();
+    let (response, painter) =
+        ui.allocate_painter(available, egui::Sense::hover());
+
+    let bar_rect = egui::Rect::from_min_max(
+        egui::pos2(response.rect.min.x, response.rect.min.y + MARGIN_Y),
+        egui::pos2(response.rect.min.x + BAR_WIDTH, response.rect.max.y - MARGIN_Y),
+    );
+    let bar_height = bar_rect.height();
+
+    // Gradient: 128 horizontal strips, top = db_max (t=1), bottom = db_min (t=0).
+    let n = 128usize;
+    for i in 0..n {
+        let t = 1.0 - (i as f32 + 0.5) / n as f32;
+        let y_top = bar_rect.min.y + i as f32 * bar_height / n as f32;
+        let y_bot = bar_rect.min.y + (i + 1) as f32 * bar_height / n as f32;
+        let strip = egui::Rect::from_min_max(
+            egui::pos2(bar_rect.min.x, y_top),
+            egui::pos2(bar_rect.max.x, y_bot),
+        );
+        painter.rect_filled(strip, 0.0, apply_colormap(t, TURBO_PALETTE));
+    }
+
+    // Border.
+    let stroke = egui::Stroke::new(1.0, ui.visuals().text_color());
+    painter.rect_stroke(bar_rect, 0.0, stroke, egui::StrokeKind::Outside);
+
+    // Five tick marks with dB labels.
+    let font_id = egui::TextStyle::Small.resolve(ui.style());
+    let text_color = ui.visuals().text_color();
+    for tick in 0..=4 {
+        let t = tick as f32 / 4.0;
+        let db = db_min + t as f64 * (db_max - db_min);
+        let y = bar_rect.min.y + (1.0 - t) * bar_height;
+        painter.line_segment(
+            [
+                egui::pos2(bar_rect.max.x, y),
+                egui::pos2(bar_rect.max.x + TICK_LEN, y),
+            ],
+            egui::Stroke::new(1.0, text_color),
+        );
+        painter.text(
+            egui::pos2(bar_rect.max.x + TICK_LEN + LABEL_GAP, y),
+            egui::Align2::LEFT_CENTER,
+            format!("{db:.0} dB"),
+            font_id.clone(),
+            text_color,
+        );
+    }
 }
 
 // ─── App ─────────────────────────────────────────────────────────────────────
 
 pub(crate) struct SpectrogramPlot {
-    /// Pre-computed color images indexed by channel.
-    images: Vec<egui::ColorImage>,
-    /// Lazily loaded textures, one per channel.
-    textures: Vec<Option<egui::TextureHandle>>,
-    frame_times: Vec<f64>,
-    freq_bins: Vec<f64>,
+    /// Flat dB values per channel in Heatmap row-major order:
+    /// `values[freq_bin * num_frames + frame]`.
+    /// Row 0 (freq_bin = 0) sits at the bottom of the plot = lowest frequency.
+    values: Vec<Vec<f64>>,
+    num_frames: usize,
+    db_floor: f64,
+    db_peak: f64,
+    /// Lower-left corner of the heatmap in plot (time, freq) coordinates.
+    pos: PlotPoint,
+    /// Width × height of one tile in plot coordinates (seconds × Hz).
+    tile_size: (f32, f32),
     num_channels: usize,
     current_channel: usize,
     save: SavePlotState,
@@ -64,38 +125,50 @@ impl SpectrogramPlot {
         let num_channels = spec.num_channels();
         let num_frames = spec.num_frames();
         let num_freq_bins = spec.num_freq_bins();
+        let frame_times = spec.frame_times();
+        let freq_bins = spec.freq_bins();
 
         let mag_db = spec.magnitude_db(db_floor);
-
-        // Normalize [db_floor, db_peak] → [0, 1] across all channels.
         let db_peak = mag_db.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let db_range = (db_peak - db_floor).max(f64::EPSILON);
 
-        // Build one ColorImage per channel.
-        // Image width = num_frames, height = num_freq_bins.
-        // Row 0 = highest frequency so that image-top aligns with plot-top
-        // (egui_plot has y increasing upward; PlotImage maps image row 0 to the
-        // top of the plot rect, i.e. the highest y = highest frequency).
-        let images = (0..num_channels)
+        // Flat value arrays: row = freq_bin (0 = lowest), col = frame.
+        let values = (0..num_channels)
             .map(|ch| {
-                let mut pixels = Vec::with_capacity(num_frames * num_freq_bins);
-                // Row 0 = highest frequency (image-top = plot-top = high freq).
-                for freq_bin in (0..num_freq_bins).rev() {
+                let mut v = Vec::with_capacity(num_frames * num_freq_bins);
+                for freq_bin in 0..num_freq_bins {
                     for frame in 0..num_frames {
-                        let db = mag_db[[ch, frame, freq_bin]];
-                        let norm = ((db - db_floor) / db_range).clamp(0.0, 1.0) as f32;
-                        pixels.push(apply_colormap(norm, TURBO_PALETTE));
+                        v.push(mag_db[[ch, frame, freq_bin]]);
                     }
                 }
-                egui::ColorImage::new([num_frames.max(1), num_freq_bins.max(1)], pixels)
+                v
             })
             .collect();
 
+        // Tile dimensions in plot-coordinate units.
+        let dt = if num_frames > 1 {
+            (frame_times[num_frames - 1] - frame_times[0]) / (num_frames - 1) as f64
+        } else {
+            spec.hop_size() as f64 / spec.sample_rate()
+        };
+        let df = if num_freq_bins > 1 {
+            (freq_bins[num_freq_bins - 1] - freq_bins[0]) / (num_freq_bins - 1) as f64
+        } else {
+            spec.sample_rate() / spec.window_size() as f64
+        };
+
+        // Lower-left corner = half a tile before the first frame/bin centre.
+        let pos = PlotPoint {
+            x: frame_times.first().copied().unwrap_or(0.0) - dt / 2.0,
+            y: freq_bins.first().copied().unwrap_or(0.0) - df / 2.0,
+        };
+
         Self {
-            images,
-            textures: vec![None; num_channels.max(1)],
-            frame_times: spec.frame_times().to_vec(),
-            freq_bins: spec.freq_bins().to_vec(),
+            values,
+            num_frames,
+            db_floor,
+            db_peak,
+            pos,
+            tile_size: (dt as f32, df as f32),
             num_channels,
             current_channel: 0,
             save: SavePlotState::new(title),
@@ -110,41 +183,34 @@ impl eframe::App for SpectrogramPlot {
             if self.num_channels > 1 {
                 ui.horizontal(|ui| {
                     for ch in 0..self.num_channels {
-                        ui.selectable_value(&mut self.current_channel, ch, format!("Channel {ch}"));
+                        ui.selectable_value(
+                            &mut self.current_channel,
+                            ch,
+                            format!("Channel {ch}"),
+                        );
                     }
                 });
             }
         });
 
+        // Colorbar on the right; must be declared before CentralPanel.
+        egui::SidePanel::right("colorbar")
+            .exact_width(80.0)
+            .resizable(false)
+            .show(ctx, |ui| {
+                draw_colorbar(ui, self.db_floor, self.db_peak);
+            });
+
         egui::CentralPanel::default().show(ctx, |ui| {
-            // Lazily upload the texture for the selected channel.
-            if self.textures[self.current_channel].is_none() {
-                let handle = ctx.load_texture(
-                    format!("spectrogram_ch{}", self.current_channel),
-                    self.images[self.current_channel].clone(),
-                    egui::TextureOptions::LINEAR,
-                );
-                self.textures[self.current_channel] = Some(handle);
-            }
+            let values = self.values[self.current_channel].clone();
+            let heatmap = Heatmap::new(values, self.num_frames)
+                .palette(TURBO_PALETTE)
+                .range(self.db_floor, self.db_peak)
+                .show_labels(false)
+                .at(self.pos)
+                .tile_size(self.tile_size.0, self.tile_size.1);
 
-            let Some(texture) = &self.textures[self.current_channel] else {
-                return;
-            };
-
-            let (Some(&t0), Some(&t1)) = (self.frame_times.first(), self.frame_times.last()) else {
-                return;
-            };
-            let (Some(&f0), Some(&f1)) = (self.freq_bins.first(), self.freq_bins.last()) else {
-                return;
-            };
-
-            let dt = (t1 - t0).max(f64::EPSILON);
-            let df = (f1 - f0).max(f64::EPSILON);
-
-            let center = PlotPoint::new((t0 + t1) / 2.0, (f0 + f1) / 2.0);
-            let size = egui::vec2(dt as f32, df as f32);
-            let image = PlotImage::new("spectrogram", texture.id(), center, size);
-
+            let mut hovered_coord = None;
             let inner = Plot::new("spectrogram")
                 .x_axis_label("Time (s)")
                 .y_axis_label("Frequency (Hz)")
@@ -156,18 +222,66 @@ impl eframe::App for SpectrogramPlot {
                         format!("{hz:.0} Hz")
                     }
                 })
-                .label_formatter(|_name, point| {
-                    let freq_str = if point.y >= 1000.0 {
-                        format!("{:.2} kHz", point.y / 1000.0)
-                    } else {
-                        format!("{:.1} Hz", point.y)
-                    };
-                    format!("{:.3} s\n{freq_str}", point.x)
-                })
                 .set_margin_fraction(egui::vec2(0.0, 0.0))
+                .legend(Legend::default())
                 .show(ui, |plot_ui| {
-                    plot_ui.image(image);
+                    if plot_ui.response().hovered() {
+                        hovered_coord = plot_ui.pointer_coordinate();
+                    }
+                    plot_ui.heatmap(heatmap);
                 });
+
+            if let Some(coord) = hovered_coord {
+                let freq_hz = coord.y;
+
+                // Map plot coordinates back to the nearest tile to read its dB value.
+                let frame = ((coord.x - self.pos.x) / self.tile_size.0 as f64)
+                    .round() as isize;
+                let freq_bin = ((coord.y - self.pos.y) / self.tile_size.1 as f64)
+                    .round() as isize;
+                let db_value = if frame >= 0
+                    && (frame as usize) < self.num_frames
+                    && freq_bin >= 0
+                {
+                    let num_freq_bins =
+                        self.values[self.current_channel].len() / self.num_frames;
+                    if (freq_bin as usize) < num_freq_bins {
+                        let idx = freq_bin as usize * self.num_frames + frame as usize;
+                        Some(self.values[self.current_channel][idx])
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let freq_str = if freq_hz >= 1000.0 {
+                    format!("{:.2} kHz", freq_hz / 1000.0)
+                } else {
+                    format!("{:.0} Hz", freq_hz)
+                };
+                let text = match db_value {
+                    Some(db) => format!("t = {:.3} s   f = {}   {:.1} dB", coord.x, freq_str, db),
+                    None => format!("t = {:.3} s   f = {}", coord.x, freq_str),
+                };
+                let anchor = egui::PopupAnchor::Position(
+                    inner.response.rect.right_bottom() - egui::vec2(8.0, 8.0),
+                );
+                let align = RectAlign {
+                    parent: Align2::RIGHT_BOTTOM,
+                    child: Align2::RIGHT_BOTTOM,
+                };
+                let mut tooltip = Tooltip::always_open(
+                    ui.ctx().clone(),
+                    inner.response.layer_id,
+                    inner.response.id.with("hover_tooltip"),
+                    anchor,
+                );
+                tooltip.popup = tooltip.popup.align(align);
+                tooltip.show(|ui: &mut egui::Ui| {
+                    ui.label(text);
+                });
+            }
 
             self.save.set_rect(inner.response.rect);
         });
@@ -180,8 +294,11 @@ impl eframe::App for SpectrogramPlot {
 
 /// Show a spectrogram as a color heatmap using the Turbo colormap.
 ///
-/// `db_floor` sets the lower dB bound for the color scale (e.g. `-80.0`).
-/// The upper bound is the peak magnitude across all channels.
+/// Values are displayed in dB (20 × log₁₀(magnitude), floored at `db_floor`).
+/// `db_floor` also sets the cold end of the color scale (e.g. `-80.0`);
+/// the hot end is the peak value across all channels.
+///
+/// The plot supports zoom (scroll wheel) and pan (drag).
 pub fn show_spectrogram(
     title: &str,
     spectrogram: &Spectrogram,
@@ -190,7 +307,9 @@ pub fn show_spectrogram(
     Ok(eframe::run_native(
         title,
         native_options_any_thread(),
-        Box::new(|_cc| Ok(Box::new(SpectrogramPlot::new(spectrogram, title, db_floor)))),
+        Box::new(|_cc| {
+            Ok(Box::new(SpectrogramPlot::new(spectrogram, title, db_floor)))
+        }),
     )?)
 }
 
