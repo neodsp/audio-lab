@@ -10,27 +10,27 @@ use crate::data::complex_data::ComplexData;
 pub struct FreqSignal {
     data: ComplexData,
     sample_rate: f64,
-    n_samples: usize,
+    num_time_steps: usize,
 }
 
 impl FreqSignal {
     pub fn new(
         data: Array2<Complex64>,
         sample_rate: f64,
-        n_samples: Option<usize>,
+        num_time_steps: Option<usize>,
     ) -> Result<Self, SignalError> {
         if sample_rate <= 0.0 {
             return Err(SignalError::SampleRateZeroOrNeg);
         }
-        let n_samples = n_samples.unwrap_or_else(|| utils::t_from_f(data.ncols()));
+        let num_time_steps = num_time_steps.unwrap_or_else(|| utils::t_from_f(data.ncols()));
         Ok(Self {
             data: ComplexData::new(
-                utils::generate_freq_steps(data.ncols(), sample_rate, n_samples),
+                utils::generate_freq_steps(data.ncols(), sample_rate, num_time_steps),
                 data,
             )
             .expect("generate_freq_steps produced invalid data"),
             sample_rate,
-            n_samples,
+            num_time_steps,
         })
     }
 
@@ -38,21 +38,29 @@ impl FreqSignal {
         num_channels: usize,
         num_freq_bins: usize,
         sample_rate: f64,
-        n_samples: Option<usize>,
+        num_time_steps: Option<usize>,
     ) -> Result<Self, SignalError> {
         if sample_rate <= 0.0 {
             return Err(SignalError::SampleRateZeroOrNeg);
         }
-        let n_samples = n_samples.unwrap_or_else(|| utils::t_from_f(num_freq_bins));
+        let num_time_steps = num_time_steps.unwrap_or_else(|| utils::t_from_f(num_freq_bins));
         Ok(Self {
             data: ComplexData::new(
-                utils::generate_freq_steps(num_freq_bins, sample_rate, n_samples),
+                utils::generate_freq_steps(num_freq_bins, sample_rate, num_time_steps),
                 Array2::zeros((num_channels, num_freq_bins)),
             )
             .expect("generate_freq_steps produced invalid data"),
             sample_rate,
-            n_samples,
+            num_time_steps,
         })
+    }
+
+    pub fn from_complex_data(
+        data: crate::data::complex_data::ComplexData,
+        sample_rate: f64,
+        num_time_steps: Option<usize>,
+    ) -> Result<Self, SignalError> {
+        Self::new(data.y_data().to_owned(), sample_rate, num_time_steps)
     }
 
     pub fn comment(&self) -> Option<&str> {
@@ -71,12 +79,8 @@ impl FreqSignal {
         self.data.num_channels()
     }
 
-    pub fn n_samples(&self) -> usize {
-        self.n_samples
-    }
-
     pub fn num_time_steps(&self) -> usize {
-        self.n_samples
+        self.num_time_steps
     }
 
     pub fn num_freq_bins(&self) -> usize {
@@ -84,7 +88,7 @@ impl FreqSignal {
     }
 
     pub fn length_in_seconds(&self) -> f64 {
-        self.num_time_steps().saturating_sub(1) as f64 / self.sample_rate
+        self.num_time_steps.saturating_sub(1) as f64 / self.sample_rate
     }
 
     pub fn channel(&self, ch: usize) -> ArrayView1<'_, Complex64> {
@@ -111,25 +115,6 @@ impl FreqSignal {
         self.data.iter_mut()
     }
 
-    pub fn into_time(self) -> TimeSignal {
-        let fft_handler = R2cFftHandler::<f64>::new(self.num_time_steps());
-        let mut time_signal =
-            TimeSignal::zeros(self.num_channels(), self.num_time_steps(), self.sample_rate)
-                .expect("generate_time_steps produced invalid data");
-        time_signal.set_comment(self.comment());
-        ndifft_r2c(
-            &self.freq_data(),
-            &mut time_signal.time_data_mut(),
-            &fft_handler,
-            1,
-        );
-        time_signal
-    }
-
-    pub fn into_freq(self) -> FreqSignal {
-        self
-    }
-
     pub fn data(&self) -> &ComplexData {
         &self.data
     }
@@ -144,6 +129,39 @@ impl FreqSignal {
 
     pub fn freq_data_mut(&mut self) -> ArrayViewMut2<'_, Complex64> {
         self.data.y_data_mut()
+    }
+
+    pub fn into_freq(self) -> FreqSignal {
+        self
+    }
+
+    pub fn into_time(self) -> TimeSignal {
+        let fft_handler = R2cFftHandler::<f64>::new(self.num_time_steps);
+        let mut time_signal =
+            TimeSignal::zeros(self.num_channels(), self.num_time_steps, self.sample_rate)
+                .expect("generate_time_steps produced invalid data");
+        time_signal.set_comment(self.comment());
+        ndifft_r2c(
+            &self.freq_data(),
+            &mut time_signal.time_data_mut(),
+            &fft_handler,
+            1,
+        );
+        time_signal
+    }
+}
+
+#[cfg(feature = "numpy")]
+impl FreqSignal {
+    pub fn from_npy(
+        path: impl AsRef<std::path::Path>,
+        sample_rate: f64,
+        num_time_steps: Option<usize>,
+    ) -> Result<Self, crate::signal::time_signal::NpyOrSignalError> {
+        use crate::signal::time_signal::NpyOrSignalError;
+        let data = crate::data::complex_data::ComplexData::from_npy(path)
+            .map_err(NpyOrSignalError::Npy)?;
+        Self::from_complex_data(data, sample_rate, num_time_steps).map_err(NpyOrSignalError::Signal)
     }
 }
 
@@ -202,7 +220,7 @@ impl approx::AbsDiffEq for FreqSignal {
     }
 
     fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
-        if self.sample_rate != other.sample_rate || self.n_samples != other.n_samples {
+        if self.sample_rate != other.sample_rate || self.num_time_steps != other.num_time_steps {
             return false;
         }
 

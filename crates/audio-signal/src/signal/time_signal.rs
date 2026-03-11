@@ -101,13 +101,13 @@ impl TimeSignal {
     }
 
     pub fn into_freq(self) -> FreqSignal {
-        let n_samples = self.num_time_steps();
-        let fft_handler = R2cFftHandler::<f64>::new(n_samples);
+        let num_time_steps = self.num_time_steps();
+        let fft_handler = R2cFftHandler::<f64>::new(num_time_steps);
         let mut freq_signal = FreqSignal::zeros(
             self.num_channels(),
             self.num_freq_bins(),
             self.sample_rate,
-            Some(n_samples),
+            Some(num_time_steps),
         )
         .expect("generate_freq_steps produced invalid data");
         freq_signal.set_comment(self.comment());
@@ -134,6 +134,50 @@ impl TimeSignal {
 
     pub fn time_data_mut(&mut self) -> ArrayViewMut2<'_, f64> {
         self.data.y_data_mut()
+    }
+}
+
+impl TimeSignal {
+    pub fn from_real_data(
+        data: crate::data::real_data::RealData,
+        sample_rate: f64,
+    ) -> Result<Self, SignalError> {
+        Self::new(data.y_data().to_owned(), sample_rate)
+    }
+}
+
+#[cfg(feature = "numpy")]
+impl TimeSignal {
+    pub fn from_npy(
+        path: impl AsRef<std::path::Path>,
+        sample_rate: f64,
+    ) -> Result<Self, NpyOrSignalError> {
+        let data = crate::data::real_data::RealData::from_npy(path)
+            .map_err(NpyOrSignalError::Npy)?;
+        Self::from_real_data(data, sample_rate).map_err(NpyOrSignalError::Signal)
+    }
+}
+
+#[cfg(feature = "numpy")]
+#[derive(Debug, thiserror::Error)]
+pub enum NpyOrSignalError {
+    #[error(transparent)]
+    Npy(#[from] ndarray_npy::ReadNpyError),
+    #[error(transparent)]
+    Signal(#[from] SignalError),
+}
+
+#[cfg(feature = "audio-file")]
+impl TimeSignal {
+    pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self, audio_file::ReadError> {
+        let audio = audio_file::read::<f64>(path, audio_file::ReadConfig::default())?;
+        let num_channels = audio.num_channels as usize;
+        let num_samples = audio.samples_interleaved.len() / num_channels;
+        let data = Array2::from_shape_fn((num_channels, num_samples), |(ch, t)| {
+            audio.samples_interleaved[t * num_channels + ch]
+        });
+        Ok(Self::new(data, audio.sample_rate as f64)
+            .expect("audio-file returned a non-positive sample rate"))
     }
 }
 
@@ -310,7 +354,7 @@ mod tests {
         let freq = signal.into_freq();
         assert_eq!(freq.num_time_steps(), 5);
         assert_eq!(freq.num_freq_bins(), 3);
-        assert_eq!(freq.n_samples(), 5);
+        assert_eq!(freq.num_time_steps(), 5);
 
         let recovered = freq.into_time();
         assert_eq!(recovered.num_time_steps(), 5);

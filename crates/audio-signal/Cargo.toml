@@ -10,6 +10,11 @@ ndrustfft.workspace = true
 num.workspace = true
 thiserror.workspace = true
 serde = { workspace = true, optional = true }
+audio-file = { workspace = true, optional = true }
+ndarray-npy = { workspace = true, optional = true }
 
 [features]
+default = ["audio-file", "numpy"]
 serde = ["dep:serde", "ndarray/serde", "num/serde"]
+audio-file = ["dep:audio-file"]
+numpy = ["dep:ndarray-npy"]

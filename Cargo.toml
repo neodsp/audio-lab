@@ -16,3 +16,7 @@ ndrustfft = "0.6"
 num = "0.4"
 thiserror = "2.0"
 serde = { version = "1", features = ["derive"] }
+audio-file = { version = "0.4", default-features = false, features = [
+  "all-codecs",
+] }
+ndarray-npy = { version = "0.10", features = ["num-complex-0_4"] }
