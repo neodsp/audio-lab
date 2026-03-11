@@ -102,20 +102,20 @@ impl ComplexData {
         self.y_data.row_mut(ch)
     }
 
-    pub fn iter(&self) -> ndarray::iter::Iter<'_, Complex64, Ix2> {
-        self.y_data.iter()
-    }
-
-    pub fn iter_mut(&mut self) -> ndarray::iter::IterMut<'_, Complex64, Ix2> {
-        self.y_data.iter_mut()
-    }
-
     pub fn channel_iter(&self) -> ndarray::iter::AxisIter<'_, Complex64, Ix1> {
         self.y_data.outer_iter()
     }
 
     pub fn channel_iter_mut(&mut self) -> ndarray::iter::AxisIterMut<'_, Complex64, Ix1> {
         self.y_data.outer_iter_mut()
+    }
+
+    pub fn iter(&self) -> ndarray::iter::Iter<'_, Complex64, Ix2> {
+        self.y_data.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> ndarray::iter::IterMut<'_, Complex64, Ix2> {
+        self.y_data.iter_mut()
     }
 }
 

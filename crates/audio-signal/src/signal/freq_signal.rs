@@ -91,6 +91,22 @@ impl FreqSignal {
         self.num_time_steps.saturating_sub(1) as f64 / self.sample_rate
     }
 
+    pub fn freq_bins(&self) -> ArrayView1<'_, f64> {
+        self.data.x_data()
+    }
+
+    pub fn freq_data(&self) -> ArrayView2<'_, Complex64> {
+        self.data.y_data()
+    }
+
+    pub fn freq_data_mut(&mut self) -> ArrayViewMut2<'_, Complex64> {
+        self.data.y_data_mut()
+    }
+
+    pub fn data(&self) -> &ComplexData {
+        &self.data
+    }
+
     pub fn channel(&self, ch: usize) -> ArrayView1<'_, Complex64> {
         self.data.channel(ch)
     }
@@ -113,22 +129,6 @@ impl FreqSignal {
 
     pub fn iter_mut(&mut self) -> ndarray::iter::IterMut<'_, Complex64, Ix2> {
         self.data.iter_mut()
-    }
-
-    pub fn data(&self) -> &ComplexData {
-        &self.data
-    }
-
-    pub fn freq_bins(&self) -> ArrayView1<'_, f64> {
-        self.data.x_data()
-    }
-
-    pub fn freq_data(&self) -> ArrayView2<'_, Complex64> {
-        self.data.y_data()
-    }
-
-    pub fn freq_data_mut(&mut self) -> ArrayViewMut2<'_, Complex64> {
-        self.data.y_data_mut()
     }
 
     pub fn into_freq(self) -> FreqSignal {
@@ -182,6 +182,26 @@ impl std::fmt::Display for FreqSignal {
     }
 }
 
+impl approx::AbsDiffEq for FreqSignal {
+    type Epsilon = f64;
+
+    fn default_epsilon() -> Self::Epsilon {
+        f64::EPSILON
+    }
+
+    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
+        if self.sample_rate != other.sample_rate || self.num_time_steps != other.num_time_steps {
+            return false;
+        }
+
+        if !self.data().abs_diff_eq(other.data(), epsilon) {
+            return false;
+        }
+
+        true
+    }
+}
+
 // Immutable IntoIterator
 impl<'a> IntoIterator for &'a FreqSignal {
     type Item = &'a Complex64;
@@ -209,26 +229,6 @@ impl IntoIterator for FreqSignal {
 
     fn into_iter(self) -> Self::IntoIter {
         self.data.into_iter()
-    }
-}
-
-impl approx::AbsDiffEq for FreqSignal {
-    type Epsilon = f64;
-
-    fn default_epsilon() -> Self::Epsilon {
-        f64::EPSILON
-    }
-
-    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
-        if self.sample_rate != other.sample_rate || self.num_time_steps != other.num_time_steps {
-            return false;
-        }
-
-        if !self.data().abs_diff_eq(other.data(), epsilon) {
-            return false;
-        }
-
-        true
     }
 }
 

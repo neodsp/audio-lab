@@ -44,6 +44,10 @@ impl TimeSignal {
         })
     }
 
+    pub fn from_real_data(data: RealData, sample_rate: f64) -> Result<Self, SignalError> {
+        Self::new(data.y_data().to_owned(), sample_rate)
+    }
+
     pub fn comment(&self) -> Option<&str> {
         self.data.comment()
     }
@@ -70,6 +74,22 @@ impl TimeSignal {
 
     pub fn length_in_seconds(&self) -> f64 {
         self.num_time_steps().saturating_sub(1) as f64 / self.sample_rate
+    }
+
+    pub fn time_steps(&self) -> ArrayView1<'_, f64> {
+        self.data.x_data()
+    }
+
+    pub fn time_data(&self) -> ArrayView2<'_, f64> {
+        self.data.y_data()
+    }
+
+    pub fn time_data_mut(&mut self) -> ArrayViewMut2<'_, f64> {
+        self.data.y_data_mut()
+    }
+
+    pub fn data(&self) -> &RealData {
+        &self.data
     }
 
     pub fn channel(&self, ch: usize) -> ArrayView1<'_, f64> {
@@ -118,31 +138,6 @@ impl TimeSignal {
             1,
         );
         freq_signal
-    }
-
-    pub fn data(&self) -> &RealData {
-        &self.data
-    }
-
-    pub fn time_steps(&self) -> ArrayView1<'_, f64> {
-        self.data.x_data()
-    }
-
-    pub fn time_data(&self) -> ArrayView2<'_, f64> {
-        self.data.y_data()
-    }
-
-    pub fn time_data_mut(&mut self) -> ArrayViewMut2<'_, f64> {
-        self.data.y_data_mut()
-    }
-}
-
-impl TimeSignal {
-    pub fn from_real_data(
-        data: crate::data::real_data::RealData,
-        sample_rate: f64,
-    ) -> Result<Self, SignalError> {
-        Self::new(data.y_data().to_owned(), sample_rate)
     }
 }
 
@@ -198,6 +193,26 @@ impl std::fmt::Display for TimeSignal {
     }
 }
 
+impl approx::AbsDiffEq for TimeSignal {
+    type Epsilon = f64;
+
+    fn default_epsilon() -> Self::Epsilon {
+        f64::EPSILON
+    }
+
+    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
+        if self.sample_rate != other.sample_rate {
+            return false;
+        }
+
+        if !self.data().abs_diff_eq(other.data(), epsilon) {
+            return false;
+        }
+
+        true
+    }
+}
+
 // Immutable IntoIterator
 impl<'a> IntoIterator for &'a TimeSignal {
     type Item = &'a f64;
@@ -225,26 +240,6 @@ impl IntoIterator for TimeSignal {
 
     fn into_iter(self) -> Self::IntoIter {
         self.data.into_iter()
-    }
-}
-
-impl approx::AbsDiffEq for TimeSignal {
-    type Epsilon = f64;
-
-    fn default_epsilon() -> Self::Epsilon {
-        f64::EPSILON
-    }
-
-    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
-        if self.sample_rate != other.sample_rate {
-            return false;
-        }
-
-        if !self.data().abs_diff_eq(other.data(), epsilon) {
-            return false;
-        }
-
-        true
     }
 }
 
