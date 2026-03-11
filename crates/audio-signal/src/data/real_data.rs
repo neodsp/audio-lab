@@ -110,11 +110,11 @@ impl RealData {
     }
 
     pub fn channel_iter(&self) -> ndarray::iter::AxisIter<'_, f64, Ix1> {
-        self.y_data.axis_iter(Axis(0))
+        self.y_data.outer_iter()
     }
 
     pub fn channel_iter_mut(&mut self) -> ndarray::iter::AxisIterMut<'_, f64, Ix1> {
-        self.y_data.axis_iter_mut(Axis(0))
+        self.y_data.outer_iter_mut()
     }
 }
 
