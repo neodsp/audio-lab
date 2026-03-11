@@ -363,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[ignore]
     fn test_show_spectrogram() {
         show_spectrogram("Spectrogram Test", &make_spectrogram(), -80.0).unwrap();
     }

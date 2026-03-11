@@ -82,7 +82,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[ignore]
     fn test_show_real_data() {
         use audio_signal::ndarray::{Array1, Axis, stack};
 

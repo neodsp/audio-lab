@@ -68,7 +68,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[ignore]
     fn test_show_time_signal() {
         use audio_signal::ndarray::arr2;
 

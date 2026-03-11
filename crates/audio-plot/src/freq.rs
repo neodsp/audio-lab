@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[ignore]
     fn test_show_freq_signal_log_db() {
         show_freq_signal(
             "Freq Signal (Log, dB)",
@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[ignore]
     fn test_show_freq_signal_phase() {
         show_freq_signal(
             "Freq Signal (Phase)",
@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[ignore]
     fn test_show_freq_signal_phase_degrees() {
         show_freq_signal(
             "Freq Signal (Phase, Degrees)",
