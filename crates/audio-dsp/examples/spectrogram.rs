@@ -9,7 +9,7 @@
 /// This produces clearer time-varying structure than an impulse response plot.
 use std::f64::consts::PI;
 
-use audio_dsp::spectral::{StftConfig, WindowFn, stft};
+use audio_dsp::stft::{StftConfig, WindowFn, stft};
 use audio_plot::show_spectrogram;
 use audio_signal::signal::TimeSignal;
 use ndarray::Array2;

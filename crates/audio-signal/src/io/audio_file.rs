@@ -2,9 +2,7 @@ use ndarray::Array2;
 
 use crate::signal::TimeSignal;
 
-pub fn read_time_signal(
-    path: impl AsRef<std::path::Path>,
-) -> Result<TimeSignal, audio_file::ReadError> {
+pub fn read_audio(path: impl AsRef<std::path::Path>) -> Result<TimeSignal, audio_file::ReadError> {
     let audio = audio_file::read::<f64>(path, audio_file::ReadConfig::default())?;
     let num_channels = audio.num_channels as usize;
     let num_samples = audio.samples_interleaved.len() / num_channels;
@@ -15,7 +13,7 @@ pub fn read_time_signal(
         .expect("audio-file returned a non-positive sample rate"))
 }
 
-pub fn write_time_signal(
+pub fn write_audio(
     signal: &TimeSignal,
     path: impl AsRef<std::path::Path>,
 ) -> Result<(), audio_file::WriteError> {
@@ -48,8 +46,8 @@ mod tests {
                 .as_nanos()
         ));
 
-        write_time_signal(&signal, &path).unwrap();
-        let loaded = read_time_signal(&path).unwrap();
+        write_audio(&signal, &path).unwrap();
+        let loaded = read_audio(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(loaded.sample_rate(), 48_000.0);

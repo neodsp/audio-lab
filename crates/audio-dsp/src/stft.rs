@@ -1,11 +1,10 @@
-use std::f64::consts::PI;
-
 use audio_signal::signal::{Spectrogram, SpectrogramNormalization, TimeSignal};
 use ndarray::prelude::*;
 use ndrustfft::{R2cFftHandler, ndfft_r2c};
 use num::complex::Complex64;
 
-// ─── Error type ──────────────────────────────────────────────────────────────
+pub use crate::window::WindowFn;
+use crate::window::generate_window;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StftError {
@@ -19,37 +18,6 @@ pub enum StftError {
         signal_length: usize,
     },
 }
-
-// ─── Window functions ─────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum WindowFn {
-    #[default]
-    Hann,
-    Hamming,
-    Blackman,
-    Rectangular,
-}
-
-fn compute_window(window_fn: WindowFn, size: usize) -> Array1<f64> {
-    if size <= 1 {
-        return Array1::ones(size);
-    }
-    let n = (size - 1) as f64;
-    Array1::from_iter((0..size).map(|i| {
-        let x = i as f64;
-        match window_fn {
-            WindowFn::Hann => 0.5 * (1.0 - (2.0 * PI * x / n).cos()),
-            WindowFn::Hamming => 0.54 - 0.46 * (2.0 * PI * x / n).cos(),
-            WindowFn::Blackman => {
-                0.42 - 0.5 * (2.0 * PI * x / n).cos() + 0.08 * (4.0 * PI * x / n).cos()
-            }
-            WindowFn::Rectangular => 1.0,
-        }
-    }))
-}
-
-// ─── Config ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct StftConfig {
@@ -76,8 +44,6 @@ impl Default for StftConfig {
         Self::new(1024)
     }
 }
-
-// ─── STFT ─────────────────────────────────────────────────────────────────────
 
 /// Compute the short-time Fourier transform of a [`TimeSignal`].
 ///
@@ -107,7 +73,7 @@ pub fn stft(signal: &TimeSignal, config: &StftConfig) -> Result<Spectrogram, Stf
     let num_freq_bins = window_size / 2 + 1;
     let sample_rate = signal.sample_rate();
 
-    let window = compute_window(config.window_fn, window_size);
+    let window = generate_window(config.window_fn, window_size);
     let coherent_gain = window.sum() / window_size as f64;
     let window_energy = window.iter().map(|w| w * w).sum();
 
