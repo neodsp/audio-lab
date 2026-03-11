@@ -1,7 +1,7 @@
 use audio_signal::signal::Spectrogram;
 use eframe::egui;
 
-use egui_plot::{Heatmap, Legend, Plot, PlotPoint};
+use egui_plot::{Plot, PlotImage, PlotPoint};
 
 use crate::native_options_any_thread;
 use crate::save::SavePlotState;
@@ -106,17 +106,24 @@ fn draw_colorbar(ui: &mut egui::Ui, db_min: f64, db_max: f64) {
 // ─── App ─────────────────────────────────────────────────────────────────────
 
 pub(crate) struct SpectrogramPlot {
-    /// Flat dB values per channel in Heatmap row-major order:
+    /// Flat dB values per channel in row-major order:
     /// `values[freq_bin * num_frames + frame]`.
     /// Row 0 (freq_bin = 0) sits at the bottom of the plot = lowest frequency.
     values: Vec<Vec<f64>>,
+    images: Vec<egui::ColorImage>,
+    textures: Vec<Option<egui::TextureHandle>>,
     num_frames: usize,
+    num_freq_bins: usize,
     db_floor: f64,
     db_peak: f64,
-    /// Lower-left corner of the heatmap in plot (time, freq) coordinates.
+    /// Lower-left corner of the image in plot (time, freq) coordinates.
     pos: PlotPoint,
     /// Width × height of one tile in plot coordinates (seconds × Hz).
     tile_size: (f32, f32),
+    /// Center of the full image in plot coordinates.
+    image_center: PlotPoint,
+    /// Width × height of the full image in plot coordinates (seconds × Hz).
+    image_size: egui::Vec2,
     num_channels: usize,
     current_channel: usize,
     save: SavePlotState,
@@ -134,7 +141,7 @@ impl SpectrogramPlot {
         let db_peak = mag_db.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
         // Flat value arrays: row = freq_bin (0 = lowest), col = frame.
-        let values = (0..num_channels)
+        let values: Vec<Vec<f64>> = (0..num_channels)
             .map(|ch| {
                 let mut v = Vec::with_capacity(num_frames * num_freq_bins);
                 for freq_bin in 0..num_freq_bins {
@@ -143,6 +150,23 @@ impl SpectrogramPlot {
                     }
                 }
                 v
+            })
+            .collect();
+        let db_span = (db_peak - db_floor).max(f64::EPSILON);
+
+        let images = values
+            .iter()
+            .map(|channel_values| {
+                let mut pixels = Vec::with_capacity(num_frames * num_freq_bins);
+                for freq_bin in (0..num_freq_bins).rev() {
+                    let row_start = freq_bin * num_frames;
+                    for frame in 0..num_frames {
+                        let db = channel_values[row_start + frame];
+                        let t = ((db - db_floor) / db_span).clamp(0.0, 1.0) as f32;
+                        pixels.push(apply_colormap(t, TURBO_PALETTE));
+                    }
+                }
+                egui::ColorImage::new([num_frames, num_freq_bins], pixels)
             })
             .collect();
 
@@ -163,14 +187,27 @@ impl SpectrogramPlot {
             x: frame_times.first().copied().unwrap_or(0.0) - dt / 2.0,
             y: freq_bins.first().copied().unwrap_or(0.0) - df / 2.0,
         };
+        let image_size = egui::vec2(
+            (num_frames as f64 * dt) as f32,
+            (num_freq_bins as f64 * df) as f32,
+        );
+        let image_center = PlotPoint::new(
+            pos.x + f64::from(image_size.x) / 2.0,
+            pos.y + f64::from(image_size.y) / 2.0,
+        );
 
         Self {
             values,
+            images,
+            textures: vec![None; num_channels],
             num_frames,
+            num_freq_bins,
             db_floor,
             db_peak,
             pos,
             tile_size: (dt as f32, df as f32),
+            image_center,
+            image_size,
             num_channels,
             current_channel: 0,
             save: SavePlotState::new(title),
@@ -200,13 +237,19 @@ impl eframe::App for SpectrogramPlot {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let values = self.values[self.current_channel].clone();
-            let heatmap = Heatmap::new(values, self.num_frames)
-                .palette(TURBO_PALETTE)
-                .range(self.db_floor, self.db_peak)
-                .show_labels(false)
-                .at(self.pos)
-                .tile_size(self.tile_size.0, self.tile_size.1);
+            let texture = self.textures[self.current_channel].get_or_insert_with(|| {
+                ctx.load_texture(
+                    format!("spectrogram-channel-{}", self.current_channel),
+                    self.images[self.current_channel].clone(),
+                    egui::TextureOptions::NEAREST,
+                )
+            });
+            let image = PlotImage::new(
+                format!("Channel {}", self.current_channel),
+                texture.id(),
+                self.image_center,
+                self.image_size,
+            );
 
             let mut hovered_coord = None;
             let inner = Plot::new("spectrogram")
@@ -221,12 +264,11 @@ impl eframe::App for SpectrogramPlot {
                     }
                 })
                 .set_margin_fraction(egui::vec2(0.0, 0.0))
-                .legend(Legend::default())
                 .show(ui, |plot_ui| {
                     if plot_ui.response().hovered() {
                         hovered_coord = plot_ui.pointer_coordinate();
                     }
-                    plot_ui.heatmap(heatmap);
+                    plot_ui.image(image);
                 });
 
             if let Some(coord) = hovered_coord {
@@ -237,8 +279,7 @@ impl eframe::App for SpectrogramPlot {
                 let freq_bin = ((coord.y - self.pos.y) / self.tile_size.1 as f64).floor() as isize;
                 let db_value = if frame >= 0 && (frame as usize) < self.num_frames && freq_bin >= 0
                 {
-                    let num_freq_bins = self.values[self.current_channel].len() / self.num_frames;
-                    if (freq_bin as usize) < num_freq_bins {
+                    if (freq_bin as usize) < self.num_freq_bins {
                         let idx = freq_bin as usize * self.num_frames + frame as usize;
                         Some(self.values[self.current_channel][idx])
                     } else {
@@ -276,7 +317,7 @@ impl eframe::App for SpectrogramPlot {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-/// Show a spectrogram as a color heatmap using the Turbo colormap.
+/// Show a spectrogram as a color image using the Turbo colormap.
 ///
 /// Values are displayed in dB (20 × log₁₀(magnitude), floored at `db_floor`).
 /// `db_floor` also sets the cold end of the color scale (e.g. `-80.0`);
