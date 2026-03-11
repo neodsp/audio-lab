@@ -14,6 +14,10 @@ pub struct FreqSignal {
 }
 
 impl FreqSignal {
+    /// Create a frequency-domain signal.
+    ///
+    /// If `num_time_steps` is `None`, derived metadata uses the even-length
+    /// real-FFT convention `N = 2 * (num_freq_bins - 1)`.
     pub fn new(
         data: Array2<Complex64>,
         sample_rate: f64,
@@ -34,6 +38,10 @@ impl FreqSignal {
         })
     }
 
+    /// Create a zero-initialized frequency-domain signal.
+    ///
+    /// If `num_time_steps` is `None`, derived metadata uses the even-length
+    /// real-FFT convention `N = 2 * (num_freq_bins - 1)`.
     pub fn zeros(
         num_channels: usize,
         num_freq_bins: usize,
