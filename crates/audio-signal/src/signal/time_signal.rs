@@ -147,8 +147,8 @@ impl TimeSignal {
         path: impl AsRef<std::path::Path>,
         sample_rate: f64,
     ) -> Result<Self, NpyOrSignalError> {
-        let data = crate::data::real_data::RealData::from_npy(path)
-            .map_err(NpyOrSignalError::Npy)?;
+        let data =
+            crate::data::real_data::RealData::from_npy(path).map_err(NpyOrSignalError::Npy)?;
         Self::from_real_data(data, sample_rate).map_err(NpyOrSignalError::Signal)
     }
 }

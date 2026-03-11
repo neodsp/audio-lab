@@ -4,3 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+audio-signal = { workspace = true }
+eframe = "0.33"
+egui = "0.33"
+egui_plot = "0.34"
+winit = { version = "0.30", features = ["x11", "wayland"] }
