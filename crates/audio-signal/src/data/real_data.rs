@@ -65,7 +65,7 @@ impl RealData {
         self.comment.as_deref()
     }
 
-    pub fn set_comment(&mut self, comment: Option<impl Into<String>>) {
+    pub fn set_comment(&mut self, comment: Option<&str>) {
         self.comment = comment.map(Into::into);
     }
 
@@ -121,7 +121,7 @@ impl RealData {
 impl std::fmt::Display for RealData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let base_info = format!(
-            "Time domain data with {} channels and {} data points.",
+            "Real data with {} channels and {} data points.",
             self.num_channels(),
             self.num_data_points()
         );

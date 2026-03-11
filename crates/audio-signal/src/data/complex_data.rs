@@ -13,7 +13,7 @@ pub struct ComplexData {
 
 impl ComplexData {
     pub fn new(x_data: Array1<f64>, y_data: Array2<Complex64>) -> Result<Self, DataError> {
-        let num_samples = y_data.shape()[1];
+        let num_samples = y_data.ncols();
         if num_samples != x_data.len() {
             return Err(DataError::NotMatching);
         }
@@ -66,7 +66,7 @@ impl ComplexData {
         self.comment.as_deref()
     }
 
-    pub fn set_comment(&mut self, comment: Option<impl Into<String>>) {
+    pub fn set_comment(&mut self, comment: Option<&str>) {
         self.comment = comment.map(Into::into);
     }
 
@@ -122,7 +122,7 @@ impl ComplexData {
 impl std::fmt::Display for ComplexData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let base_info = format!(
-            "Frequency domain data with {} channels and {} data points.",
+            "Complex data with {} channels and {} data points.",
             self.num_channels(),
             self.num_data_points()
         );

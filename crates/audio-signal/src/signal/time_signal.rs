@@ -48,7 +48,7 @@ impl TimeSignal {
         self.data.comment()
     }
 
-    pub fn set_comment(&mut self, comment: Option<impl Into<String>>) {
+    pub fn set_comment(&mut self, comment: Option<&str>) {
         self.data.set_comment(comment);
     }
 
