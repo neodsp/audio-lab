@@ -3,6 +3,7 @@ use eframe::egui;
 use egui_plot::{GridInput, GridMark, Legend, Line, Plot, PlotPoint, PlotPoints};
 
 use crate::native_options_any_thread;
+use crate::save::SavePlotState;
 
 const DB_FLOOR: f64 = -120.0;
 
@@ -83,10 +84,11 @@ pub(crate) struct FreqSignalPlot {
     channels: Vec<Vec<PlotPoint>>,
     log_freq: bool,
     display: FreqDisplay,
+    save: SavePlotState,
 }
 
 impl FreqSignalPlot {
-    pub(crate) fn new(signal: &FreqSignal, log_freq: bool, display: FreqDisplay) -> Self {
+    pub(crate) fn new(signal: &FreqSignal, title: &str, log_freq: bool, display: FreqDisplay) -> Self {
         let freq_bins = signal.freq_bins();
         let channels = signal
             .channel_iter()
@@ -107,12 +109,16 @@ impl FreqSignalPlot {
             channels,
             log_freq,
             display,
+            save: SavePlotState::new(title),
         }
     }
 }
 
 impl eframe::App for FreqSignalPlot {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
+            self.save.show_panel(ui);
+        });
         egui::CentralPanel::default().show(ctx, |ui| {
             let mut plot = Plot::new("freq_signal")
                 .x_axis_label("Frequency (Hz)")
@@ -147,7 +153,7 @@ impl eframe::App for FreqSignalPlot {
                     });
             }
 
-            plot.show(ui, |plot_ui| {
+            let inner = plot.show(ui, |plot_ui| {
                 for (i, points) in self.channels.iter().enumerate() {
                     plot_ui.line(Line::new(
                         format!("Channel {i}"),
@@ -155,7 +161,9 @@ impl eframe::App for FreqSignalPlot {
                     ));
                 }
             });
+            self.save.set_rect(inner.response.rect);
         });
+        self.save.handle_screenshot(ctx);
     }
 }
 
@@ -168,7 +176,7 @@ pub fn show_freq_signal(
     Ok(eframe::run_native(
         title,
         native_options_any_thread(),
-        Box::new(|_cc| Ok(Box::new(FreqSignalPlot::new(signal, log_freq, display)))),
+        Box::new(|_cc| Ok(Box::new(FreqSignalPlot::new(signal, title, log_freq, display)))),
     )?)
 }
 

@@ -3,16 +3,19 @@ use eframe::egui;
 use egui_plot::{Legend, Line, Plot, PlotPoint, PlotPoints};
 
 use crate::native_options_any_thread;
+use crate::save::SavePlotState;
 
 pub(crate) struct RealDataPlot {
     channels: Vec<Vec<PlotPoint>>,
     x_label: String,
     y_label: String,
+    save: SavePlotState,
 }
 
 impl RealDataPlot {
     pub(crate) fn new(
         data: &RealData,
+        title: &str,
         x_label: impl Into<String>,
         y_label: impl Into<String>,
     ) -> Self {
@@ -31,14 +34,18 @@ impl RealDataPlot {
             channels,
             x_label: x_label.into(),
             y_label: y_label.into(),
+            save: SavePlotState::new(title),
         }
     }
 }
 
 impl eframe::App for RealDataPlot {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
+            self.save.show_panel(ui);
+        });
         egui::CentralPanel::default().show(ctx, |ui| {
-            Plot::new("real_data")
+            let inner = Plot::new("real_data")
                 .x_axis_label(&self.x_label)
                 .y_axis_label(&self.y_label)
                 .legend(Legend::default())
@@ -50,7 +57,9 @@ impl eframe::App for RealDataPlot {
                         ));
                     }
                 });
+            self.save.set_rect(inner.response.rect);
         });
+        self.save.handle_screenshot(ctx);
     }
 }
 
@@ -63,7 +72,7 @@ pub fn show_real_data(
     Ok(eframe::run_native(
         title,
         native_options_any_thread(),
-        Box::new(|_cc| Ok(Box::new(RealDataPlot::new(data, x_label, y_label)))),
+        Box::new(|_cc| Ok(Box::new(RealDataPlot::new(data, title, x_label, y_label)))),
     )?)
 }
 

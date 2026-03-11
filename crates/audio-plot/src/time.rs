@@ -3,13 +3,15 @@ use eframe::egui;
 use egui_plot::{Legend, Line, Plot, PlotPoint, PlotPoints};
 
 use crate::native_options_any_thread;
+use crate::save::SavePlotState;
 
 pub(crate) struct TimeSignalPlot {
     channels: Vec<Vec<PlotPoint>>,
+    save: SavePlotState,
 }
 
 impl TimeSignalPlot {
-    pub(crate) fn new(signal: &TimeSignal) -> Self {
+    pub(crate) fn new(signal: &TimeSignal, title: &str) -> Self {
         let time_steps = signal.time_steps();
         let channels = signal
             .channel_iter()
@@ -21,14 +23,20 @@ impl TimeSignalPlot {
                     .collect()
             })
             .collect();
-        Self { channels }
+        Self {
+            channels,
+            save: SavePlotState::new(title),
+        }
     }
 }
 
 impl eframe::App for TimeSignalPlot {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
+            self.save.show_panel(ui);
+        });
         egui::CentralPanel::default().show(ctx, |ui| {
-            Plot::new("time_signal")
+            let inner = Plot::new("time_signal")
                 .x_axis_label("Time (s)")
                 .y_axis_label("Amplitude")
                 .legend(Legend::default())
@@ -40,7 +48,9 @@ impl eframe::App for TimeSignalPlot {
                         ));
                     }
                 });
+            self.save.set_rect(inner.response.rect);
         });
+        self.save.handle_screenshot(ctx);
     }
 }
 
@@ -48,7 +58,7 @@ pub fn show_time_signal(title: &str, signal: &TimeSignal) -> Result<(), crate::E
     Ok(eframe::run_native(
         title,
         native_options_any_thread(),
-        Box::new(|_cc| Ok(Box::new(TimeSignalPlot::new(signal)))),
+        Box::new(|_cc| Ok(Box::new(TimeSignalPlot::new(signal, title)))),
     )?)
 }
 
