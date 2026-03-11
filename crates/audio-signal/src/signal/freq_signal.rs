@@ -159,20 +159,6 @@ impl FreqSignal {
     }
 }
 
-#[cfg(feature = "numpy")]
-impl FreqSignal {
-    pub fn from_npy(
-        path: impl AsRef<std::path::Path>,
-        sample_rate: f64,
-        num_time_steps: Option<usize>,
-    ) -> Result<Self, crate::signal::time_signal::NpyOrSignalError> {
-        use crate::signal::time_signal::NpyOrSignalError;
-        let data = crate::data::complex_data::ComplexData::from_npy(path)
-            .map_err(NpyOrSignalError::Npy)?;
-        Self::from_complex_data(data, sample_rate, num_time_steps).map_err(NpyOrSignalError::Signal)
-    }
-}
-
 impl std::fmt::Display for FreqSignal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let base_info = format!(

@@ -6,7 +6,9 @@ version = "0.1.0"
 [dependencies]
 approx.workspace = true
 audio-file = { workspace = true, optional = true }
+audio-io = { workspace = true, optional = true }
 ndarray.workspace = true
+ndarray-rand.workspace = true
 ndarray-npy = { workspace = true, optional = true }
 ndrustfft.workspace = true
 num.workspace = true
@@ -14,7 +16,12 @@ serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [features]
+default = ["audio-io", "audio-file", "numpy"]
+
+audio-io = ["dep:audio-io"]
 audio-file = ["dep:audio-file"]
-default = ["audio-file", "numpy"]
 numpy = ["dep:ndarray-npy"]
 serde = ["dep:serde", "ndarray/serde", "num/serde"]
+
+[dev-dependencies]
+audio-plot.workspace = true

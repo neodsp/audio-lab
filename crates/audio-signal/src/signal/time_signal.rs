@@ -139,40 +139,26 @@ impl TimeSignal {
         );
         freq_signal
     }
-}
 
-#[cfg(feature = "numpy")]
-impl TimeSignal {
-    pub fn from_npy(
-        path: impl AsRef<std::path::Path>,
-        sample_rate: f64,
-    ) -> Result<Self, NpyOrSignalError> {
-        let data =
-            crate::data::real_data::RealData::from_npy(path).map_err(NpyOrSignalError::Npy)?;
-        Self::from_real_data(data, sample_rate).map_err(NpyOrSignalError::Signal)
+    #[cfg(any(feature = "audio-file", feature = "audio-io"))]
+    pub(crate) fn interleaved_f64(&self) -> Vec<f64> {
+        self.time_data()
+            .t()
+            .as_standard_layout()
+            .as_slice()
+            .unwrap()
+            .to_vec()
     }
-}
 
-#[cfg(feature = "numpy")]
-#[derive(Debug, thiserror::Error)]
-pub enum NpyOrSignalError {
-    #[error(transparent)]
-    Npy(#[from] ndarray_npy::ReadNpyError),
-    #[error(transparent)]
-    Signal(#[from] SignalError),
-}
-
-#[cfg(feature = "audio-file")]
-impl TimeSignal {
-    pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self, audio_file::ReadError> {
-        let audio = audio_file::read::<f64>(path, audio_file::ReadConfig::default())?;
-        let num_channels = audio.num_channels as usize;
-        let num_samples = audio.samples_interleaved.len() / num_channels;
-        let data = Array2::from_shape_fn((num_channels, num_samples), |(ch, t)| {
-            audio.samples_interleaved[t * num_channels + ch]
-        });
-        Ok(Self::new(data, audio.sample_rate as f64)
-            .expect("audio-file returned a non-positive sample rate"))
+    #[cfg(feature = "audio-io")]
+    pub(crate) fn interleaved_f32(&self) -> Vec<f32> {
+        self.time_data()
+            .t()
+            .mapv(|sample| sample as f32)
+            .as_standard_layout()
+            .as_slice()
+            .unwrap()
+            .to_vec()
     }
 }
 
@@ -213,7 +199,6 @@ impl approx::AbsDiffEq for TimeSignal {
     }
 }
 
-// Immutable IntoIterator
 impl<'a> IntoIterator for &'a TimeSignal {
     type Item = &'a f64;
     type IntoIter = ndarray::iter::Iter<'a, f64, ndarray::Ix2>;
@@ -223,7 +208,6 @@ impl<'a> IntoIterator for &'a TimeSignal {
     }
 }
 
-// Mutable IntoIterator
 impl<'a> IntoIterator for &'a mut TimeSignal {
     type Item = &'a mut f64;
     type IntoIter = ndarray::iter::IterMut<'a, f64, ndarray::Ix2>;
@@ -233,7 +217,6 @@ impl<'a> IntoIterator for &'a mut TimeSignal {
     }
 }
 
-// Owned IntoIterator
 impl IntoIterator for TimeSignal {
     type Item = f64;
     type IntoIter = ndarray::iter::IntoIter<f64, Ix2>;
