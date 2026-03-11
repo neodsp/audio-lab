@@ -276,7 +276,6 @@ impl eframe::App for SpectrogramPlot {
                 });
             }
 
-            self.save.set_rect(inner.response.rect);
         });
 
         self.save.handle_screenshot(ctx);

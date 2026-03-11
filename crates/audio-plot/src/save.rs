@@ -1,7 +1,7 @@
 use eframe::egui;
 
 pub(crate) struct SavePlotState {
-    plot_rect: Option<egui::Rect>,
+    button_rect: Option<egui::Rect>,
     title: String,
     default_filename: String,
 }
@@ -11,20 +11,18 @@ impl SavePlotState {
         let title = title.into();
         let default_filename = format!("{title}.png");
         Self {
-            plot_rect: None,
+            button_rect: None,
             title,
             default_filename,
         }
     }
 
-    pub(crate) fn set_rect(&mut self, rect: egui::Rect) {
-        self.plot_rect = Some(rect);
-    }
-
-    pub(crate) fn show_panel(&self, ui: &mut egui::Ui) {
+    pub(crate) fn show_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             // Button on the left
-            if ui.button("Save Plot").clicked() {
+            let response = ui.button("Save Plot");
+            self.button_rect = Some(response.rect);
+            if response.clicked() {
                 ui.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             }
@@ -54,7 +52,7 @@ impl SavePlotState {
             }
             None
         });
-        if let (Some(screenshot), Some(plot_rect)) = (screenshot, self.plot_rect) {
+        if let Some(screenshot) = screenshot {
             if let Some(mut path) = rfd::FileDialog::new()
                 .set_file_name(&self.default_filename)
                 .add_filter("PNG Image", &["png"])
@@ -62,14 +60,30 @@ impl SavePlotState {
             {
                 path.set_extension("png");
                 let pixels_per_point = ctx.pixels_per_point();
-                let plot = screenshot.region(&plot_rect, Some(pixels_per_point));
-                let result = image::save_buffer(
-                    &path,
-                    plot.as_raw(),
-                    plot.width() as u32,
-                    plot.height() as u32,
-                    image::ColorType::Rgba8,
-                );
+                let width = screenshot.width() as u32;
+                let height = screenshot.height() as u32;
+
+                let mut img = image::RgbaImage::from_raw(width, height, screenshot.as_raw().to_vec())
+                    .expect("screenshot buffer size mismatch");
+
+                // Paint over the save button with the panel background color
+                if let Some(button_rect) = self.button_rect {
+                    let bg = ctx.style().visuals.panel_fill;
+                    let pixel = image::Rgba([bg.r(), bg.g(), bg.b(), bg.a()]);
+
+                    let min_x = (button_rect.min.x * pixels_per_point) as u32;
+                    let min_y = (button_rect.min.y * pixels_per_point) as u32;
+                    let max_x = ((button_rect.max.x * pixels_per_point) as u32).min(width);
+                    let max_y = ((button_rect.max.y * pixels_per_point) as u32).min(height);
+
+                    for y in min_y..max_y {
+                        for x in min_x..max_x {
+                            img.put_pixel(x, y, pixel);
+                        }
+                    }
+                }
+
+                let result = img.save(&path);
                 match result {
                     Ok(()) => eprintln!("Image saved to {}", path.display()),
                     Err(err) => eprintln!("Failed to save image to {}: {err}", path.display()),

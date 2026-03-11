@@ -153,7 +153,7 @@ impl eframe::App for FreqSignalPlot {
                     });
             }
 
-            let inner = plot.show(ui, |plot_ui| {
+            plot.show(ui, |plot_ui| {
                 for (i, points) in self.channels.iter().enumerate() {
                     plot_ui.line(Line::new(
                         format!("Channel {i}"),
@@ -161,7 +161,6 @@ impl eframe::App for FreqSignalPlot {
                     ));
                 }
             });
-            self.save.set_rect(inner.response.rect);
         });
         self.save.handle_screenshot(ctx);
     }

@@ -45,7 +45,7 @@ impl eframe::App for RealDataPlot {
             self.save.show_panel(ui);
         });
         egui::CentralPanel::default().show(ctx, |ui| {
-            let inner = Plot::new("real_data")
+            Plot::new("real_data")
                 .x_axis_label(&self.x_label)
                 .y_axis_label(&self.y_label)
                 .legend(Legend::default())
@@ -57,7 +57,6 @@ impl eframe::App for RealDataPlot {
                         ));
                     }
                 });
-            self.save.set_rect(inner.response.rect);
         });
         self.save.handle_screenshot(ctx);
     }

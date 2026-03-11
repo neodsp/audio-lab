@@ -36,7 +36,7 @@ impl eframe::App for TimeSignalPlot {
             self.save.show_panel(ui);
         });
         egui::CentralPanel::default().show(ctx, |ui| {
-            let inner = Plot::new("time_signal")
+            Plot::new("time_signal")
                 .x_axis_label("Time (s)")
                 .y_axis_label("Amplitude")
                 .legend(Legend::default())
@@ -48,7 +48,6 @@ impl eframe::App for TimeSignalPlot {
                         ));
                     }
                 });
-            self.save.set_rect(inner.response.rect);
         });
         self.save.handle_screenshot(ctx);
     }
