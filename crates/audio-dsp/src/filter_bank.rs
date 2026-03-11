@@ -4,8 +4,6 @@ use num::complex::Complex64;
 
 use audio_signal::signal::{SignalError, TimeSignal};
 
-// ─── Error type ──────────────────────────────────────────────────────────────
-
 #[derive(Debug, thiserror::Error)]
 pub enum FilterError {
     #[error("overlap must be between 0 and 1, got {0}")]
@@ -17,8 +15,6 @@ pub enum FilterError {
     #[error(transparent)]
     Signal(#[from] SignalError),
 }
-
-// ─── Frequency helpers ───────────────────────────────────────────────────────
 
 /// Compute fractional octave center and cut-off frequencies (IEC 61260).
 ///
@@ -50,8 +46,6 @@ pub fn fractional_octave_frequencies(
 
     (centers, lowers, uppers)
 }
-
-// ─── OctaveBands ─────────────────────────────────────────────────────────────
 
 /// A reconstructing linear-phase fractional octave filter bank.
 ///
@@ -325,8 +319,6 @@ pub fn reconstructing_fractional_octave_bands(
     Ok((bands, center_frequencies))
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
-
 fn hanning_window(n: usize) -> Array1<f64> {
     if n <= 1 {
         return Array1::ones(n);
@@ -336,8 +328,6 @@ fn hanning_window(n: usize) -> Array1<f64> {
         (0..n).map(|i| 0.5 * (1.0 - (2.0 * std::f64::consts::PI * i as f64 / n1).cos())),
     )
 }
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
