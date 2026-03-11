@@ -118,14 +118,6 @@ impl RealData {
     }
 }
 
-#[cfg(feature = "numpy")]
-impl RealData {
-    pub fn from_npy(path: impl AsRef<std::path::Path>) -> Result<Self, ndarray_npy::ReadNpyError> {
-        let y_data: Array2<f64> = ndarray_npy::read_npy(path)?;
-        Ok(Self::from_y_data(y_data))
-    }
-}
-
 impl std::fmt::Display for RealData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let base_info = format!(
