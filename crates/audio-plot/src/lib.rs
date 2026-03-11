@@ -1,10 +1,12 @@
 pub mod data;
 pub mod freq;
+pub mod spectrogram;
 pub mod time;
 mod save;
 
 pub use data::show_real_data;
 pub use freq::show_freq_signal;
+pub use spectrogram::show_spectrogram;
 pub use time::show_time_signal;
 
 /// Error returned by all `show_*` functions.

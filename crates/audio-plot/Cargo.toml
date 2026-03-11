@@ -7,8 +7,11 @@ version = "0.1.0"
 audio-signal.workspace = true
 eframe = "0.33"
 egui = "0.33"
-egui_plot = "0.34"
+egui_plot = { git = "https://github.com/emilk/egui_plot" }
 image = "0.25"
 rfd = "0.17"
 thiserror.workspace = true
 winit = { version = "0.30", features = ["wayland", "x11"] }
+
+[dev-dependencies]
+num.workspace = true

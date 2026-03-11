@@ -1,9 +1,11 @@
 use ndarray::prelude::*;
 
 pub use freq_signal::FreqSignal;
+pub use spectrogram::Spectrogram;
 pub use time_signal::TimeSignal;
 
 pub mod freq_signal;
+pub mod spectrogram;
 pub mod time_signal;
 
 #[derive(Debug, thiserror::Error)]
