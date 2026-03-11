@@ -6,6 +6,9 @@ pub use data::show_real_data;
 pub use freq::show_freq_signal;
 pub use time::show_time_signal;
 
+/// Return type of all `show_*` functions.
+pub type Result = eframe::Result;
+
 pub(crate) fn native_options_any_thread() -> eframe::NativeOptions {
     eframe::NativeOptions {
         event_loop_builder: Some(Box::new(|builder| {

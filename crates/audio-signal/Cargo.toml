@@ -1,20 +1,20 @@
 [package]
+edition = "2024"
 name = "audio-signal"
 version = "0.1.0"
-edition = "2024"
 
 [dependencies]
 approx.workspace = true
+audio-file = { workspace = true, optional = true }
 ndarray.workspace = true
+ndarray-npy = { workspace = true, optional = true }
 ndrustfft.workspace = true
 num.workspace = true
-thiserror.workspace = true
 serde = { workspace = true, optional = true }
-audio-file = { workspace = true, optional = true }
-ndarray-npy = { workspace = true, optional = true }
+thiserror.workspace = true
 
 [features]
-default = ["audio-file", "numpy"]
-serde = ["dep:serde", "ndarray/serde", "num/serde"]
 audio-file = ["dep:audio-file"]
+default = ["audio-file", "numpy"]
 numpy = ["dep:ndarray-npy"]
+serde = ["dep:serde", "ndarray/serde", "num/serde"]
