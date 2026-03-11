@@ -464,6 +464,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_plot",
+ "thiserror 2.0.18",
  "winit",
 ]
 

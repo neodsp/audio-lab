@@ -59,12 +59,12 @@ pub fn show_real_data(
     data: &RealData,
     x_label: impl Into<String>,
     y_label: impl Into<String>,
-) -> eframe::Result {
-    eframe::run_native(
+) -> Result<(), crate::Error> {
+    Ok(eframe::run_native(
         title,
         native_options_any_thread(),
         Box::new(|_cc| Ok(Box::new(RealDataPlot::new(data, x_label, y_label)))),
-    )
+    )?)
 }
 
 #[cfg(test)]

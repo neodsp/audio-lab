@@ -6,7 +6,7 @@ use audio_signal::signal::{FreqSignal, TimeSignal};
 use ndarray::{Array2, s};
 use num::complex::Complex64;
 
-fn main() -> audio_plot::Result {
+fn main() -> Result<(), audio_plot::Error> {
     let sample_rate = 44100.0;
     let n_filt = 4096_usize;
 

@@ -164,12 +164,12 @@ pub fn show_freq_signal(
     signal: &FreqSignal,
     log_freq: bool,
     display: FreqDisplay,
-) -> eframe::Result {
-    eframe::run_native(
+) -> Result<(), crate::Error> {
+    Ok(eframe::run_native(
         title,
         native_options_any_thread(),
         Box::new(|_cc| Ok(Box::new(FreqSignalPlot::new(signal, log_freq, display)))),
-    )
+    )?)
 }
 
 #[cfg(test)]

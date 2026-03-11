@@ -44,12 +44,12 @@ impl eframe::App for TimeSignalPlot {
     }
 }
 
-pub fn show_time_signal(title: &str, signal: &TimeSignal) -> eframe::Result {
-    eframe::run_native(
+pub fn show_time_signal(title: &str, signal: &TimeSignal) -> Result<(), crate::Error> {
+    Ok(eframe::run_native(
         title,
         native_options_any_thread(),
         Box::new(|_cc| Ok(Box::new(TimeSignalPlot::new(signal)))),
-    )
+    )?)
 }
 
 #[cfg(test)]
