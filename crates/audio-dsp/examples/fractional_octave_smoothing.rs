@@ -14,11 +14,8 @@ fn main() -> Result<(), audio_plot::Error> {
     let num_bins = num_time_steps / 2 + 1;
 
     let original = synthetic_transfer_function(sample_rate, num_time_steps, num_bins);
-    let config = FractionalOctaveSmoothingConfig {
-        num_fractions: 3.0,
-        mode: audio_dsp::FractionalOctaveSmoothingMode::MagnitudeZeroPhase,
-        window_fn: audio_dsp::WindowFn::Rectangular,
-    };
+    let config = FractionalOctaveSmoothingConfig::default()
+        .with_mode(audio_dsp::FractionalOctaveSmoothingMode::MagnitudeZeroPhase);
     let (smoothed, stats) = smooth_fractional_octave(&original, &config).unwrap();
 
     println!("Requested smoothing: 1/3 octave");

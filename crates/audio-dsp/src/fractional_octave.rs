@@ -19,14 +19,19 @@ pub enum FractionalOctaveSmoothingError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FractionalOctaveSmoothingMode {
     #[default]
+    /// Smooth only the magnitude response and preserve the original phase.
     Magnitude,
+    /// Smooth only the magnitude response and return a zero-phase spectrum.
     MagnitudeZeroPhase,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FractionalOctaveSmoothingConfig {
+    /// Fractional-octave width, e.g. `3.0` for one-third octave smoothing.
     pub num_fractions: f64,
+    /// Which parts of the spectrum are smoothed.
     pub mode: FractionalOctaveSmoothingMode,
+    /// Window applied on the warped log-frequency axis.
     pub window_fn: WindowFn,
 }
 
@@ -34,15 +39,36 @@ impl FractionalOctaveSmoothingConfig {
     pub fn new(num_fractions: f64) -> Self {
         Self {
             num_fractions,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_mode(mut self, mode: FractionalOctaveSmoothingMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub fn with_window_fn(mut self, window_fn: WindowFn) -> Self {
+        self.window_fn = window_fn;
+        self
+    }
+}
+
+impl Default for FractionalOctaveSmoothingConfig {
+    fn default() -> Self {
+        Self {
+            num_fractions: 3.0,
             mode: FractionalOctaveSmoothingMode::Magnitude,
-            window_fn: WindowFn::Rectangular,
+            window_fn: WindowFn::Hann,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FractionalOctaveSmoothingStats {
+    /// Window length in samples on the warped log-frequency axis.
     pub window_len: usize,
+    /// The achieved smoothing width after rounding to an integer window length.
     pub actual_num_fractions: f64,
 }
 
@@ -281,6 +307,27 @@ mod tests {
             smooth_fractional_octave(&too_short, &FractionalOctaveSmoothingConfig::new(1.0))
                 .unwrap_err();
         assert!(matches!(error, FractionalOctaveSmoothingError::TooFewBins));
+    }
+
+    #[test]
+    fn config_defaults_and_builders_match_public_api_style() {
+        let default_config = FractionalOctaveSmoothingConfig::default();
+        assert_abs_diff_eq!(default_config.num_fractions, 3.0, epsilon = 1e-12);
+        assert_eq!(
+            default_config.mode,
+            FractionalOctaveSmoothingMode::Magnitude
+        );
+        assert_eq!(default_config.window_fn, WindowFn::Hann);
+
+        let config = FractionalOctaveSmoothingConfig::new(6.0)
+            .with_mode(FractionalOctaveSmoothingMode::MagnitudeZeroPhase)
+            .with_window_fn(WindowFn::Rectangular);
+        assert_abs_diff_eq!(config.num_fractions, 6.0, epsilon = 1e-12);
+        assert_eq!(
+            config.mode,
+            FractionalOctaveSmoothingMode::MagnitudeZeroPhase
+        );
+        assert_eq!(config.window_fn, WindowFn::Rectangular);
     }
 
     #[test]
