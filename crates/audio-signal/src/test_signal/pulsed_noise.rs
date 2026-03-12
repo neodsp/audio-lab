@@ -77,9 +77,7 @@ pub fn generate_pulsed_noise(
 
     let mut data = Array2::zeros((
         num_channels,
-        repetitions
-            .saturating_mul(pulse_length + pause_length)
-            .saturating_sub(pause_length),
+        repetitions.saturating_mul(pulse_length + pause_length),
     ));
     let fade = Array1::linspace(0.0, PI / 2.0, fade_length).mapv(|v| v.sin().powi(2));
 
@@ -165,9 +163,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(signal.num_time_steps(), 16);
+        assert_eq!(signal.num_time_steps(), 18);
         assert_eq!(signal.channel(0)[4], 0.0);
         assert_eq!(signal.channel(0)[5], 0.0);
+        assert_eq!(signal.channel(0)[16], 0.0);
+        assert_eq!(signal.channel(0)[17], 0.0);
         assert_eq!(
             signal.channel(0).slice(s![0..4]),
             signal.channel(0).slice(s![6..10])
@@ -186,10 +186,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(signal.num_time_steps(), 9);
+        assert_eq!(signal.num_time_steps(), 10);
         assert_ne!(
             signal.channel(0).slice(s![0..4]),
             signal.channel(0).slice(s![5..9])
         );
+        assert_eq!(signal.channel(0)[9], 0.0);
     }
 }
