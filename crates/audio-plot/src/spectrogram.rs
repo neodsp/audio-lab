@@ -1,4 +1,3 @@
-use audio_signal::analysis::spectrogram as spec_analysis;
 use audio_signal::signal::Spectrogram;
 use eframe::egui;
 
@@ -138,7 +137,7 @@ impl SpectrogramPlot {
         let frame_times = spec.frame_times();
         let freq_bins = spec.freq_bins();
 
-        let mag_db = spec_analysis::amplitude_spectrum_db(spec, db_floor);
+        let mag_db = spec.amplitude_spectrum_db(db_floor);
         let db_peak = mag_db.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
         // Flat value arrays: row = freq_bin (0 = lowest), col = frame.

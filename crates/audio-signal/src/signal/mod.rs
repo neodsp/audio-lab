@@ -20,7 +20,7 @@ pub enum SignalError {
     TimeStepMismatch,
 }
 
-pub fn join_channels(signals: &[&TimeSignal]) -> Result<TimeSignal, SignalError> {
+pub fn join_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
     let Some(first_signal) = signals.first() else {
         return Err(SignalError::EmptySignalList);
     };
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn join_channels_rejects_empty_input() {
-        let result = join_channels(&[]);
+        let result = join_signals(&[]);
         assert!(matches!(result, Err(SignalError::EmptySignalList)));
     }
 
@@ -132,7 +132,7 @@ mod tests {
         let different_rate = TimeSignal::new(arr2(&[[2.0, 3.0]]), 44_100.0)?;
         let different_length = TimeSignal::new(arr2(&[[2.0, 3.0, 4.0]]), 48_000.0)?;
 
-        let result = join!(base, different_rate);
+        let result = join!(base.clone(), different_rate);
         assert!(matches!(result, Err(SignalError::SampleRateMismatch)));
 
         let result = join!(base, different_length);

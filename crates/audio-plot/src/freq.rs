@@ -1,6 +1,4 @@
-use audio_signal::{
-    math::gain_to_db, ops::complex as complex_ops, signal::freq_signal::FreqSignal,
-};
+use audio_signal::{math::gain_to_db, signal::freq_signal::FreqSignal};
 use eframe::egui;
 use egui_plot::{GridInput, GridMark, Legend, Line, Plot, PlotPoint, PlotPoints};
 
@@ -105,11 +103,9 @@ impl FreqSignalPlot {
     pub(crate) fn new(signal: &FreqSignal, title: &str, options: FreqPlotOptions) -> Self {
         let freq_bins = signal.freq_bins();
         let derived = match options.value {
-            FreqValue::Magnitude => Some(complex_ops::to_magnitude(signal.data())),
-            FreqValue::MagnitudeDb => Some(complex_ops::to_magnitude_db(signal.data())),
-            FreqValue::PhaseRadians | FreqValue::PhaseDegrees => {
-                Some(complex_ops::to_phase(signal.data()))
-            }
+            FreqValue::Magnitude => Some(signal.to_magnitude()),
+            FreqValue::MagnitudeDb => Some(signal.to_magnitude_db()),
+            FreqValue::PhaseRadians | FreqValue::PhaseDegrees => Some(signal.to_phase()),
         };
         let channels = signal
             .channel_iter()

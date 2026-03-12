@@ -1,33 +1,50 @@
 use crate::{
     data::{ComplexData, RealData},
     math::gain_to_db,
+    signal::FreqSignal,
 };
 
 const NEG_INF_DB: f64 = -100.0;
 
-pub fn to_magnitude(data: &ComplexData) -> RealData {
-    RealData::new(
-        data.x_data().to_owned(),
-        data.y_data().mapv(|value| value.norm()),
-    )
-    .expect("x/y data originated from ComplexData")
+impl ComplexData {
+    pub fn to_magnitude(&self) -> RealData {
+        RealData::new(
+            self.x_data().to_owned(),
+            self.y_data().mapv(|value| value.norm()),
+        )
+        .expect("x/y data originated from ComplexData")
+    }
+
+    pub fn to_magnitude_db(&self) -> RealData {
+        RealData::new(
+            self.x_data().to_owned(),
+            self.y_data()
+                .mapv(|value| gain_to_db(value.norm()).max(NEG_INF_DB)),
+        )
+        .expect("x/y data originated from ComplexData")
+    }
+
+    pub fn to_phase(&self) -> RealData {
+        RealData::new(
+            self.x_data().to_owned(),
+            self.y_data().mapv(|value| value.arg()),
+        )
+        .expect("x/y data originated from ComplexData")
+    }
 }
 
-pub fn to_magnitude_db(data: &ComplexData) -> RealData {
-    RealData::new(
-        data.x_data().to_owned(),
-        data.y_data()
-            .mapv(|value| gain_to_db(value.norm()).max(NEG_INF_DB)),
-    )
-    .expect("x/y data originated from ComplexData")
-}
+impl FreqSignal {
+    pub fn to_magnitude(&self) -> RealData {
+        self.data().to_magnitude()
+    }
 
-pub fn to_phase(data: &ComplexData) -> RealData {
-    RealData::new(
-        data.x_data().to_owned(),
-        data.y_data().mapv(|value| value.arg()),
-    )
-    .expect("x/y data originated from ComplexData")
+    pub fn to_magnitude_db(&self) -> RealData {
+        self.data().to_magnitude_db()
+    }
+
+    pub fn to_phase(&self) -> RealData {
+        self.data().to_phase()
+    }
 }
 
 #[cfg(test)]
@@ -38,7 +55,7 @@ mod tests {
     use ndarray::{arr1, arr2};
     use num::complex::Complex64;
 
-    use super::*;
+    use crate::data::ComplexData;
 
     #[test]
     fn complex_data_conversions() {
@@ -52,11 +69,11 @@ mod tests {
         )
         .unwrap();
 
-        let magnitude = to_magnitude(&data);
+        let magnitude = data.to_magnitude();
         assert_abs_diff_eq!(magnitude.channel(0)[0], 5.0, epsilon = 1e-12);
         assert_abs_diff_eq!(magnitude.channel(0)[1], 1.0, epsilon = 1e-12);
 
-        let magnitude_db = to_magnitude_db(&data);
+        let magnitude_db = data.to_magnitude_db();
         assert_abs_diff_eq!(
             magnitude_db.channel(0)[0],
             20.0 * 5.0_f64.log10(),
@@ -64,7 +81,7 @@ mod tests {
         );
         assert_abs_diff_eq!(magnitude_db.channel(0)[1], 0.0, epsilon = 1e-12);
 
-        let phase = to_phase(&data);
+        let phase = data.to_phase();
         assert_abs_diff_eq!(phase.channel(0)[0], (4.0_f64).atan2(3.0), epsilon = 1e-12);
         assert_abs_diff_eq!(phase.channel(0)[1], FRAC_PI_2, epsilon = 1e-12);
         assert_abs_diff_eq!(phase.channel(0)[2], PI, epsilon = 1e-12);
@@ -83,7 +100,7 @@ mod tests {
         )
         .unwrap();
 
-        let phase = to_phase(&data);
+        let phase = data.to_phase();
         assert_abs_diff_eq!(phase.channel(0)[0], 0.0, epsilon = 1e-12);
         assert_abs_diff_eq!(phase.channel(0)[1], FRAC_PI_2, epsilon = 1e-12);
         assert_abs_diff_eq!(phase.channel(0)[2], FRAC_PI_4, epsilon = 1e-12);
