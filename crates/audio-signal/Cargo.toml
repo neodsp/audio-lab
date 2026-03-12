@@ -1,6 +1,8 @@
 [package]
 authors.workspace = true
-description = "Audio signal types and utilities for Rust"
+categories = ["multimedia:audio", "science", "mathematics"]
+description = "Audio signal types and utilities for research and testing"
+keywords = ["audio", "signal", "ndarray", "fft", "signal-processing"]
 edition.workspace = true
 homepage.workspace = true
 license.workspace = true

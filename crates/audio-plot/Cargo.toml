@@ -1,6 +1,8 @@
 [package]
 authors.workspace = true
-description = "Audio signal plotting and visualization"
+categories = ["multimedia::audio", "visualization", "science"]
+description = "Audio signal plotting and visualization for research and testing"
+keywords = ["audio", "plot", "visualization", "signal", "egui"]
 edition.workspace = true
 homepage.workspace = true
 license.workspace = true

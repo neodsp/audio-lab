@@ -1,6 +1,8 @@
 [package]
 authors.workspace = true
-description = "DSP algorithms for audio processing"
+categories = ["multimedia::audio", "algorithms", "mathematics", "science"]
+description = "DSP algorithms for audio research and testing"
+keywords = ["audio", "dsp", "signal-processing", "fft", "filter"]
 edition.workspace = true
 homepage.workspace = true
 license.workspace = true

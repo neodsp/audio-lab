@@ -1,6 +1,8 @@
 [package]
 authors.workspace = true
-description = "A collection of audio processing crates for Rust"
+categories = ["multimedia::audio", "science"]
+description = "Toolkit for audio research and testing"
+keywords = ["audio", "dsp", "signal-processing", "research"]
 edition.workspace = true
 homepage.workspace = true
 license.workspace = true
