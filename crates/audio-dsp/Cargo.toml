@@ -12,9 +12,11 @@ version.workspace = true
 
 [dependencies]
 audio-signal.workspace = true
+audioadapter-buffers.workspace = true
 ndarray.workspace = true
 ndrustfft.workspace = true
 num.workspace = true
+rubato.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

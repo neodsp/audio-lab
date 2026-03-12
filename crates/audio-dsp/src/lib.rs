@@ -19,5 +19,8 @@ pub use convolve::{ConvolveError, ConvolveMode, convolve};
 pub use deconvolution::{DeconvolutionConfig, DeconvolutionError, deconvolve};
 pub use pad::{PadMode, pad_zeros};
 pub use stft::{StftConfig, StftError, stft};
-pub use time::{TimeError, trim_duration, trim_samples};
+pub use time::{
+    TimeError, apply_gain, apply_gain_db, find_impulse_response_start, resample, trim_duration,
+    trim_samples, window_and_trim,
+};
 pub use window::{WindowFn, apply_hann, apply_hann_left, apply_hann_right, generate_window};

@@ -29,6 +29,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 audio-dsp = { path = "crates/audio-dsp" }
+audioadapter-buffers = "2.0.0"
 audio-io = { git = "https://github.com/neodsp/audio-io", default-features = false, features = [
   "cpal",
 ] }
@@ -43,5 +44,6 @@ ndarray-npy = { version = "0.10", features = ["num-complex-0_4"] }
 ndarray-rand = "0.16"
 ndrustfft = "0.6"
 num = "0.4"
+rubato = "1.0.1"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2.0"

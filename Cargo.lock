@@ -504,9 +504,11 @@ dependencies = [
  "approx",
  "audio-plot",
  "audio-signal",
+ "audioadapter-buffers",
  "ndarray",
  "ndrustfft",
  "num",
+ "rubato",
  "thiserror 2.0.18",
 ]
 
