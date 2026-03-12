@@ -1,6 +1,6 @@
 use crate::{
     data::{ComplexData, RealData},
-    math::gain_to_db,
+    math::{gain_to_db, wrap_phase_2pi},
     signal::FreqSignal,
 };
 
@@ -31,6 +31,44 @@ impl ComplexData {
         )
         .expect("x/y data originated from ComplexData")
     }
+
+    pub fn to_phase_unwrapped(&self) -> RealData {
+        let mut phase = self.y_data().mapv(|value| value.arg());
+
+        for mut channel in phase.outer_iter_mut() {
+            unwrap_phase_in_place(channel.as_slice_mut().expect("channel view is contiguous"));
+        }
+
+        RealData::new(self.x_data().to_owned(), phase)
+            .expect("x/y data originated from ComplexData")
+    }
+
+    pub fn to_phase_2pi(&self) -> RealData {
+        RealData::new(
+            self.x_data().to_owned(),
+            self.y_data().mapv(|value| wrap_phase_2pi(value.arg())),
+        )
+        .expect("x/y data originated from ComplexData")
+    }
+
+    pub fn to_phase_degrees(&self) -> RealData {
+        RealData::new(
+            self.x_data().to_owned(),
+            self.y_data().mapv(|value| value.arg().to_degrees()),
+        )
+        .expect("x/y data originated from ComplexData")
+    }
+
+    pub fn to_phase_degrees_unwrapped(&self) -> RealData {
+        let mut phase = self.y_data().mapv(|value| value.arg());
+
+        for mut channel in phase.outer_iter_mut() {
+            unwrap_phase_in_place(channel.as_slice_mut().expect("channel view is contiguous"));
+        }
+
+        RealData::new(self.x_data().to_owned(), phase.mapv(f64::to_degrees))
+            .expect("x/y data originated from ComplexData")
+    }
 }
 
 impl FreqSignal {
@@ -44,6 +82,44 @@ impl FreqSignal {
 
     pub fn to_phase(&self) -> RealData {
         self.data().to_phase()
+    }
+
+    pub fn to_phase_unwrapped(&self) -> RealData {
+        self.data().to_phase_unwrapped()
+    }
+
+    pub fn to_phase_2pi(&self) -> RealData {
+        self.data().to_phase_2pi()
+    }
+
+    pub fn to_phase_degrees(&self) -> RealData {
+        self.data().to_phase_degrees()
+    }
+
+    pub fn to_phase_degrees_unwrapped(&self) -> RealData {
+        self.data().to_phase_degrees_unwrapped()
+    }
+}
+
+fn unwrap_phase_in_place(phase: &mut [f64]) {
+    if phase.len() < 2 {
+        return;
+    }
+
+    let two_pi = 2.0 * std::f64::consts::PI;
+    let mut offset = 0.0;
+    let mut previous = phase[0];
+
+    for index in 1..phase.len() {
+        let current = phase[index];
+        let delta = current - previous;
+        if delta > std::f64::consts::PI {
+            offset -= two_pi;
+        } else if delta < -std::f64::consts::PI {
+            offset += two_pi;
+        }
+        phase[index] = current + offset;
+        previous = current;
     }
 }
 
@@ -105,5 +181,35 @@ mod tests {
         assert_abs_diff_eq!(phase.channel(0)[1], FRAC_PI_2, epsilon = 1e-12);
         assert_abs_diff_eq!(phase.channel(0)[2], FRAC_PI_4, epsilon = 1e-12);
         assert_abs_diff_eq!(phase.channel(0)[3], -FRAC_PI_4, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn complex_data_phase_variants() {
+        let data = ComplexData::new(
+            arr1(&[0.0, 1.0, 2.0]),
+            arr2(&[[
+                Complex64::from_polar(1.0, 3.0 * PI / 4.0),
+                Complex64::from_polar(1.0, -3.0 * PI / 4.0),
+                Complex64::from_polar(1.0, -PI / 2.0),
+            ]]),
+        )
+        .unwrap();
+
+        let unwrapped = data.to_phase_unwrapped();
+        let wrapped_2pi = data.to_phase_2pi();
+        let degrees = data.to_phase_degrees();
+        let degrees_unwrapped = data.to_phase_degrees_unwrapped();
+
+        assert_abs_diff_eq!(unwrapped.channel(0)[0], 3.0 * PI / 4.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(unwrapped.channel(0)[1], 5.0 * PI / 4.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(unwrapped.channel(0)[2], 3.0 * PI / 2.0, epsilon = 1e-12);
+
+        assert_abs_diff_eq!(wrapped_2pi.channel(0)[1], 5.0 * PI / 4.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(wrapped_2pi.channel(0)[2], 3.0 * PI / 2.0, epsilon = 1e-12);
+
+        assert_abs_diff_eq!(degrees.channel(0)[0], 135.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(degrees.channel(0)[1], -135.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(degrees_unwrapped.channel(0)[1], 225.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(degrees_unwrapped.channel(0)[2], 270.0, epsilon = 1e-12);
     }
 }

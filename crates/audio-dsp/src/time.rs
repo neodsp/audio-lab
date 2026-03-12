@@ -32,12 +32,22 @@ pub enum TimeError {
     InvalidWindowDuration { duration_seconds: f64 },
     #[error("invalid sample rate for resampling: {sample_rate} Hz")]
     InvalidResampleRate { sample_rate: f64 },
+    #[error("shift vector length {got} does not match channel count {expected}")]
+    InvalidShiftCount { expected: usize, got: usize },
+    #[error("linear shift magnitude {shift} exceeds signal length {signal_len}")]
+    ShiftExceedsSignal { shift: isize, signal_len: usize },
     #[error(transparent)]
     ResamplerConstruction(#[from] ResamplerConstructionError),
     #[error(transparent)]
     Resampler(#[from] ResampleError),
     #[error(transparent)]
     Signal(#[from] SignalError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeShiftMode {
+    Linear,
+    Cyclic,
 }
 
 pub fn trim_samples(
@@ -88,6 +98,59 @@ pub fn apply_gain(signal: &TimeSignal, gain: f64) -> Result<TimeSignal, TimeErro
 
 pub fn apply_gain_db(signal: &TimeSignal, gain_db: f64) -> Result<TimeSignal, TimeError> {
     apply_gain(signal, db_to_gain(gain_db))
+}
+
+pub fn time_shift(
+    signal: &TimeSignal,
+    shift_samples: isize,
+    mode: TimeShiftMode,
+    pad_value: f64,
+) -> Result<TimeSignal, TimeError> {
+    let shifts = vec![shift_samples; signal.num_channels()];
+    time_shift_per_channel(signal, &shifts, mode, pad_value)
+}
+
+pub fn time_shift_per_channel(
+    signal: &TimeSignal,
+    shift_samples: &[isize],
+    mode: TimeShiftMode,
+    pad_value: f64,
+) -> Result<TimeSignal, TimeError> {
+    if shift_samples.len() != signal.num_channels() {
+        return Err(TimeError::InvalidShiftCount {
+            expected: signal.num_channels(),
+            got: shift_samples.len(),
+        });
+    }
+
+    let signal_len = signal.num_time_steps();
+    if let Some(shift) = shift_samples
+        .iter()
+        .copied()
+        .find(|&shift| matches!(mode, TimeShiftMode::Linear) && shift.unsigned_abs() > signal_len)
+    {
+        return Err(TimeError::ShiftExceedsSignal { shift, signal_len });
+    }
+
+    let mut shifted = signal.clone();
+    for (channel_index, mut channel) in shifted.channel_iter_mut().enumerate() {
+        let shift = shift_samples[channel_index];
+        rotate_channel(
+            channel.as_slice_mut().expect("channel view is contiguous"),
+            shift,
+        );
+
+        if matches!(mode, TimeShiftMode::Linear) {
+            if shift > 0 {
+                channel.slice_mut(s![..shift as usize]).fill(pad_value);
+            } else if shift < 0 {
+                let start = signal_len - shift.unsigned_abs();
+                channel.slice_mut(s![start..]).fill(pad_value);
+            }
+        }
+    }
+
+    Ok(shifted)
 }
 
 pub fn find_impulse_response_start(
@@ -240,6 +303,15 @@ fn validated_resample_rate(sample_rate: f64) -> Result<usize, TimeError> {
     Ok(rounded as usize)
 }
 
+fn rotate_channel(channel: &mut [f64], shift: isize) {
+    if channel.is_empty() {
+        return;
+    }
+
+    let normalized_shift = shift.rem_euclid(channel.len() as isize) as usize;
+    channel.rotate_right(normalized_shift);
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -305,6 +377,52 @@ mod tests {
         assert_abs_diff_eq!(gained.channel(0)[0], 0.25 * expected_gain, epsilon = 1e-12);
         assert_abs_diff_eq!(gained.channel(0)[1], -0.5 * expected_gain, epsilon = 1e-12);
         assert_abs_diff_eq!(gained.channel(0)[2], expected_gain, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn time_shift_cyclic_wraps_signal() {
+        let signal = TimeSignal::new(arr2(&[[1.0, 2.0, 3.0, 4.0]]), 48_000.0).unwrap();
+
+        let shifted = time_shift(&signal, 1, TimeShiftMode::Cyclic, 0.0).unwrap();
+
+        assert_abs_diff_eq!(
+            shifted.channel(0),
+            ndarray::arr1(&[4.0, 1.0, 2.0, 3.0]),
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn time_shift_linear_pads_exposed_samples() {
+        let signal = TimeSignal::new(arr2(&[[1.0, 2.0, 3.0, 4.0]]), 48_000.0).unwrap();
+
+        let shifted = time_shift(&signal, -2, TimeShiftMode::Linear, 0.0).unwrap();
+
+        assert_abs_diff_eq!(
+            shifted.channel(0),
+            ndarray::arr1(&[3.0, 4.0, 0.0, 0.0]),
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn time_shift_accepts_per_channel_shifts() {
+        let signal =
+            TimeSignal::new(arr2(&[[1.0, 2.0, 3.0], [10.0, 20.0, 30.0]]), 48_000.0).unwrap();
+
+        let shifted =
+            time_shift_per_channel(&signal, &[1, -1], TimeShiftMode::Linear, -1.0).unwrap();
+
+        assert_abs_diff_eq!(
+            shifted.channel(0),
+            ndarray::arr1(&[-1.0, 1.0, 2.0]),
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            shifted.channel(1),
+            ndarray::arr1(&[20.0, 30.0, -1.0]),
+            epsilon = 1e-12
+        );
     }
 
     #[test]
