@@ -95,25 +95,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hann_window_matches_expected_shape() {
-        let window = generate_window(WindowFn::Hann, 5);
-        assert_abs_diff_eq!(window[0], 0.0, epsilon = 1e-12);
-        assert_abs_diff_eq!(window[2], 1.0, epsilon = 1e-12);
-        assert_abs_diff_eq!(window[4], 0.0, epsilon = 1e-12);
+    fn apply_hann_matches_expected_full_window_taper() {
+        let mut data = [1.0; 5];
+        let len = data.len();
+
+        apply_hann(&mut data, 0, len);
+
+        let expected = [0.0, 0.5, 1.0, 0.5, 0.0];
+        for (sample, expected) in data.into_iter().zip(expected) {
+            assert_abs_diff_eq!(sample, expected, epsilon = 1e-12);
+        }
     }
 
     #[test]
-    fn half_hann_helpers_taper_correct_side() {
-        let mut left = [1.0; 4];
-        let mut right = [1.0; 4];
+    fn apply_hann_left_matches_rising_half_window_taper() {
+        let mut data = [1.0; 4];
+        let len = data.len();
 
-        apply_hann_left(&mut left, 0, 4);
-        apply_hann_right(&mut right, 0, 4);
+        apply_hann_left(&mut data, 0, len);
 
-        assert!(left[0] < left[3]);
-        assert!(right[0] > right[3]);
-        assert_abs_diff_eq!(left[0], 0.0, epsilon = 1e-12);
-        assert_abs_diff_eq!(right[3], 0.0, epsilon = 1e-12);
+        let expected = generate_window(WindowFn::Hann, 8);
+        for (sample, expected) in data.into_iter().zip(expected.into_iter().take(4)) {
+            assert_abs_diff_eq!(sample, expected, epsilon = 1e-12);
+        }
+    }
+
+    #[test]
+    fn apply_hann_right_matches_falling_half_window_taper() {
+        let mut data = [1.0; 4];
+        let len = data.len();
+
+        apply_hann_right(&mut data, 0, len);
+
+        let expected = generate_window(WindowFn::Hann, 8);
+        for (sample, expected) in data.into_iter().zip(expected.into_iter().skip(4)) {
+            assert_abs_diff_eq!(sample, expected, epsilon = 1e-12);
+        }
     }
 
     #[test]
