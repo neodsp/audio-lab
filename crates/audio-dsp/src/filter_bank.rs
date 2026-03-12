@@ -4,6 +4,8 @@ use num::complex::Complex64;
 
 use audio_signal::signal::{SignalError, TimeSignal};
 
+use crate::window::{WindowFn, generate_window};
+
 #[derive(Debug, thiserror::Error)]
 pub enum FilterError {
     #[error("overlap must be between 0 and 1, got {0}")]
@@ -217,7 +219,7 @@ impl OctaveBands {
         ndifft_r2c(&g_complex.view(), &mut ir.view_mut(), &fft_handler, 1);
 
         // Hanning window (suppresses side lobes of the finite-length FIR)
-        let window = hanning_window(n_samples);
+        let window = generate_window(WindowFn::Hann, n_samples);
         for b in 0..num_bands {
             ir.slice_mut(s![b, ..])
                 .zip_mut_with(&window, |x, &w| *x *= w);
@@ -315,16 +317,6 @@ pub fn reconstructing_fractional_octave_bands(
     let center_frequencies = fb.center_frequencies.clone();
     let bands = fb.apply(signal)?;
     Ok((bands, center_frequencies))
-}
-
-fn hanning_window(n: usize) -> Array1<f64> {
-    if n <= 1 {
-        return Array1::ones(n);
-    }
-    let n1 = (n - 1) as f64;
-    Array1::from_iter(
-        (0..n).map(|i| 0.5 * (1.0 - (2.0 * std::f64::consts::PI * i as f64 / n1).cos())),
-    )
 }
 
 #[cfg(test)]

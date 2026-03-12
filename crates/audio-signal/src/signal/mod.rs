@@ -18,6 +18,8 @@ pub enum SignalError {
     SampleRateMismatch,
     #[error("All signals must have the same number of time steps")]
     TimeStepMismatch,
+    #[error("All signals must have the same number of channels")]
+    ChannelMismatch,
 }
 
 pub fn join_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
@@ -67,6 +69,33 @@ pub fn join_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
     }
 
     Ok(stacked)
+}
+
+pub fn mix_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
+    let Some(first) = signals.first() else {
+        return Err(SignalError::EmptySignalList);
+    };
+
+    let sample_rate = first.sample_rate();
+    let num_time_steps = first.num_time_steps();
+    let num_channels = first.num_channels();
+
+    if signals.iter().any(|s| s.sample_rate() != sample_rate) {
+        return Err(SignalError::SampleRateMismatch);
+    }
+    if signals.iter().any(|s| s.num_time_steps() != num_time_steps) {
+        return Err(SignalError::TimeStepMismatch);
+    }
+    if signals.iter().any(|s| s.num_channels() != num_channels) {
+        return Err(SignalError::ChannelMismatch);
+    }
+
+    let mut data = Array2::zeros((num_channels, num_time_steps));
+    for signal in signals {
+        data += &signal.time_data();
+    }
+
+    TimeSignal::new(data, sample_rate)
 }
 
 pub mod utils {
@@ -137,6 +166,29 @@ mod tests {
 
         let result = join!(base, different_length);
         assert!(matches!(result, Err(SignalError::TimeStepMismatch)));
+        Ok(())
+    }
+
+    #[test]
+    fn mix_combines_matching_signals() -> Result<(), SignalError> {
+        let first = TimeSignal::new(arr2(&[[0.0, 1.0, 2.0]]), 48_000.0)?;
+        let second = TimeSignal::new(arr2(&[[0.5, 1.5, -1.0]]), 48_000.0)?;
+
+        let mixed = mix!(first, second)?;
+
+        assert_eq!(mixed.num_channels(), 1);
+        assert_eq!(mixed.time_data(), arr2(&[[0.5, 2.5, 1.0]]));
+        Ok(())
+    }
+
+    #[test]
+    fn mix_rejects_channel_mismatch() -> Result<(), SignalError> {
+        let mono = TimeSignal::new(arr2(&[[0.0, 1.0]]), 48_000.0)?;
+        let stereo = TimeSignal::new(arr2(&[[0.0, 1.0], [2.0, 3.0]]), 48_000.0)?;
+
+        let result = mix!(mono, stereo);
+
+        assert!(matches!(result, Err(SignalError::ChannelMismatch)));
         Ok(())
     }
 }

@@ -1,6 +1,6 @@
 pub use ndarray;
 
-pub use signal::{FreqSignal, Spectrogram, SpectrogramNormalization, TimeSignal};
+pub use signal::{FreqSignal, Spectrogram, SpectrogramNormalization, TimeSignal, mix_signals};
 pub use test_signal::impulse::{ImpulseConfig, generate_impulse};
 pub use test_signal::noise::{NoiseConfig, Spectrum, generate_noise};
 pub use test_signal::pulsed_noise::{PulsedNoiseConfig, generate_pulsed_noise};
@@ -11,6 +11,13 @@ pub use test_signal::sweep::{SweepConfig, SweepType, generate_sweep};
 macro_rules! join {
     ($($signal:expr),+ $(,)?) => {
         $crate::signal::join_signals(&[$($signal.into_time()),+])
+    };
+}
+
+#[macro_export]
+macro_rules! mix {
+    ($($signal:expr),+ $(,)?) => {
+        $crate::signal::mix_signals(&[$($signal.into_time()),+])
     };
 }
 
