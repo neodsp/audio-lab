@@ -24,7 +24,7 @@ pub enum SignalError {
     ChannelMismatch,
 }
 
-pub fn join_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
+pub fn join_time_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
     let Some(first_signal) = signals.first() else {
         return Err(SignalError::EmptySignalList);
     };
@@ -73,7 +73,11 @@ pub fn join_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
     Ok(stacked)
 }
 
-pub fn mix_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
+pub fn join_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
+    join_time_signals(signals)
+}
+
+pub fn mix_time_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
     let Some(first) = signals.first() else {
         return Err(SignalError::EmptySignalList);
     };
@@ -98,6 +102,10 @@ pub fn mix_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
     }
 
     TimeSignal::new(data, sample_rate)
+}
+
+pub fn mix_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
+    mix_time_signals(signals)
 }
 
 pub fn join_freq_signals(signals: &[FreqSignal]) -> Result<FreqSignal, SignalError> {
@@ -156,6 +164,49 @@ pub fn join_freq_signals(signals: &[FreqSignal]) -> Result<FreqSignal, SignalErr
     Ok(stacked)
 }
 
+pub fn mix_freq_signals(signals: &[FreqSignal]) -> Result<FreqSignal, SignalError> {
+    let Some(first) = signals.first() else {
+        return Err(SignalError::EmptySignalList);
+    };
+
+    let sample_rate = first.sample_rate();
+    let num_time_steps = first.num_time_steps();
+    let num_freq_bins = first.num_freq_bins();
+    let num_channels = first.num_channels();
+
+    if signals
+        .iter()
+        .any(|signal| signal.sample_rate() != sample_rate)
+    {
+        return Err(SignalError::SampleRateMismatch);
+    }
+    if signals
+        .iter()
+        .any(|signal| signal.num_time_steps() != num_time_steps)
+    {
+        return Err(SignalError::TimeStepMismatch);
+    }
+    if signals
+        .iter()
+        .any(|signal| signal.num_freq_bins() != num_freq_bins)
+    {
+        return Err(SignalError::FrequencyBinMismatch);
+    }
+    if signals
+        .iter()
+        .any(|signal| signal.num_channels() != num_channels)
+    {
+        return Err(SignalError::ChannelMismatch);
+    }
+
+    let mut data = Array2::zeros((num_channels, num_freq_bins));
+    for signal in signals {
+        data += &signal.freq_data();
+    }
+
+    FreqSignal::new(data, sample_rate, Some(num_time_steps))
+}
+
 pub mod utils {
     use super::*;
 
@@ -186,6 +237,7 @@ pub mod utils {
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_abs_diff_eq;
     use ndarray::arr2;
     use num::complex::Complex64;
 
@@ -197,7 +249,7 @@ mod tests {
         first.set_comment(Some("first"));
         let second = TimeSignal::new(arr2(&[[6.0, 7.0, 8.0]]), 48_000.0)?;
 
-        let joined = join!(first, second)?;
+        let joined = join_time!(first, second)?;
 
         assert_eq!(joined.num_channels(), 3);
         assert_eq!(
@@ -210,7 +262,7 @@ mod tests {
 
     #[test]
     fn join_channels_rejects_empty_input() {
-        let result = join_signals(&[]);
+        let result = join_time_signals(&[]);
         assert!(matches!(result, Err(SignalError::EmptySignalList)));
     }
 
@@ -220,10 +272,10 @@ mod tests {
         let different_rate = TimeSignal::new(arr2(&[[2.0, 3.0]]), 44_100.0)?;
         let different_length = TimeSignal::new(arr2(&[[2.0, 3.0, 4.0]]), 48_000.0)?;
 
-        let result = join!(base.clone(), different_rate);
+        let result = join_time!(base.clone(), different_rate);
         assert!(matches!(result, Err(SignalError::SampleRateMismatch)));
 
-        let result = join!(base, different_length);
+        let result = join_time!(base, different_length);
         assert!(matches!(result, Err(SignalError::TimeStepMismatch)));
         Ok(())
     }
@@ -233,7 +285,7 @@ mod tests {
         let first = TimeSignal::new(arr2(&[[0.0, 1.0, 2.0]]), 48_000.0)?;
         let second = TimeSignal::new(arr2(&[[0.5, 1.5, -1.0]]), 48_000.0)?;
 
-        let mixed = mix!(first, second)?;
+        let mixed = mix_time!(first, second)?;
 
         assert_eq!(mixed.num_channels(), 1);
         assert_eq!(mixed.time_data(), arr2(&[[0.5, 2.5, 1.0]]));
@@ -245,9 +297,27 @@ mod tests {
         let mono = TimeSignal::new(arr2(&[[0.0, 1.0]]), 48_000.0)?;
         let stereo = TimeSignal::new(arr2(&[[0.0, 1.0], [2.0, 3.0]]), 48_000.0)?;
 
-        let result = mix!(mono, stereo);
+        let result = mix_time!(mono, stereo);
 
         assert!(matches!(result, Err(SignalError::ChannelMismatch)));
+        Ok(())
+    }
+
+    #[test]
+    fn mixing_time_and_frequency_signals_produces_same_time_result() -> Result<(), SignalError> {
+        let first = TimeSignal::new(
+            arr2(&[[0.25, -0.5, 1.0, 0.75, -0.125, 0.0, 0.5, -0.25]]),
+            48_000.0,
+        )?;
+        let second = TimeSignal::new(
+            arr2(&[[0.5, 0.25, -0.75, 0.125, 0.875, -0.5, 0.0, 0.25]]),
+            48_000.0,
+        )?;
+
+        let mixed_time = mix_time_signals(&[first.clone(), second.clone()])?;
+        let mixed_freq = mix_freq_signals(&[first.into_freq(), second.into_freq()])?.into_time();
+
+        assert_abs_diff_eq!(mixed_time, mixed_freq, epsilon = 1e-12);
         Ok(())
     }
 
@@ -336,6 +406,89 @@ mod tests {
 
         let result = join_freq_signals(&[base, different_bins]);
         assert!(matches!(result, Err(SignalError::FrequencyBinMismatch)));
+        Ok(())
+    }
+
+    #[test]
+    fn mix_frequency_signals_combines_matching_spectra() -> Result<(), SignalError> {
+        let first = FreqSignal::new(
+            arr2(&[[
+                Complex64::new(1.0, 2.0),
+                Complex64::new(3.0, 4.0),
+                Complex64::new(5.0, 6.0),
+            ]]),
+            48_000.0,
+            Some(4),
+        )?;
+        let second = FreqSignal::new(
+            arr2(&[[
+                Complex64::new(-1.0, 1.0),
+                Complex64::new(2.0, -2.0),
+                Complex64::new(0.5, 0.5),
+            ]]),
+            48_000.0,
+            Some(4),
+        )?;
+
+        let mixed = mix_freq_signals(&[first, second])?;
+
+        assert_eq!(
+            mixed.freq_data(),
+            arr2(&[[
+                Complex64::new(0.0, 3.0),
+                Complex64::new(5.0, 2.0),
+                Complex64::new(5.5, 6.5),
+            ]])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mix_frequency_signals_rejects_mismatched_inputs() -> Result<(), SignalError> {
+        let base = FreqSignal::new(
+            arr2(&[[Complex64::new(1.0, 0.0), Complex64::new(2.0, 0.0)]]),
+            48_000.0,
+            Some(2),
+        )?;
+        let different_rate = FreqSignal::new(
+            arr2(&[[Complex64::new(3.0, 0.0), Complex64::new(4.0, 0.0)]]),
+            44_100.0,
+            Some(2),
+        )?;
+        let different_length = FreqSignal::new(
+            arr2(&[[Complex64::new(3.0, 0.0), Complex64::new(4.0, 0.0)]]),
+            48_000.0,
+            Some(4),
+        )?;
+        let different_bins = FreqSignal::new(
+            arr2(&[[
+                Complex64::new(3.0, 0.0),
+                Complex64::new(4.0, 0.0),
+                Complex64::new(5.0, 0.0),
+            ]]),
+            48_000.0,
+            Some(2),
+        )?;
+        let stereo = FreqSignal::new(
+            arr2(&[
+                [Complex64::new(0.0, 0.0), Complex64::new(1.0, 0.0)],
+                [Complex64::new(2.0, 0.0), Complex64::new(3.0, 0.0)],
+            ]),
+            48_000.0,
+            Some(2),
+        )?;
+
+        let result = mix_freq_signals(&[base.clone(), different_rate]);
+        assert!(matches!(result, Err(SignalError::SampleRateMismatch)));
+
+        let result = mix_freq_signals(&[base.clone(), different_length]);
+        assert!(matches!(result, Err(SignalError::TimeStepMismatch)));
+
+        let result = mix_freq_signals(&[base.clone(), different_bins]);
+        assert!(matches!(result, Err(SignalError::FrequencyBinMismatch)));
+
+        let result = mix_freq_signals(&[base, stereo]);
+        assert!(matches!(result, Err(SignalError::ChannelMismatch)));
         Ok(())
     }
 }

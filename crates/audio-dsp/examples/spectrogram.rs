@@ -2,7 +2,7 @@ use audio_dsp::{StftConfig, WindowFn, stft};
 use audio_plot::{SpectrogramPlotOptions, show_spectrogram};
 use audio_signal::{
     PulsedNoiseConfig, SineConfig, Spectrum, SweepConfig, SweepType, generate_pulsed_noise,
-    generate_sine, generate_sweep, mix,
+    generate_sine, generate_sweep, mix_time,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &noise_config,
     )?;
 
-    let mut signal = mix!(fundamental, second_harmonic, third_harmonic, chirp, bursts)?;
+    let mut signal = mix_time!(fundamental, second_harmonic, third_harmonic, chirp, bursts)?;
     signal.normalize_peak(0.9);
 
     let spectrogram = stft(

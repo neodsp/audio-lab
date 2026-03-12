@@ -4,7 +4,7 @@
 /// smoothing effect is easy to see in the frequency plot.
 use audio_dsp::{FractionalOctaveSmoothingConfig, smooth_fractional_octave};
 use audio_plot::freq::FreqPlotOptions;
-use audio_signal::signal::{FreqSignal, join_freq_signals};
+use audio_signal::{join_freq, signal::FreqSignal};
 use ndarray::Array2;
 use num::complex::Complex64;
 
@@ -28,7 +28,7 @@ fn main() -> Result<(), audio_plot::Error> {
         stats.actual_num_fractions
     );
 
-    let comparison = join_freq_signals(&[original, smoothed]).unwrap();
+    let comparison = join_freq!(original, smoothed).unwrap();
 
     audio_plot::show_freq_signal(
         "Fractional octave smoothing - original vs smoothed",
