@@ -9,6 +9,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sample_rate = 48_000.0;
     let duration_s = 6.0;
     let num_samples = (sample_rate * duration_s) as usize;
+    let burst_repetitions = 6;
+    let burst_pulse_length = 2_400;
+    let burst_pause_length = num_samples / burst_repetitions - burst_pulse_length;
 
     let sine_config = SineConfig {
         sample_rate,
@@ -57,7 +60,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
     let chirp = generate_sweep(num_samples, 320.0..16_000.0, &sweep_config)?;
-    let bursts = generate_pulsed_noise(2_400, 54_720, 6, &noise_config)?;
+    let bursts = generate_pulsed_noise(
+        burst_pulse_length,
+        burst_pause_length,
+        burst_repetitions,
+        &noise_config,
+    )?;
 
     let mut signal = mix!(fundamental, second_harmonic, third_harmonic, chirp, bursts)?;
     signal.normalize_peak(0.9);
