@@ -104,6 +104,7 @@ fn truncate(signal: &TimeSignal, len: usize) -> Result<TimeSignal, ConvolveError
 #[cfg(test)]
 mod tests {
     use approx::assert_abs_diff_eq;
+    use audio_signal::{ImpulseConfig, generate_impulse};
     use ndarray::{arr1, arr2};
 
     use super::*;
@@ -195,5 +196,23 @@ mod tests {
         let result = convolve(&empty, &signal, ConvolveMode::Full);
 
         assert!(matches!(result, Err(ConvolveError::EmptySignal)));
+    }
+
+    #[test]
+    fn convolving_with_generated_delta_impulse_is_identity() {
+        let signal = TimeSignal::new(arr2(&[[0.25, -0.5, 1.0, 0.75, -0.125]]), 48_000.0).unwrap();
+        let impulse = generate_impulse(
+            1,
+            &ImpulseConfig {
+                sample_rate: 48_000.0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let result = convolve(&signal, &impulse, ConvolveMode::Full).unwrap();
+
+        assert_eq!(result.num_time_steps(), signal.num_time_steps());
+        assert_abs_diff_eq!(result.channel(0), signal.channel(0), epsilon = 1e-10);
     }
 }

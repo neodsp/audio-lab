@@ -125,7 +125,10 @@ pub fn stft(signal: &TimeSignal, config: &StftConfig) -> Result<Spectrogram, Stf
 #[cfg(test)]
 mod tests {
     use approx::assert_abs_diff_eq;
-    use audio_signal::signal::TimeSignal;
+    use audio_signal::{
+        NoiseConfig, SineConfig, Spectrum, SweepConfig, SweepType, generate_noise, generate_sine,
+        generate_sweep, signal::TimeSignal,
+    };
     use ndarray::arr2;
 
     use super::*;
@@ -298,5 +301,119 @@ mod tests {
         .unwrap();
 
         assert_abs_diff_eq!(spec.amplitude_spectrum()[[0, 0, 0]], 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn stft_generated_sine_has_peak_at_expected_frequency() {
+        let signal = generate_sine(
+            800,
+            440.0,
+            &SineConfig {
+                amplitude: 0.75,
+                sample_rate: 8_000.0,
+                num_channels: 1,
+            },
+        )
+        .unwrap();
+        let spec = stft(
+            &signal,
+            &StftConfig {
+                window_size: 800,
+                hop_size: 800,
+                window_fn: WindowFn::Rectangular,
+            },
+        )
+        .unwrap();
+
+        let magnitudes = spec.amplitude_spectrum();
+        let peak_bin = (0..spec.num_freq_bins())
+            .max_by(|&left, &right| {
+                magnitudes[[0, 0, left]]
+                    .partial_cmp(&magnitudes[[0, 0, right]])
+                    .unwrap()
+            })
+            .unwrap();
+
+        assert_abs_diff_eq!(spec.freq_bins()[peak_bin], 440.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(magnitudes[[0, 0, peak_bin]], 0.75, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn stft_generated_sweep_shows_increasing_dominant_frequency() {
+        let signal = generate_sweep(
+            4_096,
+            200.0..3_200.0,
+            &SweepConfig {
+                sample_rate: 16_000.0,
+                fade_out: 0,
+                sweep_type: SweepType::Linear,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let spec = stft(
+            &signal,
+            &StftConfig {
+                window_size: 512,
+                hop_size: 256,
+                window_fn: WindowFn::Hann,
+            },
+        )
+        .unwrap();
+        let magnitudes = spec.amplitude_spectrum();
+
+        let dominant_frequency = |frame: usize| {
+            let peak_bin = (0..spec.num_freq_bins())
+                .max_by(|&left, &right| {
+                    magnitudes[[0, frame, left]]
+                        .partial_cmp(&magnitudes[[0, frame, right]])
+                        .unwrap()
+                })
+                .unwrap();
+            spec.freq_bins()[peak_bin]
+        };
+
+        let first_peak = dominant_frequency(0);
+        let last_peak = dominant_frequency(spec.num_frames() - 1);
+
+        assert!(first_peak < last_peak);
+        assert!(first_peak >= 0.0);
+        assert!(last_peak <= signal.sample_rate() / 2.0);
+    }
+
+    #[test]
+    fn stft_generated_noise_has_broadband_energy() {
+        let signal = generate_noise(
+            2_048,
+            &NoiseConfig {
+                sample_rate: 16_000.0,
+                spectrum: Spectrum::White,
+                seed: Some(123),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let spec = stft(
+            &signal,
+            &StftConfig {
+                window_size: 256,
+                hop_size: 128,
+                window_fn: WindowFn::Hann,
+            },
+        )
+        .unwrap();
+        let magnitudes = spec.amplitude_spectrum();
+
+        for frame in 0..spec.num_frames() {
+            let frame_energy: f64 = (0..spec.num_freq_bins())
+                .map(|bin| magnitudes[[0, frame, bin]])
+                .sum();
+            assert!(frame_energy > 0.0);
+        }
+
+        let active_bins = (0..spec.num_freq_bins())
+            .filter(|&bin| magnitudes[[0, 0, bin]] > 1e-3)
+            .count();
+        assert!(active_bins > spec.num_freq_bins() / 2);
     }
 }
