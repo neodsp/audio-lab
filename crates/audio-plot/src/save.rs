@@ -52,43 +52,41 @@ impl SavePlotState {
             }
             None
         });
-        if let Some(screenshot) = screenshot {
-            if let Some(mut path) = rfd::FileDialog::new()
+        if let Some(screenshot) = screenshot
+            && let Some(mut path) = rfd::FileDialog::new()
                 .set_file_name(&self.default_filename)
                 .add_filter("PNG Image", &["png"])
                 .save_file()
-            {
-                path.set_extension("png");
-                let pixels_per_point = ctx.pixels_per_point();
-                let width = screenshot.width() as u32;
-                let height = screenshot.height() as u32;
+        {
+            path.set_extension("png");
+            let pixels_per_point = ctx.pixels_per_point();
+            let width = screenshot.width() as u32;
+            let height = screenshot.height() as u32;
 
-                let mut img =
-                    image::RgbaImage::from_raw(width, height, screenshot.as_raw().to_vec())
-                        .expect("screenshot buffer size mismatch");
+            let mut img = image::RgbaImage::from_raw(width, height, screenshot.as_raw().to_vec())
+                .expect("screenshot buffer size mismatch");
 
-                // Paint over the save button with the panel background color
-                if let Some(button_rect) = self.button_rect {
-                    let bg = ctx.style().visuals.panel_fill;
-                    let pixel = image::Rgba([bg.r(), bg.g(), bg.b(), bg.a()]);
+            // Paint over the save button with the panel background color
+            if let Some(button_rect) = self.button_rect {
+                let bg = ctx.style().visuals.panel_fill;
+                let pixel = image::Rgba([bg.r(), bg.g(), bg.b(), bg.a()]);
 
-                    let min_x = (button_rect.min.x * pixels_per_point) as u32;
-                    let min_y = (button_rect.min.y * pixels_per_point) as u32;
-                    let max_x = ((button_rect.max.x * pixels_per_point) as u32).min(width);
-                    let max_y = ((button_rect.max.y * pixels_per_point) as u32).min(height);
+                let min_x = (button_rect.min.x * pixels_per_point) as u32;
+                let min_y = (button_rect.min.y * pixels_per_point) as u32;
+                let max_x = ((button_rect.max.x * pixels_per_point) as u32).min(width);
+                let max_y = ((button_rect.max.y * pixels_per_point) as u32).min(height);
 
-                    for y in min_y..max_y {
-                        for x in min_x..max_x {
-                            img.put_pixel(x, y, pixel);
-                        }
+                for y in min_y..max_y {
+                    for x in min_x..max_x {
+                        img.put_pixel(x, y, pixel);
                     }
                 }
+            }
 
-                let result = img.save(&path);
-                match result {
-                    Ok(()) => eprintln!("Image saved to {}", path.display()),
-                    Err(err) => eprintln!("Failed to save image to {}: {err}", path.display()),
-                }
+            let result = img.save(&path);
+            match result {
+                Ok(()) => eprintln!("Image saved to {}", path.display()),
+                Err(err) => eprintln!("Failed to save image to {}: {err}", path.display()),
             }
         }
     }
