@@ -1,6 +1,9 @@
 pub use ndarray;
 
-pub use signal::{FreqSignal, Spectrogram, SpectrogramNormalization, TimeSignal, mix_signals};
+pub use signal::{
+    FreqSignal, Spectrogram, SpectrogramNormalization, TimeSignal, join_freq_signals, join_signals,
+    mix_signals,
+};
 pub use test_signal::impulse::{ImpulseConfig, generate_impulse};
 pub use test_signal::noise::{NoiseConfig, Spectrum, generate_noise};
 pub use test_signal::pulsed_noise::{PulsedNoiseConfig, generate_pulsed_noise};
