@@ -1,12 +1,9 @@
-use audio_signal::signal::Spectrogram;
+use audio_signal::{ndarray, signal::Spectrogram};
 use eframe::egui;
-
-use egui_plot::{Plot, PlotImage, PlotPoint};
+use egui_plot::{GridInput, GridMark, Plot, PlotImage, PlotPoint};
 
 use crate::native_options_any_thread;
 use crate::save::SavePlotState;
-
-// ─── Turbo colormap ───────────────────────────────────────────────────────────
 
 const TURBO_PALETTE: &[egui::Color32] = &[
     egui::Color32::from_rgb(48, 18, 59),
@@ -23,6 +20,27 @@ const TURBO_PALETTE: &[egui::Color32] = &[
     egui::Color32::from_rgb(220, 62, 2),
     egui::Color32::from_rgb(122, 4, 2),
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpectrogramScale {
+    Linear,
+    Log,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpectrogramPlotOptions {
+    pub log_freq: bool,
+    pub db_floor: f64,
+}
+
+impl Default for SpectrogramPlotOptions {
+    fn default() -> Self {
+        Self {
+            log_freq: false,
+            db_floor: -80.0,
+        }
+    }
+}
 
 fn apply_colormap(t: f32, palette: &[egui::Color32]) -> egui::Color32 {
     if palette.len() < 2 {
@@ -42,8 +60,6 @@ fn apply_colormap(t: f32, palette: &[egui::Color32]) -> egui::Color32 {
     )
 }
 
-// ─── Colorbar ─────────────────────────────────────────────────────────────────
-
 fn draw_colorbar(ui: &mut egui::Ui, db_min: f64, db_max: f64) {
     const BAR_WIDTH: f32 = 16.0;
     const TICK_LEN: f32 = 5.0;
@@ -62,12 +78,10 @@ fn draw_colorbar(ui: &mut egui::Ui, db_min: f64, db_max: f64) {
     );
     let bar_height = bar_rect.height();
 
-    // Gradient: 128 horizontal strips, top = db_max (t=1), bottom = db_min (t=0).
-    let n = 128usize;
-    for i in 0..n {
-        let t = 1.0 - (i as f32 + 0.5) / n as f32;
-        let y_top = bar_rect.min.y + i as f32 * bar_height / n as f32;
-        let y_bot = bar_rect.min.y + (i + 1) as f32 * bar_height / n as f32;
+    for i in 0..128usize {
+        let t = 1.0 - (i as f32 + 0.5) / 128.0;
+        let y_top = bar_rect.min.y + i as f32 * bar_height / 128.0;
+        let y_bot = bar_rect.min.y + (i + 1) as f32 * bar_height / 128.0;
         let strip = egui::Rect::from_min_max(
             egui::pos2(bar_rect.min.x, y_top),
             egui::pos2(bar_rect.max.x, y_bot),
@@ -75,11 +89,9 @@ fn draw_colorbar(ui: &mut egui::Ui, db_min: f64, db_max: f64) {
         painter.rect_filled(strip, 0.0, apply_colormap(t, TURBO_PALETTE));
     }
 
-    // Border.
     let stroke = egui::Stroke::new(1.0, ui.visuals().text_color());
     painter.rect_stroke(bar_rect, 0.0, stroke, egui::StrokeKind::Outside);
 
-    // Five tick marks with dB labels.
     let font_id = egui::TextStyle::Small.resolve(ui.style());
     let text_color = ui.visuals().text_color();
     for tick in 0..=4 {
@@ -103,12 +115,213 @@ fn draw_colorbar(ui: &mut egui::Ui, db_min: f64, db_max: f64) {
     }
 }
 
-// ─── App ─────────────────────────────────────────────────────────────────────
+fn format_hz(freq_hz: f64) -> String {
+    if freq_hz >= 1000.0 {
+        format!("{:.2} kHz", freq_hz / 1000.0)
+    } else {
+        format!("{freq_hz:.0} Hz")
+    }
+}
+
+fn format_hz_tick(freq_hz: f64) -> String {
+    if freq_hz >= 1000.0 {
+        format!("{:.0} kHz", freq_hz / 1000.0)
+    } else {
+        format!("{freq_hz:.0} Hz")
+    }
+}
+
+fn spectrum_grid_spacer(input: GridInput) -> Vec<GridMark> {
+    let (lo, hi) = (input.bounds.0, input.bounds.1);
+    let mut marks = Vec::new();
+
+    let start_exp = lo.floor() as i32 - 1;
+    let end_exp = hi.ceil() as i32 + 1;
+
+    for exp in start_exp..=end_exp {
+        let decade = 10f64.powi(exp);
+        for mult in 1..10 {
+            let hz = decade * mult as f64;
+            let log_pos = hz.log10();
+            if log_pos < lo || log_pos > hi {
+                continue;
+            }
+            let step_size = match mult {
+                1 => 1.0,
+                2 | 5 => 0.3,
+                _ => 0.1,
+            };
+            marks.push(GridMark {
+                value: log_pos,
+                step_size,
+            });
+        }
+    }
+
+    marks
+}
+
+fn positive_freq_bins(spec: &Spectrogram) -> Vec<f64> {
+    spec.freq_bins()
+        .iter()
+        .copied()
+        .filter(|&freq| freq > 0.0)
+        .collect()
+}
+
+fn make_log_freq_grid(freq_bins: &[f64]) -> Vec<f64> {
+    if freq_bins.is_empty() {
+        return Vec::new();
+    }
+    if freq_bins.len() == 1 {
+        return vec![freq_bins[0]];
+    }
+
+    let start = freq_bins[0].log10();
+    let end = freq_bins[freq_bins.len() - 1].log10();
+    (0..freq_bins.len())
+        .map(|idx| {
+            let t = idx as f64 / (freq_bins.len() - 1) as f64;
+            10.0_f64.powf(start + t * (end - start))
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct InterpolationStep {
+    lower: usize,
+    upper: usize,
+    weight: f64,
+}
+
+fn make_interpolation_plan(source_freqs: &[f64], target_freqs: &[f64]) -> Vec<InterpolationStep> {
+    target_freqs
+        .iter()
+        .map(|&target_freq| {
+            match source_freqs.binary_search_by(|probe| probe.total_cmp(&target_freq)) {
+                Ok(index) => InterpolationStep {
+                    lower: index,
+                    upper: index,
+                    weight: 0.0,
+                },
+                Err(0) => InterpolationStep {
+                    lower: 0,
+                    upper: 0,
+                    weight: 0.0,
+                },
+                Err(index) if index >= source_freqs.len() => {
+                    let last = source_freqs.len() - 1;
+                    InterpolationStep {
+                        lower: last,
+                        upper: last,
+                        weight: 0.0,
+                    }
+                }
+                Err(upper) => {
+                    let lower = upper - 1;
+                    let f0 = source_freqs[lower];
+                    let f1 = source_freqs[upper];
+                    let weight = if f1 > f0 {
+                        (target_freq - f0) / (f1 - f0)
+                    } else {
+                        0.0
+                    };
+                    InterpolationStep {
+                        lower,
+                        upper,
+                        weight,
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn interpolate_row(source_freqs: &[f64], source_values: &[f64], target_freq: f64) -> f64 {
+    let step = make_interpolation_plan(source_freqs, &[target_freq])[0];
+    let v0 = source_values[step.lower];
+    let v1 = source_values[step.upper];
+    v0 + step.weight * (v1 - v0)
+}
+
+fn make_linear_values(
+    spec: &Spectrogram,
+    mag_db: &ndarray::Array3<f64>,
+) -> (Vec<Vec<f64>>, Vec<f64>) {
+    let num_channels = spec.num_channels();
+    let num_frames = spec.num_frames();
+    let num_freq_bins = spec.num_freq_bins();
+
+    let values = (0..num_channels)
+        .map(|ch| {
+            let mut v = Vec::with_capacity(num_frames * num_freq_bins);
+            for freq_bin in 0..num_freq_bins {
+                for frame in 0..num_frames {
+                    v.push(mag_db[[ch, frame, freq_bin]]);
+                }
+            }
+            v
+        })
+        .collect();
+
+    (values, spec.freq_bins().to_vec())
+}
+
+fn make_log_values(spec: &Spectrogram, mag_db: &ndarray::Array3<f64>) -> (Vec<Vec<f64>>, Vec<f64>) {
+    let source_freqs = positive_freq_bins(spec);
+    if source_freqs.len() < 2 {
+        return make_linear_values(spec, mag_db);
+    }
+
+    let target_freqs = make_log_freq_grid(&source_freqs);
+    let interpolation_plan = make_interpolation_plan(&source_freqs, &target_freqs);
+    let num_channels = spec.num_channels();
+    let num_frames = spec.num_frames();
+
+    let values = (0..num_channels)
+        .map(|ch| {
+            let mut v = Vec::with_capacity(num_frames * target_freqs.len());
+            for step in &interpolation_plan {
+                for frame in 0..num_frames {
+                    let v0 = mag_db[[ch, frame, step.lower + 1]];
+                    let v1 = mag_db[[ch, frame, step.upper + 1]];
+                    v.push(v0 + step.weight * (v1 - v0));
+                }
+            }
+            v
+        })
+        .collect();
+
+    (values, target_freqs)
+}
+
+fn values_to_images(
+    values: &[Vec<f64>],
+    num_frames: usize,
+    num_freq_bins: usize,
+    db_floor: f64,
+    db_peak: f64,
+) -> Vec<egui::ColorImage> {
+    let db_span = (db_peak - db_floor).max(f64::EPSILON);
+    values
+        .iter()
+        .map(|channel_values| {
+            let mut pixels = Vec::with_capacity(num_frames * num_freq_bins);
+            for freq_bin in (0..num_freq_bins).rev() {
+                let row_start = freq_bin * num_frames;
+                for frame in 0..num_frames {
+                    let db = channel_values[row_start + frame];
+                    let t = ((db - db_floor) / db_span).clamp(0.0, 1.0) as f32;
+                    pixels.push(apply_colormap(t, TURBO_PALETTE));
+                }
+            }
+            egui::ColorImage::new([num_frames, num_freq_bins], pixels)
+        })
+        .collect()
+}
 
 pub(crate) struct SpectrogramPlot {
-    /// Flat dB values per channel in row-major order:
-    /// `values[freq_bin * num_frames + frame]`.
-    /// Row 0 (freq_bin = 0) sits at the bottom of the plot = lowest frequency.
     values: Vec<Vec<f64>>,
     images: Vec<egui::ColorImage>,
     textures: Vec<Option<egui::TextureHandle>>,
@@ -116,80 +329,62 @@ pub(crate) struct SpectrogramPlot {
     num_freq_bins: usize,
     db_floor: f64,
     db_peak: f64,
-    /// Lower-left corner of the image in plot (time, freq) coordinates.
     pos: PlotPoint,
-    /// Width × height of one tile in plot coordinates (seconds × Hz).
     tile_size: (f32, f32),
-    /// Center of the full image in plot coordinates.
     image_center: PlotPoint,
-    /// Width × height of the full image in plot coordinates (seconds × Hz).
     image_size: egui::Vec2,
     num_channels: usize,
     current_channel: usize,
     save: SavePlotState,
+    scale: SpectrogramScale,
 }
 
 impl SpectrogramPlot {
-    pub(crate) fn new(spec: &Spectrogram, title: &str, db_floor: f64) -> Self {
+    pub(crate) fn new(spec: &Spectrogram, title: &str, options: SpectrogramPlotOptions) -> Self {
+        let scale = if options.log_freq {
+            SpectrogramScale::Log
+        } else {
+            SpectrogramScale::Linear
+        };
+        let db_floor = options.db_floor;
         let num_channels = spec.num_channels();
         let num_frames = spec.num_frames();
-        let num_freq_bins = spec.num_freq_bins();
         let frame_times = spec.frame_times();
-        let freq_bins = spec.freq_bins();
-
         let mag_db = spec.amplitude_spectrum_db(db_floor);
-        let db_peak = mag_db.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let db_peak = mag_db.iter().copied().fold(f64::NEG_INFINITY, f64::max);
 
-        // Flat value arrays: row = freq_bin (0 = lowest), col = frame.
-        let values: Vec<Vec<f64>> = (0..num_channels)
-            .map(|ch| {
-                let mut v = Vec::with_capacity(num_frames * num_freq_bins);
-                for freq_bin in 0..num_freq_bins {
-                    for frame in 0..num_frames {
-                        v.push(mag_db[[ch, frame, freq_bin]]);
-                    }
-                }
-                v
-            })
-            .collect();
-        let db_span = (db_peak - db_floor).max(f64::EPSILON);
+        let (values, plotted_freqs_hz) = match scale {
+            SpectrogramScale::Linear => make_linear_values(spec, &mag_db),
+            SpectrogramScale::Log => make_log_values(spec, &mag_db),
+        };
+        let num_freq_bins = plotted_freqs_hz.len();
+        let images = values_to_images(&values, num_frames, num_freq_bins, db_floor, db_peak);
 
-        let images = values
-            .iter()
-            .map(|channel_values| {
-                let mut pixels = Vec::with_capacity(num_frames * num_freq_bins);
-                for freq_bin in (0..num_freq_bins).rev() {
-                    let row_start = freq_bin * num_frames;
-                    for frame in 0..num_frames {
-                        let db = channel_values[row_start + frame];
-                        let t = ((db - db_floor) / db_span).clamp(0.0, 1.0) as f32;
-                        pixels.push(apply_colormap(t, TURBO_PALETTE));
-                    }
-                }
-                egui::ColorImage::new([num_frames, num_freq_bins], pixels)
-            })
-            .collect();
-
-        // Tile dimensions in plot-coordinate units.
         let dt = if num_frames > 1 {
             (frame_times[num_frames - 1] - frame_times[0]) / (num_frames - 1) as f64
         } else {
             spec.hop_size() as f64 / spec.sample_rate()
         };
-        let df = if num_freq_bins > 1 {
-            (freq_bins[num_freq_bins - 1] - freq_bins[0]) / (num_freq_bins - 1) as f64
+
+        let plotted_y: Vec<f64> = match scale {
+            SpectrogramScale::Linear => plotted_freqs_hz.clone(),
+            SpectrogramScale::Log => plotted_freqs_hz.iter().map(|freq| freq.log10()).collect(),
+        };
+        let dy = if num_freq_bins > 1 {
+            (plotted_y[num_freq_bins - 1] - plotted_y[0]) / (num_freq_bins - 1) as f64
+        } else if scale == SpectrogramScale::Log {
+            0.1
         } else {
             spec.sample_rate() / spec.window_size() as f64
         };
 
-        // Lower-left corner = half a tile before the first frame/bin centre.
         let pos = PlotPoint {
             x: frame_times.first().copied().unwrap_or(0.0) - dt / 2.0,
-            y: freq_bins.first().copied().unwrap_or(0.0) - df / 2.0,
+            y: plotted_y.first().copied().unwrap_or(0.0) - dy / 2.0,
         };
         let image_size = egui::vec2(
             (num_frames as f64 * dt) as f32,
-            (num_freq_bins as f64 * df) as f32,
+            (num_freq_bins as f64 * dy) as f32,
         );
         let image_center = PlotPoint::new(
             pos.x + f64::from(image_size.x) / 2.0,
@@ -205,12 +400,27 @@ impl SpectrogramPlot {
             db_floor,
             db_peak,
             pos,
-            tile_size: (dt as f32, df as f32),
+            tile_size: (dt as f32, dy as f32),
             image_center,
             image_size,
             num_channels,
             current_channel: 0,
             save: SavePlotState::new(title),
+            scale,
+        }
+    }
+
+    fn freq_from_plot_y(&self, y: f64) -> f64 {
+        match self.scale {
+            SpectrogramScale::Linear => y,
+            SpectrogramScale::Log => 10.0_f64.powf(y),
+        }
+    }
+
+    fn axis_label(&self) -> &'static str {
+        match self.scale {
+            SpectrogramScale::Linear => "Frequency (Hz)",
+            SpectrogramScale::Log => "Frequency (Hz, log)",
         }
     }
 }
@@ -228,7 +438,6 @@ impl eframe::App for SpectrogramPlot {
             }
         });
 
-        // Colorbar on the right; must be declared before CentralPanel.
         egui::SidePanel::right("colorbar")
             .exact_width(80.0)
             .resizable(false)
@@ -239,7 +448,10 @@ impl eframe::App for SpectrogramPlot {
         egui::CentralPanel::default().show(ctx, |ui| {
             let texture = self.textures[self.current_channel].get_or_insert_with(|| {
                 ctx.load_texture(
-                    format!("spectrogram-channel-{}", self.current_channel),
+                    format!(
+                        "spectrogram-{:?}-channel-{}",
+                        self.scale, self.current_channel
+                    ),
                     self.images[self.current_channel].clone(),
                     egui::TextureOptions::NEAREST,
                 )
@@ -251,30 +463,32 @@ impl eframe::App for SpectrogramPlot {
                 self.image_size,
             );
 
-            let mut hovered_coord = None;
-            let inner = Plot::new("spectrogram")
+            let scale = self.scale;
+            let mut plot = Plot::new("spectrogram")
                 .x_axis_label("Time (s)")
-                .y_axis_label("Frequency (Hz)")
-                .y_axis_formatter(|mark, _range| {
-                    let hz = mark.value;
-                    if hz >= 1000.0 {
-                        format!("{:.0} kHz", hz / 1000.0)
-                    } else {
-                        format!("{hz:.0} Hz")
-                    }
+                .y_axis_label(self.axis_label())
+                .y_axis_formatter(move |mark, _range| {
+                    let freq_hz = match scale {
+                        SpectrogramScale::Linear => mark.value,
+                        SpectrogramScale::Log => 10.0_f64.powf(mark.value),
+                    };
+                    format_hz_tick(freq_hz)
                 })
-                .set_margin_fraction(egui::vec2(0.0, 0.0))
-                .show(ui, |plot_ui| {
-                    if plot_ui.response().hovered() {
-                        hovered_coord = plot_ui.pointer_coordinate();
-                    }
-                    plot_ui.image(image);
-                });
+                .set_margin_fraction(egui::vec2(0.0, 0.0));
+            if self.scale == SpectrogramScale::Log {
+                plot = plot.y_grid_spacer(spectrum_grid_spacer);
+            }
+
+            let mut hovered_coord = None;
+            let inner = plot.show(ui, |plot_ui| {
+                if plot_ui.response().hovered() {
+                    hovered_coord = plot_ui.pointer_coordinate();
+                }
+                plot_ui.image(image);
+            });
 
             if let Some(coord) = hovered_coord {
-                let freq_hz = coord.y;
-
-                // Map plot coordinates back to the nearest tile to read its dB value.
+                let freq_hz = self.freq_from_plot_y(coord.y);
                 let frame = ((coord.x - self.pos.x) / self.tile_size.0 as f64).floor() as isize;
                 let freq_bin = ((coord.y - self.pos.y) / self.tile_size.1 as f64).floor() as isize;
                 let db_value = if frame >= 0 && (frame as usize) < self.num_frames && freq_bin >= 0
@@ -289,14 +503,14 @@ impl eframe::App for SpectrogramPlot {
                     None
                 };
 
-                let freq_str = if freq_hz >= 1000.0 {
-                    format!("{:.2} kHz", freq_hz / 1000.0)
-                } else {
-                    format!("{:.0} Hz", freq_hz)
-                };
                 let text = match db_value {
-                    Some(db) => format!("t = {:.3} s\nf = {}\n{:.1} dB", coord.x, freq_str, db),
-                    None => format!("t = {:.3} s\nf = {}", coord.x, freq_str),
+                    Some(db) => format!(
+                        "t = {:.3} s\nf = {}\n{:.1} dB",
+                        coord.x,
+                        format_hz(freq_hz),
+                        db
+                    ),
+                    None => format!("t = {:.3} s\nf = {}", coord.x, format_hz(freq_hz)),
                 };
                 let mut tooltip = egui::Tooltip::always_open(
                     ui.ctx().clone(),
@@ -315,29 +529,17 @@ impl eframe::App for SpectrogramPlot {
     }
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────────
-
-/// Show a spectrogram as a color image using the Turbo colormap.
-///
-/// Values are displayed in dB re. calibrated one-sided amplitude spectrum
-/// (20 × log₁₀(amplitude), floored at `db_floor`).
-/// `db_floor` also sets the cold end of the color scale (e.g. `-80.0`);
-/// the hot end is the peak value across all channels.
-///
-/// The plot supports zoom (scroll wheel) and pan (drag).
 pub fn show_spectrogram(
     title: &str,
     spectrogram: &Spectrogram,
-    db_floor: f64,
+    options: SpectrogramPlotOptions,
 ) -> Result<(), crate::Error> {
     Ok(eframe::run_native(
         title,
         native_options_any_thread(),
-        Box::new(|_cc| Ok(Box::new(SpectrogramPlot::new(spectrogram, title, db_floor)))),
+        Box::new(|_cc| Ok(Box::new(SpectrogramPlot::new(spectrogram, title, options)))),
     )?)
 }
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -372,8 +574,60 @@ mod tests {
     }
 
     #[test]
+    fn log_grid_uses_positive_frequencies() {
+        let freqs = vec![62.5, 125.0, 250.0, 500.0, 1000.0];
+        let grid = make_log_freq_grid(&freqs);
+
+        assert_eq!(grid.len(), freqs.len());
+        assert!((grid[0] - 62.5).abs() < 1e-12);
+        assert!((grid[grid.len() - 1] - 1000.0).abs() < 1e-12);
+        assert!(grid.windows(2).all(|window| window[1] > window[0]));
+    }
+
+    #[test]
+    fn interpolation_hits_exact_bin_values() {
+        let freqs = [100.0, 200.0, 400.0];
+        let values = [-60.0, -20.0, -10.0];
+
+        assert!((interpolate_row(&freqs, &values, 200.0) + 20.0).abs() < 1e-12);
+        assert!((interpolate_row(&freqs, &values, 300.0) + 15.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn interpolation_plan_reuses_bin_mapping() {
+        let freqs = [100.0, 200.0, 400.0];
+        let plan = make_interpolation_plan(&freqs, &[100.0, 300.0, 500.0]);
+
+        assert_eq!(
+            plan,
+            vec![
+                InterpolationStep {
+                    lower: 0,
+                    upper: 0,
+                    weight: 0.0
+                },
+                InterpolationStep {
+                    lower: 1,
+                    upper: 2,
+                    weight: 0.5
+                },
+                InterpolationStep {
+                    lower: 2,
+                    upper: 2,
+                    weight: 0.0
+                }
+            ]
+        );
+    }
+
+    #[test]
     #[ignore]
     fn test_show_spectrogram() {
-        show_spectrogram("Spectrogram Test", &make_spectrogram(), -80.0).unwrap();
+        show_spectrogram(
+            "Spectrogram Test",
+            &make_spectrogram(),
+            SpectrogramPlotOptions::default(),
+        )
+        .unwrap();
     }
 }

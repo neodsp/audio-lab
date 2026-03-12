@@ -1,5 +1,5 @@
 use audio_dsp::{StftConfig, WindowFn, stft};
-use audio_plot::show_spectrogram;
+use audio_plot::{SpectrogramPlotOptions, show_spectrogram};
 use audio_signal::{
     PulsedNoiseConfig, SineConfig, Spectrum, SweepConfig, SweepType, generate_pulsed_noise,
     generate_sine, generate_sweep, mix,
@@ -71,6 +71,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
 
-    show_spectrogram("Combined test-signal spectrogram", &spectrogram, -90.0)?;
+    show_spectrogram(
+        "Combined test-signal spectrogram",
+        &spectrogram,
+        SpectrogramPlotOptions {
+            log_freq: true,
+            db_floor: -90.0,
+        },
+    )?;
     Ok(())
 }
