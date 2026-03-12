@@ -8,18 +8,18 @@ approx.workspace = true
 audio-file = { workspace = true, optional = true }
 audio-io = { workspace = true, optional = true }
 ndarray.workspace = true
-ndarray-rand.workspace = true
 ndarray-npy = { workspace = true, optional = true }
+ndarray-rand.workspace = true
 ndrustfft.workspace = true
 num.workspace = true
 serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [features]
-default = ["audio-playback", "audio-file", "numpy"]
+default = ["audio-file", "audio-playback", "numpy"]
 
-audio-playback = ["dep:audio-io"]
 audio-file = ["dep:audio-file"]
+audio-playback = ["dep:audio-io"]
 numpy = ["dep:ndarray-npy"]
 serde = ["dep:serde", "ndarray/serde", "num/serde"]
 

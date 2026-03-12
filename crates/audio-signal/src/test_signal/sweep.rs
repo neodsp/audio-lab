@@ -22,15 +22,40 @@ pub enum SweepError {
     Signal(#[from] SignalError),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SweepConfig {
+    pub amplitude: f64,
+    pub sample_rate: f64,
+    pub num_channels: usize,
+    pub fade_out: usize,
+    pub sweep_type: SweepType,
+}
+
+impl Default for SweepConfig {
+    fn default() -> Self {
+        Self {
+            amplitude: 1.0,
+            sample_rate: 48_000.0,
+            num_channels: 1,
+            fade_out: 90,
+            sweep_type: SweepType::Exponential,
+        }
+    }
+}
+
 pub fn generate_sweep(
     num_time_steps: usize,
     freq_range: Range<f64>,
-    amplitude: f64,
-    sample_rate: f64,
-    num_channels: usize,
-    fade_out: usize,
-    sweep_type: SweepType,
+    config: &SweepConfig,
 ) -> Result<TimeSignal, SweepError> {
+    let SweepConfig {
+        amplitude,
+        sample_rate,
+        num_channels,
+        fade_out,
+        sweep_type,
+    } = *config;
+
     if freq_range.end <= freq_range.start {
         return Err(SweepError::FreqRange);
     }
@@ -128,15 +153,25 @@ mod tests {
     #[test]
     fn validates_sweep_range() {
         assert!(matches!(
-            generate_sweep(128, 1_000.0..500.0, 1.0, 48_000.0, 1, 0, SweepType::Linear),
+            generate_sweep(128, 1_000.0..500.0, &SweepConfig::default()),
             Err(SweepError::FreqRange)
         ));
     }
 
     #[test]
     fn generates_linear_sweep() {
-        let signal =
-            generate_sweep(128, 20.0..20_000.0, 0.5, 48_000.0, 2, 8, SweepType::Linear).unwrap();
+        let signal = generate_sweep(
+            128,
+            20.0..20_000.0,
+            &SweepConfig {
+                amplitude: 0.5,
+                num_channels: 2,
+                fade_out: 8,
+                sweep_type: SweepType::Linear,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(signal.num_channels(), 2);
         assert_eq!(signal.num_time_steps(), 128);
     }

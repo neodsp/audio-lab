@@ -19,15 +19,44 @@ pub enum NoiseError {
     Signal(#[from] SignalError),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct NoiseConfig {
+    pub spectrum: Spectrum,
+    pub amplitude: f64,
+    pub sample_rate: f64,
+    pub num_channels: usize,
+    /// Seed for the random number generator. `None` uses a random seed.
+    pub seed: Option<u64>,
+}
+
+impl Default for NoiseConfig {
+    fn default() -> Self {
+        Self {
+            spectrum: Spectrum::White,
+            amplitude: 1.0,
+            sample_rate: 48_000.0,
+            num_channels: 1,
+            seed: None,
+        }
+    }
+}
+
 pub fn generate_noise(
     num_time_steps: usize,
-    spectrum: Spectrum,
-    amplitude: f64,
-    sample_rate: f64,
-    num_channels: usize,
-    seed: u64,
+    config: &NoiseConfig,
 ) -> Result<TimeSignal, NoiseError> {
-    let mut rng = StdRng::seed_from_u64(seed);
+    let NoiseConfig {
+        spectrum,
+        amplitude,
+        sample_rate,
+        num_channels,
+        seed,
+    } = *config;
+
+    let mut rng = match seed {
+        Some(s) => StdRng::seed_from_u64(s),
+        None => StdRng::from_os_rng(),
+    };
     let data = Array2::random_using(
         (num_channels, num_time_steps),
         Uniform::new(-1.0, 1.0).unwrap(),
@@ -67,8 +96,13 @@ mod tests {
 
     #[test]
     fn generates_reproducible_white_noise() {
-        let left = generate_noise(32, Spectrum::White, 0.5, 48_000.0, 1, 123).unwrap();
-        let right = generate_noise(32, Spectrum::White, 0.5, 48_000.0, 1, 123).unwrap();
+        let config = NoiseConfig {
+            seed: Some(123),
+            amplitude: 0.5,
+            ..Default::default()
+        };
+        let left = generate_noise(32, &config).unwrap();
+        let right = generate_noise(32, &config).unwrap();
         assert_eq!(left, right);
         let peak = left
             .iter()
@@ -78,7 +112,15 @@ mod tests {
 
     #[test]
     fn pink_noise_is_supported() {
-        let noise = generate_noise(64, Spectrum::Pink, 0.5, 48_000.0, 1, 123).unwrap();
+        let noise = generate_noise(
+            64,
+            &NoiseConfig {
+                spectrum: Spectrum::Pink,
+                seed: Some(123),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(noise.num_time_steps(), 64);
     }
 }

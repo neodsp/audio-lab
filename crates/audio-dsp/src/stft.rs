@@ -274,21 +274,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_abs_diff_eq!(
-            spec.raw_magnitude()[[0, 0, 2]],
-            4.0,
-            epsilon = 1e-10
-        );
-        assert_abs_diff_eq!(
-            spec.amplitude_spectrum()[[0, 0, 2]],
-            1.0,
-            epsilon = 1e-10
-        );
-        assert_abs_diff_eq!(
-            spec.power_spectrum()[[0, 0, 2]],
-            0.5,
-            epsilon = 1e-10
-        );
+        assert_abs_diff_eq!(spec.raw_magnitude()[[0, 0, 2]], 4.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(spec.amplitude_spectrum()[[0, 0, 2]], 1.0, epsilon = 1e-10);
+        assert_abs_diff_eq!(spec.power_spectrum()[[0, 0, 2]], 0.5, epsilon = 1e-10);
         assert_abs_diff_eq!(
             spec.power_spectral_density()[[0, 0, 2]],
             0.5,
@@ -309,10 +297,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_abs_diff_eq!(
-            spec.amplitude_spectrum()[[0, 0, 0]],
-            1.0,
-            epsilon = 1e-10
-        );
+        assert_abs_diff_eq!(spec.amplitude_spectrum()[[0, 0, 0]], 1.0, epsilon = 1e-10);
     }
 }

@@ -8,15 +8,17 @@ version = "0.1.0"
 
 [workspace.dependencies]
 audio-dsp = { path = "crates/audio-dsp" }
-audio-io = { git = "https://github.com/neodsp/audio-io", default-features = false, features = ["cpal"] }
+audio-io = { git = "https://github.com/neodsp/audio-io", default-features = false, features = [
+  "cpal",
+] }
 audio-plot = { path = "crates/audio-plot" }
 audio-signal = { path = "crates/audio-signal" }
 
 approx = { version = "0.5", features = ["num-complex"] }
 audio-file = { version = "0.4", default-features = false, features = ["all-codecs"] }
 ndarray = { version = "0.17", features = ["approx"] }
-ndarray-rand = "0.16"
 ndarray-npy = { version = "0.10", features = ["num-complex-0_4"] }
+ndarray-rand = "0.16"
 ndrustfft = "0.6"
 num = "0.4"
 serde = { version = "1", features = ["derive"] }

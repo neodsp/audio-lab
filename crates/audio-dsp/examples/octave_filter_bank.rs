@@ -1,8 +1,9 @@
 /// Plot the magnitude responses of a reconstructing octave filter bank applied
 /// to an impulse. Each band appears as a separate channel in the frequency plot.
-use audio_dsp::filter_bank::reconstructing_fractional_octave_bands;
+use audio_dsp::filter_bank::{OctaveBandsConfig, reconstructing_fractional_octave_bands};
 use audio_plot::freq::FreqPlotOptions;
-use audio_signal::signal::{FreqSignal, TimeSignal};
+use audio_signal::signal::FreqSignal;
+use audio_signal::test_signal::impulse::{ImpulseConfig, generate_impulse};
 use ndarray::{Array2, s};
 use num::complex::Complex64;
 
@@ -12,13 +13,24 @@ fn main() -> Result<(), audio_plot::Error> {
 
     // Unit impulse – its spectrum is flat, so each band's output directly
     // shows the filter's magnitude response.
-    let mut impulse_data = Array2::<f64>::zeros((1, n_filt * 2));
-    impulse_data[[0, 0]] = 1.0;
-    let impulse = TimeSignal::new(impulse_data, sample_rate).unwrap();
+    let impulse = generate_impulse(
+        n_filt * 2,
+        &ImpulseConfig {
+            sample_rate,
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
-    let (bands, center_freqs) =
-        reconstructing_fractional_octave_bands(&impulse, 1, (63.0, 16000.0), 1.0, 0, n_filt)
-            .unwrap();
+    let (bands, center_freqs) = reconstructing_fractional_octave_bands(
+        &impulse,
+        1,
+        &OctaveBandsConfig {
+            n_samples: n_filt,
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     println!("Octave band centre frequencies (Hz):");
     for (i, f) in center_freqs.iter().enumerate() {

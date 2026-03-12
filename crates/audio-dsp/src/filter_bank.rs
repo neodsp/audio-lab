@@ -47,13 +47,36 @@ pub fn fractional_octave_frequencies(
     (centers, lowers, uppers)
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct OctaveBandsConfig {
+    /// Hz range `(low, high)` for the band centres.
+    pub frequency_range: (f64, f64),
+    /// Transition overlap in `[0, 1]`; smaller values give wider pass-bands and steeper slopes.
+    pub overlap: f64,
+    /// Steepness iterations ≥ 0; each step applies one sine recursion for a steeper roll-off.
+    pub slope: usize,
+    /// FIR filter length in samples; longer → more accurate.
+    pub n_samples: usize,
+}
+
+impl Default for OctaveBandsConfig {
+    fn default() -> Self {
+        Self {
+            frequency_range: (63.0, 16_000.0),
+            overlap: 1.0,
+            slope: 0,
+            n_samples: 4096,
+        }
+    }
+}
+
 /// A reconstructing linear-phase fractional octave filter bank.
 ///
 /// # Quick start
 ///
 /// ```rust,ignore
 /// // Design a third-octave bank and apply it to a signal
-/// let fb = OctaveBands::design(3, (63.0, 16000.0), 1.0, 0, 4096, signal.sample_rate())?;
+/// let fb = OctaveBands::design(3, OctaveBandsConfig::default(), signal.sample_rate())?;
 /// let bands: Vec<TimeSignal> = fb.apply(&signal)?;
 /// let freqs: &[f64] = &fb.center_frequencies;
 /// ```
@@ -75,25 +98,18 @@ impl OctaveBands {
     /// following Antoni (2010), doi: 10.1121/1.3273888. The first band acts as
     /// a low-pass below the lowest centre frequency; the last as a high-pass
     /// above the highest.
-    ///
-    /// # Parameters
-    /// - `num_fractions` – octave fraction (1 = octave, 3 = third-octave, …).
-    /// - `frequency_range` – Hz range `(low, high)` for the band centres.
-    /// - `overlap` – transition overlap in `[0, 1]`; smaller values give wider
-    ///   pass-bands and steeper slopes (typical default: `1.0`).
-    /// - `slope` – steepness iterations ≥ 0; each step applies one sine
-    ///   recursion for a steeper roll-off (typical default: `0`).
-    /// - `n_samples` – FIR filter length in samples; longer → more accurate
-    ///   (typical default: `4096`).
-    /// - `sample_rate` – sampling rate in Hz.
     pub fn design(
         num_fractions: usize,
-        frequency_range: (f64, f64),
-        overlap: f64,
-        slope: usize,
-        n_samples: usize,
+        config: &OctaveBandsConfig,
         sample_rate: f64,
     ) -> Result<Self, FilterError> {
+        let OctaveBandsConfig {
+            frequency_range,
+            overlap,
+            slope,
+            n_samples,
+        } = *config;
+
         if !(0.0..=1.0).contains(&overlap) {
             return Err(FilterError::InvalidOverlap(overlap));
         }
@@ -290,30 +306,12 @@ impl OctaveBands {
 /// Internally this calls [`OctaveBands::design`] followed by
 /// [`OctaveBands::apply`]. Use those directly if you need to apply the same
 /// filter bank to multiple signals.
-///
-/// # Parameters
-/// - `signal` – input signal (any number of channels).
-/// - `num_fractions` – octave fraction (1 = octave, 3 = third-octave, …).
-/// - `frequency_range` – Hz range `(low, high)` for the band centres.
-/// - `overlap` – transition overlap in `[0, 1]` (default `1.0`).
-/// - `slope` – steepness iterations ≥ 0 (default `0`).
-/// - `n_samples` – FIR filter length in samples (default `4096`).
 pub fn reconstructing_fractional_octave_bands(
     signal: &TimeSignal,
     num_fractions: usize,
-    frequency_range: (f64, f64),
-    overlap: f64,
-    slope: usize,
-    n_samples: usize,
+    config: &OctaveBandsConfig,
 ) -> Result<(Vec<TimeSignal>, Vec<f64>), FilterError> {
-    let fb = OctaveBands::design(
-        num_fractions,
-        frequency_range,
-        overlap,
-        slope,
-        n_samples,
-        signal.sample_rate(),
-    )?;
+    let fb = OctaveBands::design(num_fractions, config, signal.sample_rate())?;
     let center_frequencies = fb.center_frequencies.clone();
     let bands = fb.apply(signal)?;
     Ok((bands, center_frequencies))
@@ -356,7 +354,16 @@ mod tests {
     fn design_output_shape() {
         let n_samples = 256;
         let sample_rate = 44100.0;
-        let fb = OctaveBands::design(1, (125.0, 8000.0), 1.0, 0, n_samples, sample_rate).unwrap();
+        let fb = OctaveBands::design(
+            1,
+            &OctaveBandsConfig {
+                frequency_range: (125.0, 8000.0),
+                n_samples,
+                ..Default::default()
+            },
+            sample_rate,
+        )
+        .unwrap();
 
         let (c, _, _) = fractional_octave_frequencies(1, (125.0, 8000.0));
         let expected_bands = c.iter().filter(|&&f| f < sample_rate / 2.0).count();
@@ -374,8 +381,16 @@ mod tests {
         let n_filt = 256_usize;
 
         let x = impulse(n, sr);
-        let (bands, _) =
-            reconstructing_fractional_octave_bands(&x, 1, (125.0, 8000.0), 1.0, 0, n_filt).unwrap();
+        let (bands, _) = reconstructing_fractional_octave_bands(
+            &x,
+            1,
+            &OctaveBandsConfig {
+                frequency_range: (125.0, 8000.0),
+                n_samples: n_filt,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let n_out = n + n_filt - 1;
         let mut sum = Array1::<f64>::zeros(n_out);

@@ -3,7 +3,7 @@ use std::f64::consts::PI;
 use ndarray::{Array1, Array2, s};
 
 use crate::signal::TimeSignal;
-use crate::test_signal::noise::{NoiseError, Spectrum, generate_noise};
+use crate::test_signal::noise::{NoiseConfig, NoiseError, Spectrum, generate_noise};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PulsedNoiseError {
@@ -13,18 +13,48 @@ pub enum PulsedNoiseError {
     Noise(#[from] NoiseError),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PulsedNoiseConfig {
+    pub fade_length: usize,
+    pub spectrum: Spectrum,
+    pub amplitude: f64,
+    pub frozen: bool,
+    pub sample_rate: f64,
+    pub num_channels: usize,
+    /// Seed for the random number generator. `None` uses a random seed.
+    pub seed: Option<u64>,
+}
+
+impl Default for PulsedNoiseConfig {
+    fn default() -> Self {
+        Self {
+            fade_length: 0,
+            spectrum: Spectrum::White,
+            amplitude: 1.0,
+            frozen: false,
+            sample_rate: 48_000.0,
+            num_channels: 1,
+            seed: None,
+        }
+    }
+}
+
 pub fn generate_pulsed_noise(
     pulse_length: usize,
     pause_length: usize,
-    fade_length: usize,
     repetitions: usize,
-    spectrum: Spectrum,
-    amplitude: f64,
-    frozen: bool,
-    sample_rate: f64,
-    num_channels: usize,
-    seed: u64,
+    config: &PulsedNoiseConfig,
 ) -> Result<TimeSignal, PulsedNoiseError> {
+    let PulsedNoiseConfig {
+        fade_length,
+        spectrum,
+        amplitude,
+        frozen,
+        sample_rate,
+        num_channels,
+        seed,
+    } = *config;
+
     if fade_length * 2 > pulse_length {
         return Err(PulsedNoiseError::FadeTooLarge);
     }
@@ -36,11 +66,13 @@ pub fn generate_pulsed_noise(
     };
     let source = generate_noise(
         noise_samples,
-        spectrum,
-        amplitude,
-        sample_rate,
-        num_channels,
-        seed,
+        &NoiseConfig {
+            spectrum,
+            amplitude,
+            sample_rate,
+            num_channels,
+            seed,
+        },
     )?;
 
     let mut data = Array2::zeros((
@@ -103,15 +135,36 @@ mod tests {
     #[test]
     fn validates_fade_length() {
         assert!(matches!(
-            generate_pulsed_noise(8, 2, 5, 2, Spectrum::White, 0.5, true, 48_000.0, 1, 7),
+            generate_pulsed_noise(
+                8,
+                2,
+                2,
+                &PulsedNoiseConfig {
+                    fade_length: 5,
+                    spectrum: Spectrum::White,
+                    frozen: true,
+                    seed: Some(7),
+                    ..Default::default()
+                }
+            ),
             Err(PulsedNoiseError::FadeTooLarge)
         ));
     }
 
     #[test]
     fn generates_frozen_pulsed_noise() {
-        let signal =
-            generate_pulsed_noise(4, 2, 1, 3, Spectrum::White, 0.5, true, 48_000.0, 1, 7).unwrap();
+        let signal = generate_pulsed_noise(
+            4,
+            2,
+            3,
+            &PulsedNoiseConfig {
+                fade_length: 1,
+                frozen: true,
+                seed: Some(7),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(signal.num_time_steps(), 16);
         assert_eq!(signal.channel(0)[4], 0.0);
         assert_eq!(signal.channel(0)[5], 0.0);
@@ -123,8 +176,16 @@ mod tests {
 
     #[test]
     fn generates_non_frozen_pulsed_noise() {
-        let signal =
-            generate_pulsed_noise(4, 1, 0, 2, Spectrum::White, 0.5, false, 48_000.0, 1, 7).unwrap();
+        let signal = generate_pulsed_noise(
+            4,
+            1,
+            2,
+            &PulsedNoiseConfig {
+                seed: Some(7),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(signal.num_time_steps(), 9);
         assert_ne!(
             signal.channel(0).slice(s![0..4]),
