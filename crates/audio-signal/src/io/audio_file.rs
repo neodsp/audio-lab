@@ -17,12 +17,15 @@ pub fn write_audio(
     signal: &TimeSignal,
     path: impl AsRef<std::path::Path>,
 ) -> Result<(), audio_file::WriteError> {
+    let interleaved: Vec<f64> = signal.time_data().t().iter().cloned().collect();
     audio_file::write(
         path,
-        &signal.interleaved_f64(),
+        &interleaved,
         signal.num_channels() as u16,
         signal.sample_rate().round() as u32,
-        audio_file::WriteConfig::default(),
+        audio_file::WriteConfig {
+            sample_format: audio_file::SampleFormat::Float32,
+        },
     )
 }
 

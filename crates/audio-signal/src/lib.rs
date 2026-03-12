@@ -11,7 +11,7 @@ pub mod data;
 pub mod io;
 pub mod math;
 mod ops;
-#[cfg(feature = "audio-io")]
+#[cfg(feature = "audio-playback")]
 pub mod playback;
 pub mod signal;
 pub mod test_signal;

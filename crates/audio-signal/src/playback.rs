@@ -8,7 +8,7 @@ pub fn play(signal: &TimeSignal) -> Result<(), audio_io::Error> {
     let num_output_channels = signal.num_channels() as u16;
     let sample_rate = signal.sample_rate().round() as u32;
     let num_frames = 512;
-    let interleaved = signal.interleaved_f32();
+    let interleaved: Vec<f32> = signal.time_data().t().iter().map(|&s| s as f32).collect();
     let total_frames = signal.num_time_steps();
     let mut next_frame = 0usize;
 

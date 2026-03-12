@@ -139,27 +139,6 @@ impl TimeSignal {
         );
         freq_signal
     }
-
-    #[cfg(any(feature = "audio-file", feature = "audio-io"))]
-    pub(crate) fn interleaved_f64(&self) -> Vec<f64> {
-        self.time_data()
-            .t()
-            .as_standard_layout()
-            .as_slice()
-            .unwrap()
-            .to_vec()
-    }
-
-    #[cfg(feature = "audio-io")]
-    pub(crate) fn interleaved_f32(&self) -> Vec<f32> {
-        self.time_data()
-            .t()
-            .mapv(|sample| sample as f32)
-            .as_standard_layout()
-            .as_slice()
-            .unwrap()
-            .to_vec()
-    }
 }
 
 impl std::fmt::Display for TimeSignal {

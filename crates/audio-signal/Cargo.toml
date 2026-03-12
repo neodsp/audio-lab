@@ -16,9 +16,9 @@ serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [features]
-default = ["audio-io", "audio-file", "numpy"]
+default = ["audio-playback", "audio-file", "numpy"]
 
-audio-io = ["dep:audio-io"]
+audio-playback = ["dep:audio-io"]
 audio-file = ["dep:audio-file"]
 numpy = ["dep:ndarray-npy"]
 serde = ["dep:serde", "ndarray/serde", "num/serde"]
