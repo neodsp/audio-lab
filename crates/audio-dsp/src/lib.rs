@@ -8,6 +8,7 @@
 //!   design workflows do not belong in this crate.
 
 pub mod convolve;
+pub mod deconvolution;
 pub mod filter_bank;
 pub mod pad;
 pub mod stft;
@@ -15,6 +16,7 @@ pub mod time;
 pub mod window;
 
 pub use convolve::{ConvolveError, ConvolveMode, convolve};
+pub use deconvolution::{DeconvolutionConfig, DeconvolutionError, deconvolve};
 pub use pad::{PadMode, pad_zeros};
 pub use stft::{StftConfig, StftError, stft};
 pub use time::{TimeError, trim_duration, trim_samples};
