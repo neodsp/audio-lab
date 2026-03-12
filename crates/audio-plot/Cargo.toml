@@ -1,7 +1,12 @@
 [package]
-edition = "2024"
+authors.workspace = true
+description = "Audio signal plotting and visualization"
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
 name = "audio-plot"
-version = "0.1.0"
+repository.workspace = true
+version.workspace = true
 
 [dependencies]
 audio-signal.workspace = true

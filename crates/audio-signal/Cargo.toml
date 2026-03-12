@@ -1,7 +1,12 @@
 [package]
-edition = "2024"
+authors.workspace = true
+description = "Audio signal types and utilities for Rust"
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
 name = "audio-signal"
-version = "0.1.0"
+repository.workspace = true
+version.workspace = true
 
 [dependencies]
 approx.workspace = true

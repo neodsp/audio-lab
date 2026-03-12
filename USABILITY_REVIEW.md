@@ -12,63 +12,6 @@ Review of the `audio-lab` crate APIs and structure from the perspective of an au
 
 ## Issues, roughly by severity
 
-### 1. The `ops` module is the biggest usability problem
-
-An audio researcher would naturally expect to write:
-
-```rust
-let mag = freq_signal.to_magnitude();
-let peak = signal.max_abs_overall();
-let db = data.to_decibels();
-```
-
-Instead they must write:
-
-```rust
-use audio_signal::ops::complex;
-use audio_signal::ops::real;
-use audio_signal::ops::freq;
-
-let mag = complex::to_magnitude(freq_signal.data());
-let peak = real::max_abs_overall(signal.data());  // wait, this takes RealData not TimeSignal
-let nyquist = freq::nyquist_frequency(&freq_signal);
-```
-
-Problems:
-- **Free functions that conceptually belong on their type.** `nyquist_frequency(&signal)` and `freq_spacing(&signal)` are just `sample_rate / 2.0` and `sample_rate / num_time_steps` — these should be methods on `FreqSignal`.
-- **`ops::real` operates on `RealData`, not `TimeSignal`.** So you have to go through `signal.data()` to use them. But a researcher thinks in terms of signals, not data containers.
-- **`ops::complex` operates on `ComplexData`, not `FreqSignal`.** Same issue — you need `freq_signal.data()`.
-- The `analysis::spectrogram` module has the same pattern: all free functions taking `&Spectrogram`.
-
-**Suggestion:** Make these methods. `freq_signal.nyquist()`, `freq_signal.to_magnitude()`, `signal.peak()`, `spectrogram.amplitude_spectrum()`. The free functions can stay as the implementation, but put method wrappers on the types where researchers will look for them.
-
-### 2. `RealData` / `ComplexData` — unclear value for the end user
-
-As a researcher, I'd never want to construct or think about `RealData` directly. I'd think about `TimeSignal` (samples + sample rate) or `FreqSignal` (spectrum + sample rate). The `data` module feels like an internal implementation detail that leaked into the public API.
-
-`TimeSignal` is basically `RealData` + `sample_rate`. The `x_data` / `y_data` naming on `RealData` is very generic — it doesn't tell me what the axes mean. Compare with `TimeSignal` which has `time_steps()` and `time_data()` — much clearer.
-
-**Suggestion:** Consider making `data` module `pub(crate)` or at least de-emphasizing it in documentation. Most researchers should only interact with `TimeSignal`, `FreqSignal`, and `Spectrogram`.
-
-### 3. test_signal generators have too many positional parameters
-
-```rust
-generate_sine(num_time_steps, frequency, amplitude, sample_rate, num_channels)
-generate_noise(num_time_steps, spectrum, amplitude, sample_rate, num_channels, seed)
-generate_sweep(num_time_steps, freq_range, amplitude, sample_rate, num_channels, fade_out, sweep_type)
-generate_pulsed_noise(pulse_length, pause_length, fade_length, repetitions, spectrum, amplitude, frozen, sample_rate, num_channels, seed)
-```
-
-`generate_pulsed_noise` has **10 positional arguments**. At the call site you can't tell what's what. A builder pattern or config struct (like you already did with `StftConfig`) would be much better:
-
-```rust
-Sine::new(frequency, sample_rate)
-    .amplitude(0.5)
-    .channels(2)
-    .samples(48000)
-    .build()?
-```
-
 ### 4. `audio-dsp::time` has normalize functions that duplicate each other
 
 You have 6 functions that are really 2:

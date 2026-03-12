@@ -537,6 +537,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "audio-lab"
+version = "0.1.0"
+dependencies = [
+ "audio-dsp",
+ "audio-plot",
+ "audio-signal",
+]
+
+[[package]]
 name = "audio-plot"
 version = "0.1.0"
 dependencies = [
