@@ -73,21 +73,11 @@ pub fn generate_noise(
         signal = freq.into_time();
     }
 
-    normalize_peak(&mut signal, amplitude);
+    signal.normalize_peak(amplitude);
 
     let comment = format!("{spectrum:?} noise signal (amplitude = {amplitude})");
     signal.set_comment(Some(&comment));
     Ok(signal)
-}
-
-pub(crate) fn normalize_peak(signal: &mut TimeSignal, amplitude: f64) {
-    let peak = signal
-        .iter()
-        .fold(0.0_f64, |peak, sample| peak.max(sample.abs()));
-    if peak > 0.0 {
-        let gain = amplitude / peak;
-        signal.iter_mut().for_each(|sample| *sample *= gain);
-    }
 }
 
 #[cfg(test)]

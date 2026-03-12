@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use ndarray::s;
 
-use audio_signal::math::db_to_gain;
 use audio_signal::signal::{SignalError, TimeSignal};
 
 #[derive(Debug, thiserror::Error)]
@@ -56,44 +55,6 @@ pub fn trim_duration(
     trim_samples(signal, start_sample, end_sample)
 }
 
-pub fn normalize_peak_in_place_linear(signal: &mut TimeSignal, peak_level: f64) {
-    let max = signal.iter().map(|sample| sample.abs()).fold(0.0, f64::max);
-    if max == 0.0 {
-        return;
-    }
-
-    let gain = peak_level / max;
-    signal.iter_mut().for_each(|sample| *sample *= gain);
-}
-
-pub fn normalize_peak_linear(
-    signal: &TimeSignal,
-    peak_level: f64,
-) -> Result<TimeSignal, SignalError> {
-    let mut normalized = TimeSignal::new(signal.time_data().to_owned(), signal.sample_rate())?;
-    normalize_peak_in_place_linear(&mut normalized, peak_level);
-    Ok(normalized)
-}
-
-pub fn normalize_peak_in_place_db(signal: &mut TimeSignal, peak_level_db: f64) {
-    normalize_peak_in_place_linear(signal, db_to_gain(peak_level_db));
-}
-
-pub fn normalize_peak_db(
-    signal: &TimeSignal,
-    peak_level_db: f64,
-) -> Result<TimeSignal, SignalError> {
-    normalize_peak_linear(signal, db_to_gain(peak_level_db))
-}
-
-pub fn normalize_in_place(signal: &mut TimeSignal, peak_level: f64) {
-    normalize_peak_in_place_linear(signal, peak_level);
-}
-
-pub fn normalize(signal: &TimeSignal, peak_level: f64) -> Result<TimeSignal, SignalError> {
-    normalize_peak_linear(signal, peak_level)
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -127,35 +88,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(trimmed.num_time_steps(), 9);
-    }
-
-    #[test]
-    fn normalize_scales_to_requested_peak_linear() {
-        let signal = TimeSignal::new(arr2(&[[0.25, -0.5, 1.0]]), 48_000.0).unwrap();
-        let normalized = normalize_peak_linear(&signal, 0.5).unwrap();
-
-        assert_abs_diff_eq!(normalized.channel(0)[0], 0.125, epsilon = 1e-12);
-        assert_abs_diff_eq!(normalized.channel(0)[1], -0.25, epsilon = 1e-12);
-        assert_abs_diff_eq!(normalized.channel(0)[2], 0.5, epsilon = 1e-12);
-    }
-
-    #[test]
-    fn normalize_scales_to_requested_peak_db() {
-        let signal = TimeSignal::new(arr2(&[[0.25, -0.5, 1.0]]), 48_000.0).unwrap();
-        let normalized = normalize_peak_db(&signal, -6.0).unwrap();
-
-        let expected_peak = 10.0_f64.powf(-6.0 / 20.0);
-        assert_abs_diff_eq!(
-            normalized.channel(0)[0],
-            0.25 * expected_peak,
-            epsilon = 1e-12
-        );
-        assert_abs_diff_eq!(
-            normalized.channel(0)[1],
-            -0.5 * expected_peak,
-            epsilon = 1e-12
-        );
-        assert_abs_diff_eq!(normalized.channel(0)[2], expected_peak, epsilon = 1e-12);
     }
 
     #[test]

@@ -2,9 +2,9 @@
 authors.workspace = true
 categories = ["multimedia::audio", "science"]
 description = "Toolkit for audio research and testing"
-keywords = ["audio", "dsp", "signal-processing", "research"]
 edition.workspace = true
 homepage.workspace = true
+keywords = ["audio", "dsp", "research", "signal-processing"]
 license.workspace = true
 name = "audio-lab"
 repository.workspace = true

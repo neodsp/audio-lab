@@ -1,10 +1,10 @@
 [package]
 authors.workspace = true
-categories = ["multimedia::audio", "algorithms", "mathematics", "science"]
+categories = ["algorithms", "mathematics", "multimedia::audio", "science"]
 description = "DSP algorithms for audio research and testing"
-keywords = ["audio", "dsp", "signal-processing", "fft", "filter"]
 edition.workspace = true
 homepage.workspace = true
+keywords = ["audio", "dsp", "fft", "filter", "signal-processing"]
 license.workspace = true
 name = "audio-dsp"
 repository.workspace = true
