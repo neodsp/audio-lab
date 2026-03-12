@@ -12,40 +12,6 @@ Review of the `audio-lab` crate APIs and structure from the perspective of an au
 
 ## Issues, roughly by severity
 
-### 4. `audio-dsp::time` has normalize functions that duplicate each other
-
-You have 6 functions that are really 2:
-- `normalize_peak_linear` / `normalize_peak_in_place_linear`
-- `normalize_peak_db` / `normalize_peak_in_place_db`
-- `normalize` / `normalize_in_place` (aliases for the linear versions)
-
-Plus `audio-signal::test_signal::noise` has its own `normalize_peak()`. A researcher will be confused about which to use. This should be one method: `signal.normalize(peak_level)` with the dB variant being `signal.normalize_db(peak_db)`.
-
-### 5. Module path ergonomics — too much nesting for common operations
-
-A typical research script has to juggle:
-```rust
-use audio_signal::signal::{TimeSignal, FreqSignal};
-use audio_signal::test_signal::sine::generate_sine;
-use audio_signal::ops::complex;
-use audio_signal::analysis::spectrogram as spec_analysis;
-use audio_dsp::stft::{stft, StftConfig};
-use audio_dsp::time::normalize;
-use audio_plot::show_time_signal;
-```
-
-That's 7 use-statements before writing any actual code. Consider flattening re-exports in `lib.rs`:
-
-```rust
-// audio_signal prelude
-pub use signal::{TimeSignal, FreqSignal, Spectrogram};
-pub use test_signal::sine::generate_sine;
-// etc.
-
-// or provide a prelude module
-pub mod prelude { ... }
-```
-
 ### 6. `into_time()` / `into_freq()` are identity functions on the same type
 
 `TimeSignal::into_time()` returns `self`. `FreqSignal::into_freq()` returns `self`. These exist so you can call `.into_time()` on either type, but they consume the value for no reason on the "same domain" case. A researcher calling `time_signal.into_time()` is likely confused — it looks like it should do something. If the intent is a uniform interface, a trait would be cleaner.

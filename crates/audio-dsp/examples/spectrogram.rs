@@ -9,9 +9,9 @@
 /// This produces clearer time-varying structure than an impulse response plot.
 use std::f64::consts::PI;
 
-use audio_dsp::stft::{StftConfig, WindowFn, stft};
+use audio_dsp::{StftConfig, WindowFn, stft};
 use audio_plot::show_spectrogram;
-use audio_signal::signal::TimeSignal;
+use audio_signal::TimeSignal;
 use ndarray::Array2;
 
 fn smooth_pulse(t: f64, start: f64, end: f64, fade: f64) -> f64 {
