@@ -110,16 +110,16 @@ fn unwrap_phase_in_place(phase: &mut [f64]) {
     let mut offset = 0.0;
     let mut previous = phase[0];
 
-    for index in 1..phase.len() {
-        let current = phase[index];
-        let delta = current - previous;
+    for current in phase.iter_mut().skip(1) {
+        let current_value = *current;
+        let delta = current_value - previous;
         if delta > std::f64::consts::PI {
             offset -= two_pi;
         } else if delta < -std::f64::consts::PI {
             offset += two_pi;
         }
-        phase[index] = current + offset;
-        previous = current;
+        *current = current_value + offset;
+        previous = current_value;
     }
 }
 

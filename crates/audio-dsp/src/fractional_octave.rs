@@ -271,7 +271,7 @@ fn force_real_fft_endpoints(
     }
 
     channel[0] = Complex64::new(channel[0].norm(), 0.0);
-    if num_time_steps % 2 == 0 && channel.len() > 1 {
+    if num_time_steps.is_multiple_of(2) && channel.len() > 1 {
         let last = channel.len() - 1;
         channel[last] = Complex64::new(channel[last].norm(), 0.0);
     }
