@@ -73,10 +73,6 @@ pub fn join_time_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalErr
     Ok(stacked)
 }
 
-pub fn join_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
-    join_time_signals(signals)
-}
-
 pub fn mix_time_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
     let Some(first) = signals.first() else {
         return Err(SignalError::EmptySignalList);
@@ -102,10 +98,6 @@ pub fn mix_time_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalErro
     }
 
     TimeSignal::new(data, sample_rate)
-}
-
-pub fn mix_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
-    mix_time_signals(signals)
 }
 
 pub fn join_freq_signals(signals: &[FreqSignal]) -> Result<FreqSignal, SignalError> {
