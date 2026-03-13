@@ -1,5 +1,6 @@
-use audio_blocks::{AudioBlock, Planar};
+use audio_blocks::{AudioBlock, Planar, Sample};
 use ndarray::Array2;
+use num::NumCast;
 
 use crate::signal::{SignalError, TimeSignal};
 
@@ -21,10 +22,13 @@ pub enum BlockAdapterError {
     Signal(#[from] SignalError),
 }
 
-pub fn signal_to_blocks(
+pub fn signal_to_blocks<S>(
     signal: &TimeSignal,
     frames_per_block: usize,
-) -> Result<Vec<Planar<f64>>, BlockAdapterError> {
+) -> Result<Vec<Planar<S>>, BlockAdapterError>
+where
+    S: Sample + NumCast + Default,
+{
     if frames_per_block == 0 {
         return Err(BlockAdapterError::FramesPerBlockZero);
     }
@@ -38,7 +42,7 @@ pub fn signal_to_blocks(
     for block_index in 0..num_blocks {
         let start = block_index * frames_per_block;
         let end = usize::min(start + frames_per_block, num_samples);
-        let mut block = Planar::<f64>::new(num_channels, frames_per_block);
+        let mut block = Planar::<S>::new(num_channels, frames_per_block);
 
         for (channel_index, dst_channel) in block.channels_mut().enumerate() {
             let src_channel = signal.channel(channel_index);
@@ -47,7 +51,7 @@ pub fn signal_to_blocks(
                 .iter_mut()
                 .zip(src_channel.iter().skip(start).take(len))
             {
-                *dst = *src;
+                *dst = NumCast::from(*src).expect("time signal sample must convert to target type");
             }
         }
 
@@ -57,29 +61,33 @@ pub fn signal_to_blocks(
     Ok(blocks)
 }
 
-pub fn signal_to_block(signal: &TimeSignal) -> Result<Planar<f64>, BlockAdapterError> {
+pub fn signal_to_block<S>(signal: &TimeSignal) -> Result<Planar<S>, BlockAdapterError>
+where
+    S: Sample + NumCast + Default,
+{
     let num_channels =
         u16::try_from(signal.num_channels()).map_err(|_| BlockAdapterError::TooManyChannels)?;
-    let mut block = Planar::<f64>::new(num_channels, signal.num_time_steps());
+    let mut block = Planar::<S>::new(num_channels, signal.num_time_steps());
 
     for (channel_index, dst_channel) in block.channels_mut().enumerate() {
         for (dst, src) in dst_channel
             .iter_mut()
             .zip(signal.channel(channel_index).iter())
         {
-            *dst = *src;
+            *dst = NumCast::from(*src).expect("time signal sample must convert to target type");
         }
     }
 
     Ok(block)
 }
 
-pub fn signal_from_blocks<B>(
+pub fn signal_from_blocks<S, B>(
     blocks: impl IntoIterator<Item = B>,
     sample_rate: f64,
 ) -> Result<TimeSignal, BlockAdapterError>
 where
-    B: AudioBlock<f64>,
+    S: Sample + NumCast,
+    B: AudioBlock<S>,
 {
     if sample_rate <= 0.0 {
         return Err(BlockAdapterError::SampleRateZeroOrNeg);
@@ -113,7 +121,8 @@ where
 
         for (channel_index, src_channel) in block.channels_iter().enumerate() {
             for (frame_index, sample) in src_channel.enumerate() {
-                data[(channel_index, start + frame_index)] = *sample;
+                data[(channel_index, start + frame_index)] =
+                    NumCast::from(*sample).expect("block sample must convert to f64");
             }
         }
 
@@ -123,11 +132,12 @@ where
     TimeSignal::new(data, sample_rate).map_err(BlockAdapterError::from)
 }
 
-pub fn signal_from_block<B>(block: B, sample_rate: f64) -> Result<TimeSignal, BlockAdapterError>
+pub fn signal_from_block<S, B>(block: B, sample_rate: f64) -> Result<TimeSignal, BlockAdapterError>
 where
-    B: AudioBlock<f64>,
+    S: Sample + NumCast,
+    B: AudioBlock<S>,
 {
-    signal_from_blocks([block], sample_rate)
+    signal_from_blocks::<S, _>([block], sample_rate)
 }
 
 #[cfg(test)]
@@ -141,7 +151,7 @@ mod tests {
     fn signal_to_blocks_pads_last_block_with_zeros() -> Result<(), BlockAdapterError> {
         let signal = TimeSignal::new(arr2(&[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]), 48_000.0)?;
 
-        let blocks = signal_to_blocks(&signal, 2)?;
+        let blocks = signal_to_blocks::<f64>(&signal, 2)?;
 
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].channel(0), &[1.0, 2.0]);
@@ -152,11 +162,23 @@ mod tests {
     }
 
     #[test]
+    fn signal_to_blocks_supports_f32_output() -> Result<(), BlockAdapterError> {
+        let signal = TimeSignal::new(arr2(&[[1.0, 2.0, 3.0]]), 48_000.0)?;
+
+        let blocks = signal_to_blocks::<f32>(&signal, 2)?;
+
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].channel(0), &[1.0_f32, 2.0]);
+        assert_eq!(blocks[1].channel(0), &[3.0_f32, 0.0]);
+        Ok(())
+    }
+
+    #[test]
     fn signal_from_blocks_concatenates_blocks() -> Result<(), BlockAdapterError> {
         let first = Planar::from_slice(&[&[1.0, 2.0][..], &[10.0, 20.0][..]]);
         let second = Planar::from_slice(&[&[3.0, 0.0][..], &[30.0, 0.0][..]]);
 
-        let signal = signal_from_blocks([first, second], 48_000.0)?;
+        let signal = signal_from_blocks::<f64, _>([first, second], 48_000.0)?;
 
         assert_eq!(
             signal.time_data(),
@@ -169,7 +191,7 @@ mod tests {
     fn signal_to_block_converts_whole_signal_to_single_block() -> Result<(), BlockAdapterError> {
         let signal = TimeSignal::new(arr2(&[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]), 48_000.0)?;
 
-        let block = signal_to_block(&signal)?;
+        let block = signal_to_block::<f64>(&signal)?;
 
         assert_eq!(block.channel(0), &[1.0, 2.0, 3.0]);
         assert_eq!(block.channel(1), &[4.0, 5.0, 6.0]);
@@ -177,10 +199,20 @@ mod tests {
     }
 
     #[test]
+    fn signal_to_block_supports_f32_output() -> Result<(), BlockAdapterError> {
+        let signal = TimeSignal::new(arr2(&[[1.0, 2.0, 3.0]]), 48_000.0)?;
+
+        let block = signal_to_block::<f32>(&signal)?;
+
+        assert_eq!(block.channel(0), &[1.0_f32, 2.0, 3.0]);
+        Ok(())
+    }
+
+    #[test]
     fn signal_from_block_supports_single_block() -> Result<(), BlockAdapterError> {
         let block = Planar::from_slice(&[&[1.0, 2.0, 3.0][..]]);
 
-        let signal = signal_from_block(block, 48_000.0)?;
+        let signal = signal_from_block::<f64, _>(block, 48_000.0)?;
 
         assert_eq!(signal.time_data(), arr2(&[[1.0, 2.0, 3.0]]));
         Ok(())
@@ -190,14 +222,14 @@ mod tests {
     fn signal_to_blocks_rejects_zero_block_size() {
         let signal = TimeSignal::zeros(1, 4, 48_000.0).unwrap();
 
-        let result = signal_to_blocks(&signal, 0);
+        let result = signal_to_blocks::<f64>(&signal, 0);
 
         assert!(matches!(result, Err(BlockAdapterError::FramesPerBlockZero)));
     }
 
     #[test]
     fn signal_from_blocks_rejects_empty_input() {
-        let result = signal_from_blocks::<Planar<f64>>(Vec::new(), 48_000.0);
+        let result = signal_from_blocks::<f64, _>(Vec::<Planar<f64>>::new(), 48_000.0);
 
         assert!(matches!(result, Err(BlockAdapterError::EmptyBlockList)));
     }
@@ -207,7 +239,7 @@ mod tests {
         let mono = Planar::from_slice(&[&[1.0, 2.0][..]]);
         let stereo = Planar::from_slice(&[&[3.0, 4.0][..], &[5.0, 6.0][..]]);
 
-        let result = signal_from_blocks([mono, stereo], 48_000.0);
+        let result = signal_from_blocks::<f64, _>([mono, stereo], 48_000.0);
 
         assert!(matches!(result, Err(BlockAdapterError::ChannelMismatch)));
     }
@@ -217,7 +249,7 @@ mod tests {
         let first = Planar::from_slice(&[&[1.0, 2.0][..]]);
         let second = Planar::from_slice(&[&[3.0, 4.0, 5.0][..]]);
 
-        let result = signal_from_blocks([first, second], 48_000.0);
+        let result = signal_from_blocks::<f64, _>([first, second], 48_000.0);
 
         assert!(matches!(result, Err(BlockAdapterError::FrameMismatch)));
     }
@@ -226,11 +258,22 @@ mod tests {
     fn signal_from_blocks_rejects_invalid_sample_rate() {
         let block = Planar::from_slice(&[&[1.0, 2.0][..]]);
 
-        let result = signal_from_block(block, 0.0);
+        let result = signal_from_block::<f64, _>(block, 0.0);
 
         assert!(matches!(
             result,
             Err(BlockAdapterError::SampleRateZeroOrNeg)
         ));
+    }
+
+    #[test]
+    fn signal_from_blocks_supports_f32_input() -> Result<(), BlockAdapterError> {
+        let first = Planar::from_slice(&[&[1.0_f32, 2.0][..]]);
+        let second = Planar::from_slice(&[&[3.0_f32, 0.0][..]]);
+
+        let signal = signal_from_blocks::<f32, _>([first, second], 48_000.0)?;
+
+        assert_eq!(signal.time_data(), arr2(&[[1.0, 2.0, 3.0, 0.0]]));
+        Ok(())
     }
 }
