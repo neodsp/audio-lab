@@ -567,6 +567,7 @@ name = "audio-signal"
 version = "0.1.0"
 dependencies = [
  "approx",
+ "audio-blocks",
  "audio-file",
  "audio-io",
  "audio-plot",

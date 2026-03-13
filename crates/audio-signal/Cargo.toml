@@ -12,6 +12,7 @@ version.workspace = true
 
 [dependencies]
 approx.workspace = true
+audio-blocks.workspace = true
 audio-file = { workspace = true, optional = true }
 audio-io = { workspace = true, optional = true }
 ndarray.workspace = true

@@ -1,5 +1,8 @@
 pub use ndarray;
 
+pub use blocks::{
+    BlockAdapterError, signal_from_block, signal_from_blocks, signal_to_block, signal_to_blocks,
+};
 pub use signal::{
     FreqSignal, Spectrogram, SpectrogramNormalization, TimeSignal, join_freq_signals, join_signals,
     join_time_signals, mix_freq_signals, mix_signals, mix_time_signals,
@@ -38,6 +41,7 @@ macro_rules! mix_freq {
     };
 }
 
+pub mod blocks;
 pub mod data;
 pub mod io;
 pub mod math;
