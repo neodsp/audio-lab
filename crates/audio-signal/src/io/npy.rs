@@ -8,7 +8,7 @@ pub enum NpyOrSignalError {
     Signal(#[from] SignalError),
 }
 
-pub fn read_numpy_time_signal(
+pub fn read_npy_time(
     path: impl AsRef<std::path::Path>,
     sample_rate: f64,
 ) -> Result<TimeSignal, NpyOrSignalError> {
@@ -16,14 +16,14 @@ pub fn read_numpy_time_signal(
     TimeSignal::new(y_data, sample_rate).map_err(NpyOrSignalError::Signal)
 }
 
-pub fn write_numpy_time_signal(
+pub fn write_npy_time(
     signal: &TimeSignal,
     path: impl AsRef<std::path::Path>,
 ) -> Result<(), ndarray_npy::WriteNpyError> {
     ndarray_npy::write_npy(path, &signal.time_data().to_owned())
 }
 
-pub fn read_numpy_freq_signal(
+pub fn read_npy_freq(
     path: impl AsRef<std::path::Path>,
     sample_rate: f64,
     num_time_steps: Option<usize>,
@@ -32,11 +32,44 @@ pub fn read_numpy_freq_signal(
     FreqSignal::new(y_data, sample_rate, num_time_steps).map_err(NpyOrSignalError::Signal)
 }
 
-pub fn write_numpy_freq_signal(
+pub fn write_npy_freq(
     signal: &FreqSignal,
     path: impl AsRef<std::path::Path>,
 ) -> Result<(), ndarray_npy::WriteNpyError> {
     ndarray_npy::write_npy(path, &signal.freq_data().to_owned())
+}
+
+#[deprecated(note = "use read_npy_time")]
+pub fn read_numpy_time_signal(
+    path: impl AsRef<std::path::Path>,
+    sample_rate: f64,
+) -> Result<TimeSignal, NpyOrSignalError> {
+    read_npy_time(path, sample_rate)
+}
+
+#[deprecated(note = "use write_npy_time")]
+pub fn write_numpy_time_signal(
+    signal: &TimeSignal,
+    path: impl AsRef<std::path::Path>,
+) -> Result<(), ndarray_npy::WriteNpyError> {
+    write_npy_time(signal, path)
+}
+
+#[deprecated(note = "use read_npy_freq")]
+pub fn read_numpy_freq_signal(
+    path: impl AsRef<std::path::Path>,
+    sample_rate: f64,
+    num_time_steps: Option<usize>,
+) -> Result<FreqSignal, NpyOrSignalError> {
+    read_npy_freq(path, sample_rate, num_time_steps)
+}
+
+#[deprecated(note = "use write_npy_freq")]
+pub fn write_numpy_freq_signal(
+    signal: &FreqSignal,
+    path: impl AsRef<std::path::Path>,
+) -> Result<(), ndarray_npy::WriteNpyError> {
+    write_npy_freq(signal, path)
 }
 
 #[cfg(test)]
@@ -60,8 +93,8 @@ mod tests {
                 .as_nanos()
         ));
 
-        write_numpy_time_signal(&signal, &path).unwrap();
-        let loaded = read_numpy_time_signal(&path, 44_100.0).unwrap();
+        write_npy_time(&signal, &path).unwrap();
+        let loaded = read_npy_time(&path, 44_100.0).unwrap();
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(loaded, signal);
@@ -87,8 +120,8 @@ mod tests {
                 .as_nanos()
         ));
 
-        write_numpy_freq_signal(&signal, &path).unwrap();
-        let loaded = read_numpy_freq_signal(&path, 44_100.0, Some(3)).unwrap();
+        write_npy_freq(&signal, &path).unwrap();
+        let loaded = read_npy_freq(&path, 44_100.0, Some(3)).unwrap();
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(loaded, signal);

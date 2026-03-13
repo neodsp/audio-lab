@@ -193,7 +193,7 @@ impl eframe::App for FreqSignalPlot {
     }
 }
 
-pub fn show_freq_signal(
+pub fn show_freq(
     title: &str,
     signal: &FreqSignal,
     options: FreqPlotOptions,
@@ -203,6 +203,15 @@ pub fn show_freq_signal(
         native_options_any_thread(),
         Box::new(|_cc| Ok(Box::new(FreqSignalPlot::new(signal, title, options)))),
     )?)
+}
+
+#[deprecated(note = "use show_freq")]
+pub fn show_freq_signal(
+    title: &str,
+    signal: &FreqSignal,
+    options: FreqPlotOptions,
+) -> Result<(), crate::Error> {
+    show_freq(title, signal, options)
 }
 
 #[cfg(test)]
@@ -231,7 +240,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_show_freq_signal_log_db() {
-        show_freq_signal(
+        show_freq(
             "Freq Signal (Log, dB)",
             &make_signal(),
             FreqPlotOptions::default(),
@@ -242,7 +251,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_show_freq_signal_phase() {
-        show_freq_signal(
+        show_freq(
             "Freq Signal (Phase)",
             &make_signal(),
             FreqPlotOptions {
@@ -256,7 +265,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_show_freq_signal_phase_degrees() {
-        show_freq_signal(
+        show_freq(
             "Freq Signal (Phase, Degrees)",
             &make_signal(),
             FreqPlotOptions {

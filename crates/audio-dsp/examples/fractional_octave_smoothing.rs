@@ -27,7 +27,7 @@ fn main() -> Result<(), audio_plot::Error> {
 
     let comparison = join_freq!(original, smoothed).unwrap();
 
-    audio_plot::show_freq_signal(
+    audio_plot::show_freq(
         "Fractional octave smoothing - original vs smoothed",
         &comparison,
         FreqPlotOptions::default(),

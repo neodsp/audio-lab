@@ -58,8 +58,8 @@ use audio_lab::{plot, signal};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signal = signal::generate_sine(48_000, 440.0, &signal::SineConfig::default())?;
 
-    plot::show_time_signal("time", &signal)?;
-    plot::show_freq_signal("spectrum", &signal.clone().into_freq(), Default::default())?;
+    plot::show_time("time", &signal)?;
+    plot::show_freq("spectrum", &signal.clone().into_freq(), Default::default())?;
     Ok(())
 }
 ```
@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use audio_lab::signal::{
     self,
-    io::{audio_file, numpy},
+    io::{audio, npy},
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -91,8 +91,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &signal::SweepConfig::default(),
     )?;
 
-    audio_file::write_audio(&signal, "test.wav")?;
-    numpy::write_numpy_time_signal(&signal, "test.npy")?;
+    audio::write_audio(&signal, "test.wav")?;
+    npy::write_npy_time(&signal, "test.npy")?;
     Ok(())
 }
 ```

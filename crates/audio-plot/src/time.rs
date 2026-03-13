@@ -53,12 +53,17 @@ impl eframe::App for TimeSignalPlot {
     }
 }
 
-pub fn show_time_signal(title: &str, signal: &TimeSignal) -> Result<(), crate::Error> {
+pub fn show_time(title: &str, signal: &TimeSignal) -> Result<(), crate::Error> {
     Ok(eframe::run_native(
         title,
         native_options_any_thread(),
         Box::new(|_cc| Ok(Box::new(TimeSignalPlot::new(signal, title)))),
     )?)
+}
+
+#[deprecated(note = "use show_time")]
+pub fn show_time_signal(title: &str, signal: &TimeSignal) -> Result<(), crate::Error> {
+    show_time(title, signal)
 }
 
 #[cfg(test)]
@@ -85,6 +90,6 @@ mod tests {
             sample_rate,
         )
         .unwrap();
-        show_time_signal("Time Signal Test", &signal).unwrap();
+        show_time("Time Signal Test", &signal).unwrap();
     }
 }

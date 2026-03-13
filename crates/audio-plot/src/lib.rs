@@ -5,9 +5,9 @@ pub mod spectrogram;
 pub mod time;
 
 pub use data::show_real_data;
-pub use freq::show_freq_signal;
+pub use freq::show_freq;
 pub use spectrogram::{SpectrogramPlotOptions, show_spectrogram};
-pub use time::show_time_signal;
+pub use time::show_time;
 
 /// Error returned by all `show_*` functions.
 #[derive(Debug, thiserror::Error)]
