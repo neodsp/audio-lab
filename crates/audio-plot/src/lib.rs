@@ -7,7 +7,7 @@ pub mod time;
 pub use data::show_real_data;
 pub use freq::show_freq;
 pub use spectrogram::{SpectrogramPlotOptions, show_spectrogram};
-pub use time::show_time;
+pub use time::{TimePlotOptions, TimeValue, show_time};
 
 /// Error returned by all `show_*` functions.
 #[derive(Debug, thiserror::Error)]
