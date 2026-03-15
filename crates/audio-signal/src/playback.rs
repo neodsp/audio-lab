@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-use audio_io::{AudioBackend, AudioBlock, AudioBlockMut, AudioHost, Config};
+use audio_host::{AudioBackend, AudioBlock, AudioBlockMut, AudioHost, Config};
 
 use crate::signal::TimeSignal;
 
-pub fn play(signal: &TimeSignal) -> Result<(), audio_io::Error> {
+pub fn play(signal: &TimeSignal) -> Result<(), audio_host::Error> {
     let num_output_channels = signal.num_channels() as u16;
     let sample_rate = signal.sample_rate().round() as u32;
     let num_frames = 512;

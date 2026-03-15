@@ -14,7 +14,7 @@ version.workspace = true
 approx.workspace = true
 audio-blocks.workspace = true
 audio-file = { workspace = true, optional = true }
-audio-io = { workspace = true, optional = true }
+audio-host = { workspace = true, optional = true }
 ndarray.workspace = true
 ndarray-npy = { workspace = true, optional = true }
 ndarray-rand.workspace = true
@@ -27,7 +27,7 @@ thiserror.workspace = true
 default = ["audio-file", "audio-playback", "numpy"]
 
 audio-file = ["dep:audio-file"]
-audio-playback = ["dep:audio-io"]
+audio-playback = ["dep:audio-host"]
 numpy = ["dep:ndarray-npy"]
 serde = ["dep:serde", "ndarray/serde", "num/serde"]
 
