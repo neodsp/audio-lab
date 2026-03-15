@@ -39,39 +39,6 @@ pub fn write_npy_freq(
     ndarray_npy::write_npy(path, &signal.freq_data().to_owned())
 }
 
-#[deprecated(note = "use read_npy_time")]
-pub fn read_numpy_time_signal(
-    path: impl AsRef<std::path::Path>,
-    sample_rate: f64,
-) -> Result<TimeSignal, NpyOrSignalError> {
-    read_npy_time(path, sample_rate)
-}
-
-#[deprecated(note = "use write_npy_time")]
-pub fn write_numpy_time_signal(
-    signal: &TimeSignal,
-    path: impl AsRef<std::path::Path>,
-) -> Result<(), ndarray_npy::WriteNpyError> {
-    write_npy_time(signal, path)
-}
-
-#[deprecated(note = "use read_npy_freq")]
-pub fn read_numpy_freq_signal(
-    path: impl AsRef<std::path::Path>,
-    sample_rate: f64,
-    num_time_steps: Option<usize>,
-) -> Result<FreqSignal, NpyOrSignalError> {
-    read_npy_freq(path, sample_rate, num_time_steps)
-}
-
-#[deprecated(note = "use write_npy_freq")]
-pub fn write_numpy_freq_signal(
-    signal: &FreqSignal,
-    path: impl AsRef<std::path::Path>,
-) -> Result<(), ndarray_npy::WriteNpyError> {
-    write_npy_freq(signal, path)
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};

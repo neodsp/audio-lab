@@ -205,15 +205,6 @@ pub fn show_freq(
     )?)
 }
 
-#[deprecated(note = "use show_freq")]
-pub fn show_freq_signal(
-    title: &str,
-    signal: &FreqSignal,
-    options: FreqPlotOptions,
-) -> Result<(), crate::Error> {
-    show_freq(title, signal, options)
-}
-
 #[cfg(test)]
 mod tests {
     use audio_signal::{ndarray::arr2, signal::time_signal::TimeSignal};

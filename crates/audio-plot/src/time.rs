@@ -61,11 +61,6 @@ pub fn show_time(title: &str, signal: &TimeSignal) -> Result<(), crate::Error> {
     )?)
 }
 
-#[deprecated(note = "use show_time")]
-pub fn show_time_signal(title: &str, signal: &TimeSignal) -> Result<(), crate::Error> {
-    show_time(title, signal)
-}
-
 #[cfg(test)]
 mod tests {
     use audio_signal::signal::time_signal::TimeSignal;
