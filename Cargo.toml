@@ -13,7 +13,15 @@ version.workspace = true
 [dependencies]
 audio-dsp.workspace = true
 audio-plot.workspace = true
-audio-signal = { workspace = true, features = ["audio-file", "audio-playback", "numpy", "serde"] }
+audio-signal = { workspace = true, default-features = false }
+
+[features]
+default = ["audio-file", "audio-playback", "numpy"]
+
+audio-file = ["audio-signal/audio-file"]
+audio-playback = ["audio-signal/audio-playback"]
+numpy = ["audio-signal/numpy"]
+serde = ["audio-signal/serde"]
 
 [workspace]
 members = [".", "crates/audio-dsp", "crates/audio-plot", "crates/audio-signal"]
@@ -35,7 +43,7 @@ audio-host = { git = "https://github.com/neodsp/audio-host", default-features = 
 ] }
 audio-lab = { path = "." }
 audio-plot = { path = "crates/audio-plot" }
-audio-signal = { path = "crates/audio-signal" }
+audio-signal = { path = "crates/audio-signal", default-features = false }
 audioadapter-buffers = "2.0.0"
 
 approx = { version = "0.5", features = ["num-complex"] }
