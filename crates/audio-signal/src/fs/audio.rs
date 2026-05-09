@@ -1,5 +1,7 @@
 use ndarray::Array2;
 
+pub use audio_file::SampleFormat;
+
 use crate::signal::TimeSignal;
 
 pub fn read_audio(path: impl AsRef<std::path::Path>) -> Result<TimeSignal, audio_file::ReadError> {
@@ -16,6 +18,7 @@ pub fn read_audio(path: impl AsRef<std::path::Path>) -> Result<TimeSignal, audio
 pub fn write_audio(
     signal: &TimeSignal,
     path: impl AsRef<std::path::Path>,
+    sample_format: SampleFormat,
 ) -> Result<(), audio_file::WriteError> {
     let interleaved: Vec<f64> = signal.time_data().t().iter().cloned().collect();
     audio_file::write(
@@ -23,9 +26,7 @@ pub fn write_audio(
         &interleaved,
         signal.num_channels() as u16,
         signal.sample_rate().round() as u32,
-        audio_file::WriteConfig {
-            sample_format: audio_file::SampleFormat::Float32,
-        },
+        audio_file::WriteConfig { sample_format },
     )
 }
 
@@ -49,7 +50,7 @@ mod tests {
                 .as_nanos()
         ));
 
-        write_audio(&signal, &path).unwrap();
+        write_audio(&signal, &path, SampleFormat::Float32).unwrap();
         let loaded = read_audio(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
 

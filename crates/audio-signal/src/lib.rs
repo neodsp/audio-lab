@@ -43,7 +43,7 @@ macro_rules! mix_freq {
 
 pub mod blocks;
 pub mod data;
-pub mod io;
+pub mod fs;
 pub mod math;
 mod ops;
 #[cfg(feature = "audio-playback")]

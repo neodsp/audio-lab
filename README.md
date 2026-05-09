@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use audio_lab::signal::{
     self,
-    io::{audio, npy},
+    fs::{audio, npy},
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -91,7 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         signal::SweepConfig::default(),
     )?;
 
-    audio::write_audio(&signal, "test.wav")?;
+    audio::write_audio(&signal, "test.wav", audio::SampleFormat::Float32)?;
     npy::write_npy_time(&signal, "test.npy")?;
     Ok(())
 }
