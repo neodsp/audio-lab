@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
 
-    let signal = join_time!(noise, sine, sweep)?;
-    show_time("Noise Test Signal", &signal)?;
+
+    show_time("Test Signals", &[&noise, &sine, &sweep])?;
     Ok(())
 }

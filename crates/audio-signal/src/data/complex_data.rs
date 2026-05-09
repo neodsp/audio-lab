@@ -9,6 +9,7 @@ pub struct ComplexData {
     x_data: Array1<f64>,
     y_data: Array2<Complex64>,
     comment: Option<String>,
+    channel_labels: Vec<Option<String>>,
 }
 
 impl ComplexData {
@@ -24,10 +25,12 @@ impl ComplexData {
         {
             return Err(DataError::NotIncreasing);
         }
+        let num_channels = y_data.nrows();
         Ok(Self {
             x_data,
             y_data,
             comment: None,
+            channel_labels: vec![None; num_channels],
         })
     }
 
@@ -36,6 +39,7 @@ impl ComplexData {
             x_data: Array1::from_iter((0..num_data_points).map(|i| i as f64)),
             y_data: Array2::zeros((num_channels, num_data_points)),
             comment: None,
+            channel_labels: vec![None; num_channels],
         }
     }
 
@@ -51,14 +55,17 @@ impl ComplexData {
             y_data: Array2::zeros((num_channels, x_data.len())),
             x_data,
             comment: None,
+            channel_labels: vec![None; num_channels],
         })
     }
 
     pub fn from_y_data(y_data: Array2<Complex64>) -> Self {
+        let num_channels = y_data.nrows();
         Self {
             x_data: Array1::from_iter((0..y_data.ncols()).map(|i| i as f64)),
             y_data,
             comment: None,
+            channel_labels: vec![None; num_channels],
         }
     }
 
@@ -68,6 +75,16 @@ impl ComplexData {
 
     pub fn set_comment(&mut self, comment: Option<&str>) {
         self.comment = comment.map(Into::into);
+    }
+
+    pub fn channel_label(&self, channel: usize) -> Option<&str> {
+        self.channel_labels.get(channel).and_then(|s| s.as_deref())
+    }
+
+    pub fn set_channel_label(&mut self, channel: usize, label: Option<&str>) {
+        if let Some(slot) = self.channel_labels.get_mut(channel) {
+            *slot = label.map(Into::into);
+        }
     }
 
     pub fn num_channels(&self) -> usize {

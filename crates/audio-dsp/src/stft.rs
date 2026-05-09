@@ -111,7 +111,7 @@ pub fn stft(signal: &TimeSignal, config: &StftConfig) -> Result<Spectrogram, Stf
         data.slice_mut(s![.., frame_idx, ..]).assign(&frame_freq);
     }
 
-    Ok(Spectrogram::new(
+    let mut spectrogram = Spectrogram::new(
         data,
         frame_times,
         freq_bins,
@@ -119,7 +119,11 @@ pub fn stft(signal: &TimeSignal, config: &StftConfig) -> Result<Spectrogram, Stf
         window_size,
         hop_size,
         SpectrogramNormalization::new(coherent_gain, window_energy),
-    ))
+    );
+    for ch in 0..signal.num_channels() {
+        spectrogram.set_channel_label(ch, signal.channel_label(ch));
+    }
+    Ok(spectrogram)
 }
 
 #[cfg(test)]

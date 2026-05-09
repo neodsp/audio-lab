@@ -57,20 +57,42 @@ pub fn join_time_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalErr
     }
 
     let mut stacked = TimeSignal::new(data, sample_rate)?;
-    let comments = signals
-        .iter()
-        .enumerate()
-        .filter_map(|(index, signal)| {
-            signal
-                .comment()
-                .map(|comment| format!("signal{}: {}", index + 1, comment))
-        })
-        .collect::<Vec<_>>();
-    if !comments.is_empty() {
-        stacked.set_comment(Some(&comments.join(" | ")));
-    }
-
+    propagate_channel_labels(&mut stacked, signals);
     Ok(stacked)
+}
+
+fn propagate_channel_labels(stacked: &mut TimeSignal, signals: &[TimeSignal]) {
+    let mut next_channel = 0;
+    for signal in signals {
+        let multi_channel = signal.num_channels() > 1;
+        for source_channel in 0..signal.num_channels() {
+            let label = source_label(
+                signal.channel_label(source_channel),
+                signal.comment(),
+                source_channel,
+                multi_channel,
+            );
+            stacked.set_channel_label(next_channel, label.as_deref());
+            next_channel += 1;
+        }
+    }
+}
+
+fn source_label(
+    explicit_label: Option<&str>,
+    comment: Option<&str>,
+    source_channel: usize,
+    multi_channel: bool,
+) -> Option<String> {
+    if let Some(label) = explicit_label {
+        return Some(label.to_string());
+    }
+    let base = comment?;
+    Some(if multi_channel {
+        format!("{base} · Ch {source_channel}")
+    } else {
+        base.to_string()
+    })
 }
 
 pub fn mix_time_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
@@ -140,20 +162,25 @@ pub fn join_freq_signals(signals: &[FreqSignal]) -> Result<FreqSignal, SignalErr
     }
 
     let mut stacked = FreqSignal::new(data, sample_rate, Some(num_time_steps))?;
-    let comments = signals
-        .iter()
-        .enumerate()
-        .filter_map(|(index, signal)| {
-            signal
-                .comment()
-                .map(|comment| format!("signal{}: {}", index + 1, comment))
-        })
-        .collect::<Vec<_>>();
-    if !comments.is_empty() {
-        stacked.set_comment(Some(&comments.join(" | ")));
-    }
-
+    propagate_channel_labels_freq(&mut stacked, signals);
     Ok(stacked)
+}
+
+fn propagate_channel_labels_freq(stacked: &mut FreqSignal, signals: &[FreqSignal]) {
+    let mut next_channel = 0;
+    for signal in signals {
+        let multi_channel = signal.num_channels() > 1;
+        for source_channel in 0..signal.num_channels() {
+            let label = source_label(
+                signal.channel_label(source_channel),
+                signal.comment(),
+                source_channel,
+                multi_channel,
+            );
+            stacked.set_channel_label(next_channel, label.as_deref());
+            next_channel += 1;
+        }
+    }
 }
 
 pub fn mix_freq_signals(signals: &[FreqSignal]) -> Result<FreqSignal, SignalError> {
@@ -248,7 +275,10 @@ mod tests {
             joined.time_data(),
             arr2(&[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [6.0, 7.0, 8.0]])
         );
-        assert_eq!(joined.comment(), Some("signal1: first"));
+        assert_eq!(joined.comment(), None);
+        assert_eq!(joined.channel_label(0), Some("first · Ch 0"));
+        assert_eq!(joined.channel_label(1), Some("first · Ch 1"));
+        assert_eq!(joined.channel_label(2), None);
         Ok(())
     }
 
@@ -353,7 +383,9 @@ mod tests {
                 ]
             ])
         );
-        assert_eq!(joined.comment(), Some("signal1: first"));
+        assert_eq!(joined.comment(), None);
+        assert_eq!(joined.channel_label(0), Some("first"));
+        assert_eq!(joined.channel_label(1), None);
         Ok(())
     }
 

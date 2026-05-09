@@ -335,6 +335,7 @@ pub(crate) struct SpectrogramPlot {
     image_size: egui::Vec2,
     num_channels: usize,
     current_channel: usize,
+    channel_labels: Vec<String>,
     save: SavePlotState,
     scale: SpectrogramScale,
 }
@@ -391,6 +392,13 @@ impl SpectrogramPlot {
             pos.y + f64::from(image_size.y) / 2.0,
         );
 
+        let channel_labels: Vec<String> = (0..num_channels)
+            .map(|ch| match spec.channel_label(ch) {
+                Some(label) => crate::legend::clip_label(label),
+                None => format!("Channel {ch}"),
+            })
+            .collect();
+
         Self {
             values,
             images,
@@ -405,6 +413,7 @@ impl SpectrogramPlot {
             image_size,
             num_channels,
             current_channel: 0,
+            channel_labels,
             save: SavePlotState::new(title),
             scale,
         }
@@ -432,7 +441,7 @@ impl eframe::App for SpectrogramPlot {
             if self.num_channels > 1 {
                 ui.horizontal(|ui| {
                     for ch in 0..self.num_channels {
-                        ui.selectable_value(&mut self.current_channel, ch, format!("Channel {ch}"));
+                        ui.selectable_value(&mut self.current_channel, ch, &self.channel_labels[ch]);
                     }
                 });
             }
@@ -457,7 +466,7 @@ impl eframe::App for SpectrogramPlot {
                 )
             });
             let image = PlotImage::new(
-                format!("Channel {}", self.current_channel),
+                self.channel_labels[self.current_channel].clone(),
                 texture.id(),
                 self.image_center,
                 self.image_size,

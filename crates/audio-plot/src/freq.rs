@@ -94,32 +94,39 @@ fn spectrum_grid_spacer(input: GridInput) -> Vec<GridMark> {
 }
 
 pub(crate) struct FreqSignalPlot {
-    channels: Vec<Vec<PlotPoint>>,
+    series: Vec<(String, Vec<PlotPoint>)>,
     options: FreqPlotOptions,
     save: SavePlotState,
 }
 
 impl FreqSignalPlot {
-    pub(crate) fn new(signal: &FreqSignal, title: &str, options: FreqPlotOptions) -> Self {
-        let freq_bins = signal.freq_bins();
-        let derived = match options.value {
-            FreqValue::Magnitude => Some(signal.to_magnitude()),
-            FreqValue::MagnitudeDb => Some(signal.to_magnitude_db()),
-            FreqValue::PhaseRadians | FreqValue::PhaseDegrees => Some(signal.to_phase()),
-        };
-        let channels = signal
-            .channel_iter()
-            .enumerate()
-            .map(|(ch_index, ch)| {
-                let derived_channel = derived.as_ref().map(|data| data.channel(ch_index));
-                freq_bins
+    pub(crate) fn new(signals: &[&FreqSignal], title: &str, options: FreqPlotOptions) -> Self {
+        let mut series = Vec::new();
+        for (signal_index, signal) in signals.iter().enumerate() {
+            let freq_bins = signal.freq_bins();
+            let derived = match options.value {
+                FreqValue::Magnitude => Some(signal.to_magnitude()),
+                FreqValue::MagnitudeDb => Some(signal.to_magnitude_db()),
+                FreqValue::PhaseRadians | FreqValue::PhaseDegrees => Some(signal.to_phase()),
+            };
+            let num_channels = signal.num_channels();
+            for (channel_index, channel) in signal.channel_iter().enumerate() {
+                let derived_channel = derived.as_ref().map(|data| data.channel(channel_index));
+                let label = crate::legend::build_channel_label(
+                    signal.channel_label(channel_index),
+                    signal.comment(),
+                    signal_index,
+                    channel_index,
+                    num_channels,
+                );
+                let points = freq_bins
                     .iter()
-                    .zip(ch.iter().enumerate())
+                    .zip(channel.iter().enumerate())
                     .filter(|&(&f, _)| !options.log_freq || f > 0.0)
                     .map(|(&f, (bin_index, c))| {
                         let x = if options.log_freq { f.log10() } else { f };
-                        let y = if let Some(channel) = &derived_channel {
-                            let value = channel[bin_index];
+                        let y = if let Some(derived_channel) = &derived_channel {
+                            let value = derived_channel[bin_index];
                             if matches!(options.value, FreqValue::PhaseDegrees) {
                                 value.to_degrees()
                             } else {
@@ -130,11 +137,12 @@ impl FreqSignalPlot {
                         };
                         PlotPoint::new(x, y)
                     })
-                    .collect()
-            })
-            .collect();
+                    .collect();
+                series.push((label, points));
+            }
+        }
         Self {
-            channels,
+            series,
             options,
             save: SavePlotState::new(title),
         }
@@ -181,11 +189,8 @@ impl eframe::App for FreqSignalPlot {
             }
 
             plot.show(ui, |plot_ui| {
-                for (i, points) in self.channels.iter().enumerate() {
-                    plot_ui.line(Line::new(
-                        format!("Channel {i}"),
-                        PlotPoints::Owned(points.clone()),
-                    ));
+                for (label, points) in &self.series {
+                    plot_ui.line(Line::new(label.clone(), PlotPoints::Owned(points.clone())));
                 }
             });
         });
@@ -195,18 +200,18 @@ impl eframe::App for FreqSignalPlot {
 
 pub fn show_freq_with_options(
     title: &str,
-    signal: &FreqSignal,
+    signals: &[&FreqSignal],
     options: FreqPlotOptions,
 ) -> Result<(), crate::Error> {
     Ok(eframe::run_native(
         title,
         native_options_any_thread(),
-        Box::new(|_cc| Ok(Box::new(FreqSignalPlot::new(signal, title, options)))),
+        Box::new(|_cc| Ok(Box::new(FreqSignalPlot::new(signals, title, options)))),
     )?)
 }
 
-pub fn show_freq(title: &str, signal: &FreqSignal) -> Result<(), crate::Error> {
-    show_freq_with_options(title, signal, Default::default())
+pub fn show_freq(title: &str, signals: &[&FreqSignal]) -> Result<(), crate::Error> {
+    show_freq_with_options(title, signals, Default::default())
 }
 
 #[cfg(test)]
@@ -235,7 +240,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_show_freq_signal_log_db() {
-        show_freq("Freq Signal (Log, dB)", &make_signal()).unwrap();
+        show_freq("Freq Signal (Log, dB)", &[&make_signal()]).unwrap();
     }
 
     #[test]
@@ -243,7 +248,7 @@ mod tests {
     fn test_show_freq_signal_phase() {
         show_freq_with_options(
             "Freq Signal (Phase)",
-            &make_signal(),
+            &[&make_signal()],
             FreqPlotOptions {
                 log_freq: true,
                 value: FreqValue::PhaseDegrees,
@@ -257,7 +262,7 @@ mod tests {
     fn test_show_freq_signal_phase_degrees() {
         show_freq_with_options(
             "Freq Signal (Phase, Degrees)",
-            &make_signal(),
+            &[&make_signal()],
             FreqPlotOptions {
                 log_freq: true,
                 value: FreqValue::PhaseDegrees,

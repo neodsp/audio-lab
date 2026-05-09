@@ -79,6 +79,14 @@ impl FreqSignal {
         self.data.set_comment(comment);
     }
 
+    pub fn channel_label(&self, channel: usize) -> Option<&str> {
+        self.data.channel_label(channel)
+    }
+
+    pub fn set_channel_label(&mut self, channel: usize, label: Option<&str>) {
+        self.data.set_channel_label(channel, label);
+    }
+
     pub fn sample_rate(&self) -> f64 {
         self.sample_rate
     }
@@ -149,6 +157,9 @@ impl FreqSignal {
             TimeSignal::zeros(self.num_channels(), self.num_time_steps, self.sample_rate)
                 .expect("generate_time_steps produced invalid data");
         time_signal.set_comment(self.comment());
+        for ch in 0..self.num_channels() {
+            time_signal.set_channel_label(ch, self.channel_label(ch));
+        }
         ndifft_r2c(
             &self.freq_data(),
             &mut time_signal.time_data_mut(),

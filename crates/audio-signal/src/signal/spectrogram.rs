@@ -45,6 +45,7 @@ pub struct Spectrogram {
     window_size: usize,
     hop_size: usize,
     normalization: SpectrogramNormalization,
+    channel_labels: Vec<Option<String>>,
 }
 
 impl Spectrogram {
@@ -57,6 +58,7 @@ impl Spectrogram {
         hop_size: usize,
         normalization: SpectrogramNormalization,
     ) -> Self {
+        let num_channels = data.shape()[0];
         Self {
             data,
             frame_times,
@@ -65,6 +67,17 @@ impl Spectrogram {
             window_size,
             hop_size,
             normalization,
+            channel_labels: vec![None; num_channels],
+        }
+    }
+
+    pub fn channel_label(&self, channel: usize) -> Option<&str> {
+        self.channel_labels.get(channel).and_then(|s| s.as_deref())
+    }
+
+    pub fn set_channel_label(&mut self, channel: usize, label: Option<&str>) {
+        if let Some(slot) = self.channel_labels.get_mut(channel) {
+            *slot = label.map(Into::into);
         }
     }
 

@@ -1,5 +1,6 @@
 pub mod data;
 pub mod freq;
+mod legend;
 mod save;
 pub mod spectrogram;
 pub mod time;

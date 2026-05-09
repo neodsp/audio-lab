@@ -43,26 +43,35 @@ impl TimeValue {
 }
 
 pub(crate) struct TimeSignalPlot {
-    channels: Vec<Vec<PlotPoint>>,
+    series: Vec<(String, Vec<PlotPoint>)>,
     options: TimePlotOptions,
     save: SavePlotState,
 }
 
 impl TimeSignalPlot {
-    pub(crate) fn new(signal: &TimeSignal, title: &str, options: TimePlotOptions) -> Self {
-        let time_steps = signal.time_steps();
-        let channels = signal
-            .channel_iter()
-            .map(|ch| {
-                time_steps
+    pub(crate) fn new(signals: &[&TimeSignal], title: &str, options: TimePlotOptions) -> Self {
+        let mut series = Vec::new();
+        for (signal_index, signal) in signals.iter().enumerate() {
+            let time_steps = signal.time_steps();
+            let num_channels = signal.num_channels();
+            for (channel_index, channel) in signal.channel_iter().enumerate() {
+                let label = crate::legend::build_channel_label(
+                    signal.channel_label(channel_index),
+                    signal.comment(),
+                    signal_index,
+                    channel_index,
+                    num_channels,
+                );
+                let points = time_steps
                     .iter()
-                    .zip(ch.iter())
+                    .zip(channel.iter())
                     .map(|(&t, &y)| PlotPoint::new(t, options.value.value(y)))
-                    .collect()
-            })
-            .collect();
+                    .collect();
+                series.push((label, points));
+            }
+        }
         Self {
-            channels,
+            series,
             options,
             save: SavePlotState::new(title),
         }
@@ -80,9 +89,9 @@ impl eframe::App for TimeSignalPlot {
                 .y_axis_label(self.options.value.y_label())
                 .legend(Legend::default())
                 .show(ui, |plot_ui| {
-                    for (i, points) in self.channels.iter().enumerate() {
+                    for (label, points) in &self.series {
                         plot_ui.line(Line::new(
-                            format!("Channel {i}"),
+                            label.clone(),
                             PlotPoints::Owned(points.clone()),
                         ));
                     }
@@ -94,18 +103,18 @@ impl eframe::App for TimeSignalPlot {
 
 pub fn show_time_with_options(
     title: &str,
-    signal: &TimeSignal,
+    signals: &[&TimeSignal],
     options: TimePlotOptions,
 ) -> Result<(), crate::Error> {
     Ok(eframe::run_native(
         title,
         native_options_any_thread(),
-        Box::new(|_cc| Ok(Box::new(TimeSignalPlot::new(signal, title, options)))),
+        Box::new(|_cc| Ok(Box::new(TimeSignalPlot::new(signals, title, options)))),
     )?)
 }
 
-pub fn show_time(title: &str, signal: &TimeSignal) -> Result<(), crate::Error> {
-    show_time_with_options(title, signal, Default::default())
+pub fn show_time(title: &str, signals: &[&TimeSignal]) -> Result<(), crate::Error> {
+    show_time_with_options(title, signals, Default::default())
 }
 
 #[cfg(test)]
@@ -132,7 +141,7 @@ mod tests {
             sample_rate,
         )
         .unwrap();
-        show_time("Time Signal Test", &signal).unwrap();
+        show_time("Time Signal Test", &[&signal]).unwrap();
     }
 
     #[test]
@@ -155,7 +164,7 @@ mod tests {
         .unwrap();
         show_time_with_options(
             "Time Signal Test (dB)",
-            &signal,
+            &[&signal],
             TimePlotOptions {
                 value: TimeValue::AmplitudeDb,
             },

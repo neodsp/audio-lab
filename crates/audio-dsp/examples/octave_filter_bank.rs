@@ -37,6 +37,6 @@ fn main() -> Result<(), audio_plot::Error> {
 
     audio_plot::show_freq(
         "Octave filter bank – magnitude responses",
-        &freq_signal,
+        &[&freq_signal],
     )
 }

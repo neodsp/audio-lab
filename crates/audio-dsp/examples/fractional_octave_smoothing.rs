@@ -4,7 +4,7 @@
 /// smoothing effect is easy to see in the frequency plot.
 use audio_dsp::{FractionalOctaveSmoothingConfig, smooth_fractional_octave};
 
-use audio_signal::{join_freq, signal::FreqSignal};
+use audio_signal::signal::FreqSignal;
 use ndarray::Array2;
 use num::complex::Complex64;
 
@@ -13,10 +13,12 @@ fn main() -> Result<(), audio_plot::Error> {
     let num_time_steps = 16_384;
     let num_bins = num_time_steps / 2 + 1;
 
-    let original = synthetic_transfer_function(sample_rate, num_time_steps, num_bins);
+    let mut original = synthetic_transfer_function(sample_rate, num_time_steps, num_bins);
+    original.set_comment(Some("original"));
     let config = FractionalOctaveSmoothingConfig::default()
         .with_mode(audio_dsp::FractionalOctaveSmoothingMode::MagnitudeZeroPhase);
-    let (smoothed, stats) = smooth_fractional_octave(&original, &config).unwrap();
+    let (mut smoothed, stats) = smooth_fractional_octave(&original, &config).unwrap();
+    smoothed.set_comment(Some("smoothed"));
 
     println!("Requested smoothing: 1/3 octave");
     println!("Window length on warped axis: {}", stats.window_len);
@@ -25,11 +27,9 @@ fn main() -> Result<(), audio_plot::Error> {
         stats.actual_num_fractions
     );
 
-    let comparison = join_freq!(original, smoothed).unwrap();
-
     audio_plot::show_freq(
         "Fractional octave smoothing - original vs smoothed",
-        &comparison,
+        &[&original, &smoothed],
     )
 }
 

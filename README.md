@@ -58,8 +58,8 @@ use audio_lab::{plot, signal};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signal = signal::generate_sine(48_000, 440.0, signal::SineConfig::default())?;
 
-    plot::show_time("time", &signal)?;
-    plot::show_freq("spectrum", &signal.into_freq())?;
+    plot::show_time("time", &[&signal])?;
+    plot::show_freq("spectrum", &[&signal.into_freq()])?;
     Ok(())
 }
 ```
