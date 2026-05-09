@@ -5,15 +5,9 @@ use egui_plot::{GridInput, GridMark, Legend, Line, Plot, PlotPoint, PlotPoints};
 use crate::native_options_any_thread;
 use crate::save::SavePlotState;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct RealDataPlotOptions {
     pub log_x: bool,
-}
-
-impl Default for RealDataPlotOptions {
-    fn default() -> Self {
-        Self { log_x: false }
-    }
 }
 
 /// Returns log10-spaced grid marks (same tiers as spectrum_grid_spacer in freq.rs).
