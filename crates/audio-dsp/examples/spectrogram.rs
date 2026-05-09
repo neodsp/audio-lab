@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fundamental = generate_sine(
         num_samples,
         880.0,
-        &SineConfig {
+        SineConfig {
             amplitude: 0.45,
             ..sine_config
         },
@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let second_harmonic = generate_sine(
         num_samples,
         1_760.0,
-        &SineConfig {
+        SineConfig {
             amplitude: 0.18,
             ..sine_config
         },
@@ -54,17 +54,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let third_harmonic = generate_sine(
         num_samples,
         2_640.0,
-        &SineConfig {
+        SineConfig {
             amplitude: 0.08,
             ..sine_config
         },
     )?;
-    let chirp = generate_sweep(num_samples, 320.0..16_000.0, &sweep_config)?;
+    let chirp = generate_sweep(num_samples, 320.0..16_000.0, sweep_config)?;
     let bursts = generate_pulsed_noise(
         burst_pulse_length,
         burst_pause_length,
         burst_repetitions,
-        &noise_config,
+        noise_config,
     )?;
 
     let mut signal = mix_time!(fundamental, second_harmonic, third_harmonic, chirp, bursts)?;

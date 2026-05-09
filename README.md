@@ -33,12 +33,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sweep = signal::generate_sweep(
         48_000,
         20.0..20_000.0,
-        &signal::SweepConfig::default(),
+        signal::SweepConfig::default(),
     )?;
 
     let noise = signal::generate_noise(
         48_000,
-        &signal::NoiseConfig {
+        signal::NoiseConfig {
             spectrum: signal::Spectrum::Pink,
             amplitude: 0.2,
             ..Default::default()
@@ -56,10 +56,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 use audio_lab::{plot, signal};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let signal = signal::generate_sine(48_000, 440.0, &signal::SineConfig::default())?;
+    let signal = signal::generate_sine(48_000, 440.0, signal::SineConfig::default())?;
 
     plot::show_time("time", &signal)?;
-    plot::show_freq("spectrum", &signal.into_freq(), Default::default())?;
+    plot::show_freq("spectrum", &signal.into_freq())?;
     Ok(())
 }
 ```
@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 use audio_lab::signal::{self, playback};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let signal = signal::generate_sine(48_000, 440.0, &signal::SineConfig::default())?;
+    let signal = signal::generate_sine(48_000, 440.0, signal::SineConfig::default())?;
     playback::play(&signal)?;
     Ok(())
 }
@@ -88,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signal = signal::generate_sweep(
         48_000,
         20.0..20_000.0,
-        &signal::SweepConfig::default(),
+        signal::SweepConfig::default(),
     )?;
 
     audio::write_audio(&signal, "test.wav")?;
@@ -106,7 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signal = signal::generate_sweep(
         48_000,
         20.0..20_000.0,
-        &signal::SweepConfig::default(),
+        signal::SweepConfig::default(),
     )?;
 
     let spec = dsp::stft(&signal, &dsp::StftConfig::default())?;
@@ -124,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let excitation = signal::generate_sweep(
         48_000,
         20.0..20_000.0,
-        &signal::SweepConfig::default(),
+        signal::SweepConfig::default(),
     )?;
 
     let recorded_output = excitation.clone();

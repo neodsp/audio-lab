@@ -1,7 +1,7 @@
 /// Plot the magnitude responses of a reconstructing octave filter bank applied
 /// to an impulse. Each band appears as a separate channel in the frequency plot.
 use audio_dsp::filter_bank::{OctaveBandsConfig, reconstructing_fractional_octave_bands};
-use audio_plot::freq::FreqPlotOptions;
+
 use audio_signal::signal::join_time_signals;
 use audio_signal::{ImpulseConfig, generate_impulse};
 
@@ -11,7 +11,7 @@ fn main() -> Result<(), audio_plot::Error> {
 
     let impulse = generate_impulse(
         n_filt * 2,
-        &ImpulseConfig {
+        ImpulseConfig {
             sample_rate,
             ..Default::default()
         },
@@ -38,6 +38,5 @@ fn main() -> Result<(), audio_plot::Error> {
     audio_plot::show_freq(
         "Octave filter bank – magnitude responses",
         &freq_signal,
-        FreqPlotOptions::default(),
     )
 }

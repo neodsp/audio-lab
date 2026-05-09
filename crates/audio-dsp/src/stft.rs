@@ -308,7 +308,7 @@ mod tests {
         let signal = generate_sine(
             800,
             440.0,
-            &SineConfig {
+            SineConfig {
                 amplitude: 0.75,
                 sample_rate: 8_000.0,
                 num_channels: 1,
@@ -343,7 +343,7 @@ mod tests {
         let signal = generate_sweep(
             4_096,
             200.0..3_200.0,
-            &SweepConfig {
+            SweepConfig {
                 sample_rate: 16_000.0,
                 fade_out: 0,
                 sweep_type: SweepType::Linear,
@@ -385,7 +385,7 @@ mod tests {
     fn stft_generated_noise_has_broadband_energy() {
         let signal = generate_noise(
             2_048,
-            &NoiseConfig {
+            NoiseConfig {
                 sample_rate: 16_000.0,
                 spectrum: Spectrum::White,
                 seed: Some(123),

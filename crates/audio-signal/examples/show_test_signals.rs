@@ -1,4 +1,4 @@
-use audio_plot::{TimePlotOptions, TimeValue, show_time};
+use audio_plot::show_time;
 use audio_signal::{
     NoiseConfig, SineConfig, Spectrum, SweepConfig, SweepType, generate_noise, generate_sine,
     generate_sweep, join_time,
@@ -7,7 +7,7 @@ use audio_signal::{
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let noise = generate_noise(
         4_096,
-        &NoiseConfig {
+        NoiseConfig {
             spectrum: Spectrum::Pink,
             amplitude: 0.8,
             ..Default::default()
@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sine = generate_sine(
         4_096,
         440.0,
-        &SineConfig {
+        SineConfig {
             amplitude: 0.8,
             ..Default::default()
         },
@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sweep = generate_sweep(
         4_096,
         20.0..20_000.0,
-        &SweepConfig {
+        SweepConfig {
             amplitude: 0.8,
             sweep_type: SweepType::Exponential,
             ..Default::default()
@@ -32,12 +32,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let signal = join_time!(noise, sine, sweep)?;
-    show_time(
-        "Noise Test Signal",
-        &signal,
-        TimePlotOptions {
-            value: TimeValue::Amplitude,
-        },
-    )?;
+    show_time("Noise Test Signal", &signal)?;
     Ok(())
 }

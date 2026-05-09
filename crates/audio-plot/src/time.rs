@@ -92,7 +92,7 @@ impl eframe::App for TimeSignalPlot {
     }
 }
 
-pub fn show_time(
+pub fn show_time_with_options(
     title: &str,
     signal: &TimeSignal,
     options: TimePlotOptions,
@@ -102,6 +102,10 @@ pub fn show_time(
         native_options_any_thread(),
         Box::new(|_cc| Ok(Box::new(TimeSignalPlot::new(signal, title, options)))),
     )?)
+}
+
+pub fn show_time(title: &str, signal: &TimeSignal) -> Result<(), crate::Error> {
+    show_time_with_options(title, signal, Default::default())
 }
 
 #[cfg(test)]
@@ -128,7 +132,7 @@ mod tests {
             sample_rate,
         )
         .unwrap();
-        show_time("Time Signal Test", &signal, TimePlotOptions::default()).unwrap();
+        show_time("Time Signal Test", &signal).unwrap();
     }
 
     #[test]
@@ -149,7 +153,7 @@ mod tests {
             sample_rate,
         )
         .unwrap();
-        show_time(
+        show_time_with_options(
             "Time Signal Test (dB)",
             &signal,
             TimePlotOptions {

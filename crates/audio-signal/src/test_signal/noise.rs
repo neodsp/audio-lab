@@ -43,7 +43,7 @@ impl Default for NoiseConfig {
 
 pub fn generate_noise(
     num_time_steps: usize,
-    config: &NoiseConfig,
+    config: NoiseConfig,
 ) -> Result<TimeSignal, NoiseError> {
     let NoiseConfig {
         spectrum,
@@ -51,7 +51,7 @@ pub fn generate_noise(
         sample_rate,
         num_channels,
         seed,
-    } = *config;
+    } = config;
 
     let mut rng = match seed {
         Some(s) => StdRng::seed_from_u64(s),
@@ -91,8 +91,8 @@ mod tests {
             amplitude: 0.5,
             ..Default::default()
         };
-        let left = generate_noise(32, &config).unwrap();
-        let right = generate_noise(32, &config).unwrap();
+        let left = generate_noise(32, config).unwrap();
+        let right = generate_noise(32, config).unwrap();
         assert_eq!(left, right);
         let peak = left
             .iter()
@@ -104,7 +104,7 @@ mod tests {
     fn pink_noise_is_supported() {
         let noise = generate_noise(
             64,
-            &NoiseConfig {
+            NoiseConfig {
                 spectrum: Spectrum::Pink,
                 seed: Some(123),
                 ..Default::default()

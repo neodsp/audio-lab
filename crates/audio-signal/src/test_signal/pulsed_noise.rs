@@ -43,7 +43,7 @@ pub fn generate_pulsed_noise(
     pulse_length: usize,
     pause_length: usize,
     repetitions: usize,
-    config: &PulsedNoiseConfig,
+    config: PulsedNoiseConfig,
 ) -> Result<TimeSignal, PulsedNoiseError> {
     let PulsedNoiseConfig {
         fade_length,
@@ -53,7 +53,7 @@ pub fn generate_pulsed_noise(
         sample_rate,
         num_channels,
         seed,
-    } = *config;
+    } = config;
 
     if fade_length * 2 > pulse_length {
         return Err(PulsedNoiseError::FadeTooLarge);
@@ -66,7 +66,7 @@ pub fn generate_pulsed_noise(
     };
     let source = generate_noise(
         noise_samples,
-        &NoiseConfig {
+        NoiseConfig {
             spectrum,
             amplitude,
             sample_rate,
@@ -137,7 +137,7 @@ mod tests {
                 8,
                 2,
                 2,
-                &PulsedNoiseConfig {
+                PulsedNoiseConfig {
                     fade_length: 5,
                     spectrum: Spectrum::White,
                     frozen: true,
@@ -155,7 +155,7 @@ mod tests {
             4,
             2,
             3,
-            &PulsedNoiseConfig {
+            PulsedNoiseConfig {
                 fade_length: 1,
                 frozen: true,
                 seed: Some(7),
@@ -180,7 +180,7 @@ mod tests {
             4,
             1,
             2,
-            &PulsedNoiseConfig {
+            PulsedNoiseConfig {
                 seed: Some(7),
                 ..Default::default()
             },

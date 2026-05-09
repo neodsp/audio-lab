@@ -46,7 +46,7 @@ impl Default for SweepConfig {
 pub fn generate_sweep(
     num_time_steps: usize,
     freq_range: Range<f64>,
-    config: &SweepConfig,
+    config: SweepConfig,
 ) -> Result<TimeSignal, SweepError> {
     let SweepConfig {
         amplitude,
@@ -54,7 +54,7 @@ pub fn generate_sweep(
         num_channels,
         fade_out,
         sweep_type,
-    } = *config;
+    } = config;
 
     if freq_range.end <= freq_range.start {
         return Err(SweepError::FreqRange);
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn validates_sweep_range() {
         assert!(matches!(
-            generate_sweep(128, 1_000.0..500.0, &SweepConfig::default()),
+            generate_sweep(128, 1_000.0..500.0, SweepConfig::default()),
             Err(SweepError::FreqRange)
         ));
     }
@@ -163,7 +163,7 @@ mod tests {
         let signal = generate_sweep(
             128,
             20.0..20_000.0,
-            &SweepConfig {
+            SweepConfig {
                 amplitude: 0.5,
                 num_channels: 2,
                 fade_out: 8,

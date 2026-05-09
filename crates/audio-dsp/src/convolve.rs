@@ -203,7 +203,7 @@ mod tests {
         let signal = TimeSignal::new(arr2(&[[0.25, -0.5, 1.0, 0.75, -0.125]]), 48_000.0).unwrap();
         let impulse = generate_impulse(
             1,
-            &ImpulseConfig {
+            ImpulseConfig {
                 sample_rate: 48_000.0,
                 ..Default::default()
             },

@@ -31,14 +31,14 @@ impl Default for ImpulseConfig {
 
 pub fn generate_impulse(
     num_time_steps: usize,
-    config: &ImpulseConfig,
+    config: ImpulseConfig,
 ) -> Result<TimeSignal, ImpulseError> {
     let ImpulseConfig {
         delay,
         amplitude,
         sample_rate,
         num_channels,
-    } = *config;
+    } = config;
 
     if delay >= num_time_steps {
         return Err(ImpulseError::DelayOutOfRange {
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn generates_impulse_at_zero() {
-        let signal = generate_impulse(8, &ImpulseConfig::default()).unwrap();
+        let signal = generate_impulse(8, ImpulseConfig::default()).unwrap();
         assert_eq!(signal.channel(0)[0], 1.0);
         assert_eq!(signal.channel(0)[1], 0.0);
     }
@@ -73,7 +73,7 @@ mod tests {
     fn generates_impulse_with_delay() {
         let signal = generate_impulse(
             8,
-            &ImpulseConfig {
+            ImpulseConfig {
                 delay: 3,
                 amplitude: 0.5,
                 num_channels: 2,
@@ -91,7 +91,7 @@ mod tests {
         assert!(matches!(
             generate_impulse(
                 8,
-                &ImpulseConfig {
+                ImpulseConfig {
                     delay: 8,
                     ..Default::default()
                 }

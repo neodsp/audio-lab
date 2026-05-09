@@ -3,7 +3,7 @@
 /// The original response contains narrow peaks, dips, and ripple so the
 /// smoothing effect is easy to see in the frequency plot.
 use audio_dsp::{FractionalOctaveSmoothingConfig, smooth_fractional_octave};
-use audio_plot::freq::FreqPlotOptions;
+
 use audio_signal::{join_freq, signal::FreqSignal};
 use ndarray::Array2;
 use num::complex::Complex64;
@@ -30,7 +30,6 @@ fn main() -> Result<(), audio_plot::Error> {
     audio_plot::show_freq(
         "Fractional octave smoothing - original vs smoothed",
         &comparison,
-        FreqPlotOptions::default(),
     )
 }
 

@@ -24,13 +24,13 @@ impl Default for SineConfig {
 pub fn generate_sine(
     num_time_steps: usize,
     frequency: f64,
-    config: &SineConfig,
+    config: SineConfig,
 ) -> Result<TimeSignal, SignalError> {
     let SineConfig {
         amplitude,
         sample_rate,
         num_channels,
-    } = *config;
+    } = config;
 
     let data = Array2::from_shape_fn((num_channels, num_time_steps), |(_, frame)| {
         let t = frame as f64 / sample_rate;
@@ -52,7 +52,7 @@ mod tests {
         let signal = generate_sine(
             8,
             1.0,
-            &SineConfig {
+            SineConfig {
                 amplitude: 0.5,
                 sample_rate: 8.0,
                 num_channels: 2,

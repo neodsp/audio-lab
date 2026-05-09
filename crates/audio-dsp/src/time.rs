@@ -488,7 +488,7 @@ mod tests {
         let signal = generate_sine(
             4_410,
             440.0,
-            &SineConfig {
+            SineConfig {
                 amplitude: 0.5,
                 sample_rate: 44_100.0,
                 num_channels: 1,
