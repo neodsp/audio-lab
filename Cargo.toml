@@ -38,7 +38,7 @@ version = "0.1.0"
 [workspace.dependencies]
 audio-blocks = "0.7.0"
 audio-dsp = { path = "crates/audio-dsp", version = "0.1.0" }
-audio-host = { git = "https://github.com/neodsp/audio-host" }
+audio-host = { version = "0.1.0" }
 audio-lab = { path = ".", version = "0.1.0" }
 audio-plot = { path = "crates/audio-plot", version = "0.1.0" }
 audio-signal = { path = "crates/audio-signal", default-features = false, version = "0.1.0" }
