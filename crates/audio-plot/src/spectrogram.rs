@@ -441,7 +441,11 @@ impl eframe::App for SpectrogramPlot {
             if self.num_channels > 1 {
                 ui.horizontal(|ui| {
                     for ch in 0..self.num_channels {
-                        ui.selectable_value(&mut self.current_channel, ch, &self.channel_labels[ch]);
+                        ui.selectable_value(
+                            &mut self.current_channel,
+                            ch,
+                            &self.channel_labels[ch],
+                        );
                     }
                 });
             }

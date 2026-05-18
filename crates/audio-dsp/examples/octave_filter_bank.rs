@@ -35,8 +35,5 @@ fn main() -> Result<(), audio_plot::Error> {
 
     let freq_signal = join_time_signals(&bands).unwrap().into_freq();
 
-    audio_plot::show_freq(
-        "Octave filter bank – magnitude responses",
-        &[&freq_signal],
-    )
+    audio_plot::show_freq("Octave filter bank – magnitude responses", &[&freq_signal])
 }

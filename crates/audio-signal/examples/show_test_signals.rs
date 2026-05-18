@@ -31,7 +31,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
 
-
     show_time("Test Signals", &[&noise, &sine, &sweep])?;
     Ok(())
 }

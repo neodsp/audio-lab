@@ -90,10 +90,7 @@ impl eframe::App for TimeSignalPlot {
                 .legend(Legend::default())
                 .show(ui, |plot_ui| {
                     for (label, points) in &self.series {
-                        plot_ui.line(Line::new(
-                            label.clone(),
-                            PlotPoints::Owned(points.clone()),
-                        ));
+                        plot_ui.line(Line::new(label.clone(), PlotPoints::Owned(points.clone())));
                     }
                 });
         });
