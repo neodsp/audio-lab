@@ -1,4 +1,4 @@
-name: 🛡️ Quality Checks
+name: Quality Checks
 
 on:
   push:
@@ -11,7 +11,7 @@ env:
 
 jobs:
   cargo-fmt:
-    name: 📝 Code Format
+    name: Code Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +21,7 @@ jobs:
       - run: cargo fmt --check
 
   taplo-fmt:
-    name: 📄 TOML Format
+    name: TOML Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,46 +29,51 @@ jobs:
       - run: taplo fmt --check
 
   clippy:
-    name: 📎 Clippy
+    name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - run: sudo apt-get install -y libasound2-dev
       - run: RUSTFLAGS="-D warnings" cargo clippy
 
   doc:
-    name: 📚 Documentation
+    name: Documentation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get install -y libasound2-dev
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --document-private-items
 
   semver:
-    name: 🏷️ Semver Checks
+    name: Semver Checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get install -y libasound2-dev
       - uses: obi1kenobi/cargo-semver-checks-action@v2
 
   msrv:
-    name: 🏗️ MSRV Check
+    name: MSRV Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.88.0
+      - run: sudo apt-get install -y libasound2-dev
       - run: cargo check --all-features
 
   readme:
-    name: 📖 README Check
+    name: README Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get install -y libasound2-dev
       - run: cargo install cargo-rdme
       - run: cargo rdme --check
