@@ -36,7 +36,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: sudo apt-get install -y libasound2-dev
+      - run: sudo apt-get install -y libasound2-dev libpulse-dev
       - run: RUSTFLAGS="-D warnings" cargo clippy
 
   doc:
@@ -45,7 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get install -y libasound2-dev
+      - run: sudo apt-get install -y libasound2-dev libpulse-dev
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --document-private-items
 
   semver:
@@ -54,7 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get install -y libasound2-dev
+      - run: sudo apt-get install -y libasound2-dev libpulse-dev
       - uses: obi1kenobi/cargo-semver-checks-action@v2
 
   msrv:
@@ -65,7 +65,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.88.0
-      - run: sudo apt-get install -y libasound2-dev
+      - run: sudo apt-get install -y libasound2-dev libpulse-dev
       - run: cargo check --all-features
 
   readme:
@@ -74,6 +74,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get install -y libasound2-dev
+      - run: sudo apt-get install -y libasound2-dev libpulse-dev
       - run: cargo install cargo-rdme
       - run: cargo rdme --check
