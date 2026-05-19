@@ -30,4 +30,3 @@ jobs:
       - run: sudo apt-get install -y libasound2-dev
       - run: cargo update
       - run: RUSTFLAGS="-D deprecated" cargo test --locked --features audio-file,numpy --all-targets --workspace
-again
