@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         amplitude: 0.25,
         sample_rate,
         num_channels: 1,
+        fade_in: 0,
         fade_out: (0.35 * sample_rate) as usize,
         sweep_type: SweepType::Exponential,
     };

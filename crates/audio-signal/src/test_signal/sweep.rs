@@ -16,6 +16,8 @@ pub enum SweepError {
     Nyquist,
     #[error("Start of frequency range must be smaller than end")]
     FreqRange,
+    #[error("Fade in is longer than sweep")]
+    FadeIn,
     #[error("Fade out is longer than sweep")]
     FadeOut,
     #[error(transparent)]
@@ -27,6 +29,7 @@ pub struct SweepConfig {
     pub amplitude: f64,
     pub sample_rate: f64,
     pub num_channels: usize,
+    pub fade_in: usize,
     pub fade_out: usize,
     pub sweep_type: SweepType,
 }
@@ -37,6 +40,7 @@ impl Default for SweepConfig {
             amplitude: 1.0,
             sample_rate: 48_000.0,
             num_channels: 1,
+            fade_in: 0,
             fade_out: 90,
             sweep_type: SweepType::Exponential,
         }
@@ -52,6 +56,7 @@ pub fn generate_sweep(
         amplitude,
         sample_rate,
         num_channels,
+        fade_in,
         fade_out,
         sweep_type,
     } = config;
@@ -61,6 +66,9 @@ pub fn generate_sweep(
     }
     if freq_range.end >= sample_rate / 2.0 {
         return Err(SweepError::Nyquist);
+    }
+    if fade_in > num_time_steps {
+        return Err(SweepError::FadeIn);
     }
     if fade_out > num_time_steps {
         return Err(SweepError::FadeOut);
@@ -82,6 +90,15 @@ pub fn generate_sweep(
             num_channels,
         )?,
     };
+
+    if fade_in > 0 {
+        let fade = Array1::linspace(0.0, PI / 2.0, fade_in).mapv(|v| v.sin().powi(2));
+        for mut channel in signal.channel_iter_mut() {
+            for (idx, gain) in fade.iter().enumerate() {
+                channel[idx] *= *gain;
+            }
+        }
+    }
 
     if fade_out > 0 {
         let fade = Array1::linspace(0.0, PI / 2.0, fade_out).mapv(|v| v.cos().powi(2));
@@ -156,6 +173,57 @@ mod tests {
             generate_sweep(128, 1_000.0..500.0, SweepConfig::default()),
             Err(SweepError::FreqRange)
         ));
+    }
+
+    #[test]
+    fn validates_fade_in_length() {
+        assert!(matches!(
+            generate_sweep(
+                128,
+                20.0..20_000.0,
+                SweepConfig {
+                    fade_in: 129,
+                    ..Default::default()
+                }
+            ),
+            Err(SweepError::FadeIn)
+        ));
+    }
+
+    #[test]
+    fn applies_fade_in() {
+        use approx::assert_abs_diff_eq;
+
+        let config = SweepConfig {
+            sample_rate: 8_000.0,
+            fade_out: 0,
+            sweep_type: SweepType::Linear,
+            ..Default::default()
+        };
+        let dry = generate_sweep(128, 100.0..1_000.0, config).unwrap();
+        let faded = generate_sweep(
+            128,
+            100.0..1_000.0,
+            SweepConfig {
+                fade_in: 4,
+                ..config
+            },
+        )
+        .unwrap();
+
+        assert_abs_diff_eq!(faded.channel(0)[0], 0.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(
+            faded.channel(0)[1],
+            dry.channel(0)[1] * 0.25,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            faded.channel(0)[2],
+            dry.channel(0)[2] * 0.75,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(faded.channel(0)[3], dry.channel(0)[3], epsilon = 1e-12);
+        assert_abs_diff_eq!(faded.channel(0)[4], dry.channel(0)[4], epsilon = 1e-12);
     }
 
     #[test]
