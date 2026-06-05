@@ -1,0 +1,32 @@
+name: Compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "7 7 * * *"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  nightly:
+    name: Nightly Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: sudo apt-get install -y libasound2-dev
+      - run: cargo test --locked --features audio-file,numpy --all-targets --workspace
+
+  update:
+    name: Latest Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@beta
+      - run: sudo apt-get install -y libasound2-dev
+      - run: cargo update
+      - run: RUSTFLAGS="-D deprecated" cargo test --locked --features audio-file,numpy --all-targets --workspace
