@@ -82,11 +82,11 @@ impl RealDataPlot {
 }
 
 impl eframe::App for RealDataPlot {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::Panel::top("controls").show(ui, |ui| {
             self.save.show_panel(ui);
         });
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             let mut plot = Plot::new("real_data")
                 .x_axis_label(&self.x_label)
                 .y_axis_label(&self.y_label)
@@ -103,18 +103,26 @@ impl eframe::App for RealDataPlot {
                             format!("{v:.4}")
                         }
                     })
-                    .label_formatter(|name, point| {
+                    .label_formatter(|pos| {
+                        let (name, point) = match pos {
+                            egui_plot::HoverPosition::NearDataPoint {
+                                plot_name,
+                                position,
+                                ..
+                            } => (*plot_name, position),
+                            egui_plot::HoverPosition::Elsewhere { position } => ("", position),
+                        };
                         let v = 10f64.powf(point.x);
                         let x_str = if v >= 1000.0 {
                             format!("{:.3}k", v / 1000.0)
                         } else {
                             format!("{v:.4}")
                         };
-                        if name.is_empty() {
+                        Some(if name.is_empty() {
                             format!("{x_str}\n{:.4}", point.y)
                         } else {
                             format!("{name}\n{x_str}\n{:.4}", point.y)
-                        }
+                        })
                     });
             }
 
@@ -127,7 +135,7 @@ impl eframe::App for RealDataPlot {
                 }
             });
         });
-        self.save.handle_screenshot(ctx);
+        self.save.handle_screenshot(ui.ctx());
     }
 }
 

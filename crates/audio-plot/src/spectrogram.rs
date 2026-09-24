@@ -435,8 +435,8 @@ impl SpectrogramPlot {
 }
 
 impl eframe::App for SpectrogramPlot {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::Panel::top("controls").show(ui, |ui| {
             self.save.show_panel(ui);
             if self.num_channels > 1 {
                 ui.horizontal(|ui| {
@@ -451,16 +451,16 @@ impl eframe::App for SpectrogramPlot {
             }
         });
 
-        egui::SidePanel::right("colorbar")
-            .exact_width(80.0)
+        egui::Panel::right("colorbar")
+            .exact_size(80.0)
             .resizable(false)
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 draw_colorbar(ui, self.db_floor, self.db_peak);
             });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             let texture = self.textures[self.current_channel].get_or_insert_with(|| {
-                ctx.load_texture(
+                ui.ctx().load_texture(
                     format!(
                         "spectrogram-{:?}-channel-{}",
                         self.scale, self.current_channel
@@ -538,7 +538,7 @@ impl eframe::App for SpectrogramPlot {
             }
         });
 
-        self.save.handle_screenshot(ctx);
+        self.save.handle_screenshot(ui.ctx());
     }
 }
 

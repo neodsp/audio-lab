@@ -79,11 +79,11 @@ impl TimeSignalPlot {
 }
 
 impl eframe::App for TimeSignalPlot {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::Panel::top("controls").show(ui, |ui| {
             self.save.show_panel(ui);
         });
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             Plot::new("time_signal")
                 .x_axis_label("Time (s)")
                 .y_axis_label(self.options.value.y_label())
@@ -94,7 +94,7 @@ impl eframe::App for TimeSignalPlot {
                     }
                 });
         });
-        self.save.handle_screenshot(ctx);
+        self.save.handle_screenshot(ui.ctx());
     }
 }
 

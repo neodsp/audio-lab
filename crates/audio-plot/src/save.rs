@@ -68,7 +68,7 @@ impl SavePlotState {
 
             // Paint over the save button with the panel background color
             if let Some(button_rect) = self.button_rect {
-                let bg = ctx.style().visuals.panel_fill;
+                let bg = ctx.style_of(ctx.theme()).visuals.panel_fill;
                 let pixel = image::Rgba([bg.r(), bg.g(), bg.b(), bg.a()]);
 
                 let min_x = (button_rect.min.x * pixels_per_point) as u32;

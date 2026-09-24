@@ -150,11 +150,11 @@ impl FreqSignalPlot {
 }
 
 impl eframe::App for FreqSignalPlot {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::Panel::top("controls").show(ui, |ui| {
             self.save.show_panel(ui);
         });
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             let mut plot = Plot::new("freq_signal")
                 .x_axis_label("Frequency (Hz)")
                 .y_axis_label(self.options.value.y_label())
@@ -172,7 +172,15 @@ impl eframe::App for FreqSignalPlot {
                             format!("{hz:.0} Hz")
                         }
                     })
-                    .label_formatter(move |name, point| {
+                    .label_formatter(move |pos| {
+                        let (name, point) = match pos {
+                            egui_plot::HoverPosition::NearDataPoint {
+                                plot_name,
+                                position,
+                                ..
+                            } => (*plot_name, position),
+                            egui_plot::HoverPosition::Elsewhere { position } => ("", position),
+                        };
                         let hz = 10f64.powf(point.x);
                         let freq_str = if hz >= 1000.0 {
                             format!("{:.1} kHz", hz / 1000.0)
@@ -180,11 +188,11 @@ impl eframe::App for FreqSignalPlot {
                             format!("{hz:.1} Hz")
                         };
                         let y_str = value.format_y(point.y);
-                        if name.is_empty() {
+                        Some(if name.is_empty() {
                             format!("{freq_str}\n{y_str}")
                         } else {
                             format!("{name}\n{freq_str}\n{y_str}")
-                        }
+                        })
                     });
             }
 
@@ -194,7 +202,7 @@ impl eframe::App for FreqSignalPlot {
                 }
             });
         });
-        self.save.handle_screenshot(ctx);
+        self.save.handle_screenshot(ui.ctx());
     }
 }
 
