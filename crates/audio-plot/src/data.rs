@@ -135,6 +135,7 @@ impl eframe::App for RealDataPlot {
                 }
             });
         });
+        #[cfg(feature = "save-plot")]
         self.save.handle_screenshot(ui.ctx());
     }
 }

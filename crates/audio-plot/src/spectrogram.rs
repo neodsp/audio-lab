@@ -538,6 +538,7 @@ impl eframe::App for SpectrogramPlot {
             }
         });
 
+        #[cfg(feature = "save-plot")]
         self.save.handle_screenshot(ui.ctx());
     }
 }

@@ -10,13 +10,17 @@ name = "audio-plot"
 repository.workspace = true
 version.workspace = true
 
+[features]
+default = ["save-plot"]
+save-plot = ["dep:image", "dep:rfd"]
+
 [dependencies]
 audio-signal.workspace = true
 eframe = "0.36"
 egui = "0.36"
 egui_plot = "0.37"
-image = { version = "0.25", default-features = false, features = ["png"] }
-rfd = "0.17"
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+rfd = { version = "0.17", optional = true }
 thiserror.workspace = true
 winit = { version = "0.30", features = ["wayland", "x11"] }
 
