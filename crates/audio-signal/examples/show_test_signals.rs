@@ -1,7 +1,7 @@
 use audio_plot::show_time;
 use audio_signal::{
     NoiseConfig, SineConfig, Spectrum, SweepConfig, SweepType, generate_noise, generate_sine,
-    generate_sweep, join_time,
+    generate_sweep,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
