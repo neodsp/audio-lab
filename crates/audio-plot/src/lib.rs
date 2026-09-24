@@ -1,18 +1,3 @@
-//! Audio signal plotting and visualization.
-//!
-//! # Features
-//!
-//! The default `save-plot` feature enables the **Save Plot** button and PNG export
-//! using the optional `image` and `rfd` dependencies. Disable it with:
-//!
-//! ```toml
-//! audio-plot = { version = "0.1", default-features = false }
-//! ```
-//!
-//! Plot titles remain visible when saving is disabled. Other dependencies may
-//! still pull in `image` transitively. Cargo features are additive, so saving
-//! remains enabled if another dependency enables `audio-plot/save-plot`.
-
 pub mod data;
 pub mod freq;
 mod legend;

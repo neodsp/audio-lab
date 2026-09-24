@@ -1,39 +1,30 @@
 use eframe::egui;
 
 pub(crate) struct SavePlotState {
-    #[cfg(feature = "save-plot")]
     button_rect: Option<egui::Rect>,
     title: String,
-    #[cfg(feature = "save-plot")]
     default_filename: String,
 }
 
 impl SavePlotState {
     pub(crate) fn new(title: impl Into<String>) -> Self {
         let title = title.into();
-        #[cfg(feature = "save-plot")]
         let default_filename = format!("{title}.png");
         Self {
-            #[cfg(feature = "save-plot")]
             button_rect: None,
             title,
-            #[cfg(feature = "save-plot")]
             default_filename,
         }
     }
 
     pub(crate) fn show_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.set_min_height(ui.spacing().interact_size.y);
-            #[cfg(feature = "save-plot")]
-            {
-                // Button on the left
-                let response = ui.button("Save Plot");
-                self.button_rect = Some(response.rect);
-                if response.clicked() {
-                    ui.ctx()
-                        .send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
-                }
+            // Button on the left
+            let response = ui.button("Save Plot");
+            self.button_rect = Some(response.rect);
+            if response.clicked() {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             }
 
             // Paint the heading centered over the full panel width
@@ -52,7 +43,6 @@ impl SavePlotState {
         });
     }
 
-    #[cfg(feature = "save-plot")]
     pub(crate) fn handle_screenshot(&self, ctx: &egui::Context) {
         let screenshot = ctx.input(|i| {
             for event in &i.raw.events {
