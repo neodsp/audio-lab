@@ -1,11 +1,13 @@
 use std::time::Duration;
 
 use ndarray::s;
-use rubato::{Fft, FixedSync, ResampleError, Resampler, ResamplerConstructionError};
+use rubato::audioadapter_buffers::direct::SequentialSlice;
+use rubato::{
+    Fft, FixedSync, ResampleError, Resampler, ResamplerConstructionError, WindowFunction,
+};
 
 use crate::signal::math::db_to_gain;
 use crate::signal::{SignalError, TimeSignal};
-use audioadapter_buffers::direct::SequentialSlice;
 
 use crate::dsp::apply_hann_right;
 
@@ -260,12 +262,13 @@ pub fn resample(signal: &TimeSignal, new_sample_rate: f64) -> Result<TimeSignal,
     let num_channels = signal.num_channels();
     let num_input_frames = signal.num_time_steps();
 
-    let mut resampler = Fft::<f64>::new(
+    let mut resampler = Fft::<f64>::new_custom(
         sample_rate_in,
         sample_rate_out,
         1024,
         2,
         num_channels,
+        WindowFunction::BlackmanHarris2,
         FixedSync::Both,
     )?;
 
