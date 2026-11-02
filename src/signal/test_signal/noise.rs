@@ -5,7 +5,7 @@ use ndarray_rand::{
     rand_distr::Uniform,
 };
 
-use crate::signal::signal::{SignalError, TimeSignal};
+use crate::signal::{SignalError, TimeSignal};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Spectrum {

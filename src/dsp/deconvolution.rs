@@ -4,7 +4,7 @@ use ndarray::Array1;
 use num::complex::Complex64;
 use thiserror::Error;
 
-use crate::signal::signal::{FreqSignal, SignalError, TimeSignal};
+use crate::signal::{FreqSignal, SignalError, TimeSignal};
 
 use crate::dsp::{PadMode, pad_zeros};
 

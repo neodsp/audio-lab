@@ -2,7 +2,7 @@ use audio_blocks::{AudioBlock, Planar, Sample};
 use ndarray::Array2;
 use num::NumCast;
 
-use crate::signal::signal::{SignalError, TimeSignal};
+use crate::signal::{SignalError, TimeSignal};
 
 #[derive(Debug, thiserror::Error)]
 pub enum BlockAdapterError {

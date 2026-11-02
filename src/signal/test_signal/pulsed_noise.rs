@@ -2,7 +2,7 @@ use std::f64::consts::PI;
 
 use ndarray::{Array1, Array2, s};
 
-use crate::signal::signal::TimeSignal;
+use crate::signal::TimeSignal;
 use crate::signal::test_signal::noise::{NoiseConfig, NoiseError, Spectrum, generate_noise};
 
 #[derive(Debug, thiserror::Error)]

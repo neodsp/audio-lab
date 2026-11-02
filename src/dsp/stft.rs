@@ -1,4 +1,4 @@
-use crate::signal::signal::{Spectrogram, SpectrogramNormalization, TimeSignal};
+use crate::signal::{Spectrogram, SpectrogramNormalization, TimeSignal};
 use ndarray::prelude::*;
 use ndrustfft::{R2cFftHandler, ndfft_r2c};
 use num::complex::Complex64;
@@ -129,8 +129,8 @@ pub fn stft(signal: &TimeSignal, config: &StftConfig) -> Result<Spectrogram, Stf
 #[cfg(test)]
 mod tests {
     use crate::signal::{
-        NoiseConfig, SineConfig, Spectrum, SweepConfig, SweepType, generate_noise, generate_sine,
-        generate_sweep, signal::TimeSignal,
+        NoiseConfig, SineConfig, Spectrum, SweepConfig, SweepType, TimeSignal, generate_noise,
+        generate_sine, generate_sweep,
     };
     use approx::assert_abs_diff_eq;
     use ndarray::arr2;

@@ -1,7 +1,7 @@
 use crate::signal::{
+    FreqSignal,
     data::{ComplexData, RealData},
     math::{gain_to_db, wrap_phase_2pi},
-    signal::FreqSignal,
 };
 
 const NEG_INF_DB: f64 = -100.0;

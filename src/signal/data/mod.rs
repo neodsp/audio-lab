@@ -1,8 +1,8 @@
 pub use complex_data::ComplexData;
 pub use real_data::RealData;
 
-pub mod complex_data;
-pub mod real_data;
+mod complex_data;
+mod real_data;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DataError {

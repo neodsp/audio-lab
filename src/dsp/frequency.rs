@@ -1,5 +1,5 @@
+use crate::signal::FreqSignal;
 use crate::signal::data::RealData;
-use crate::signal::signal::FreqSignal;
 use ndarray::Array2;
 
 #[derive(Debug, thiserror::Error)]
@@ -28,7 +28,7 @@ pub fn group_delay(signal: &FreqSignal) -> Result<RealData, FrequencyError> {
     let weighted_time = Array2::from_shape_fn(time.time_data().raw_dim(), |(channel, sample)| {
         time.time_data()[[channel, sample]] * sample as f64
     });
-    let weighted_freq = crate::signal::signal::TimeSignal::new(weighted_time, time.sample_rate())
+    let weighted_freq = crate::signal::TimeSignal::new(weighted_time, time.sample_rate())
         .expect("weighted time data preserves valid signal dimensions")
         .into_freq();
 
@@ -53,7 +53,7 @@ pub fn group_delay(signal: &FreqSignal) -> Result<RealData, FrequencyError> {
 
 #[cfg(test)]
 mod tests {
-    use crate::signal::signal::TimeSignal;
+    use crate::signal::TimeSignal;
     use approx::assert_abs_diff_eq;
     use ndarray::arr2;
 

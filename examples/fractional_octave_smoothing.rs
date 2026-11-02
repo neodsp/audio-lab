@@ -4,7 +4,7 @@
 /// smoothing effect is easy to see in the frequency plot.
 use audio_lab::dsp::{FractionalOctaveSmoothingConfig, smooth_fractional_octave};
 
-use audio_lab::signal::signal::FreqSignal;
+use audio_lab::signal::FreqSignal;
 use ndarray::Array2;
 use num::complex::Complex64;
 

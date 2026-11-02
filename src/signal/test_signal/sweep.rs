@@ -2,7 +2,7 @@ use std::{f64::consts::PI, ops::Range};
 
 use ndarray::Array1;
 
-use crate::signal::signal::{SignalError, TimeSignal};
+use crate::signal::{SignalError, TimeSignal};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SweepType {

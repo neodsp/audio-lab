@@ -1,4 +1,4 @@
-use crate::signal::{ndarray, signal::Spectrogram};
+use crate::signal::{Spectrogram, ndarray};
 use eframe::egui;
 use egui_plot::{GridInput, GridMark, Plot, PlotImage, PlotPoint};
 
@@ -557,8 +557,8 @@ pub fn show_spectrogram(
 #[cfg(test)]
 mod tests {
     use crate::signal::{
+        Spectrogram, SpectrogramNormalization,
         ndarray::{Array1, Array3},
-        signal::{Spectrogram, SpectrogramNormalization},
     };
     use num::complex::Complex64;
 

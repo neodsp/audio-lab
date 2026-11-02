@@ -1,6 +1,6 @@
 use ndarray::Array2;
 
-use crate::signal::signal::{SignalError, TimeSignal};
+use crate::signal::{SignalError, TimeSignal};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ImpulseError {

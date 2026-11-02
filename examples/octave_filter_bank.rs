@@ -2,7 +2,7 @@
 /// to an impulse. Each band appears as a separate channel in the frequency plot.
 use audio_lab::dsp::filter_bank::{OctaveBandsConfig, reconstructing_fractional_octave_bands};
 
-use audio_lab::signal::signal::join_time_signals;
+use audio_lab::signal::join_time_signals;
 use audio_lab::signal::{ImpulseConfig, generate_impulse};
 
 fn main() -> Result<(), audio_lab::plot::Error> {

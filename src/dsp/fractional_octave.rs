@@ -1,4 +1,4 @@
-use crate::signal::signal::FreqSignal;
+use crate::signal::FreqSignal;
 use ndarray::Array2;
 use num::complex::Complex64;
 

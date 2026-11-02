@@ -1,7 +1,7 @@
 use ndarray::s;
 use thiserror::Error;
 
-use crate::signal::signal::{FreqSignal, SignalError, TimeSignal};
+use crate::signal::{FreqSignal, SignalError, TimeSignal};
 
 use crate::dsp::{PadMode, pad_zeros};
 

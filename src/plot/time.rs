@@ -1,4 +1,4 @@
-use crate::signal::{math::gain_to_db, signal::time_signal::TimeSignal};
+use crate::signal::{TimeSignal, math::gain_to_db};
 use eframe::egui;
 use egui_plot::{Legend, Line, Plot, PlotPoint, PlotPoints};
 
@@ -116,7 +116,7 @@ pub fn show_time(title: &str, signals: &[&TimeSignal]) -> Result<(), crate::plot
 
 #[cfg(test)]
 mod tests {
-    use crate::signal::signal::time_signal::TimeSignal;
+    use crate::signal::TimeSignal;
 
     use super::*;
 

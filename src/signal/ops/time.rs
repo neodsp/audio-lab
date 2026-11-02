@@ -1,4 +1,4 @@
-use crate::signal::{math::db_to_gain, signal::TimeSignal};
+use crate::signal::{TimeSignal, math::db_to_gain};
 
 impl TimeSignal {
     pub fn energy_per_channel(&self) -> Vec<f64> {
@@ -45,7 +45,7 @@ mod tests {
     use approx::assert_abs_diff_eq;
     use ndarray::arr2;
 
-    use crate::signal::signal::TimeSignal;
+    use crate::signal::TimeSignal;
 
     #[test]
     fn energy_power_and_rms_are_computed_per_channel() {

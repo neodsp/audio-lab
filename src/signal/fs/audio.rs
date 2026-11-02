@@ -2,7 +2,7 @@ use ndarray::Array2;
 
 pub use audio_file::SampleFormat;
 
-use crate::signal::signal::TimeSignal;
+use crate::signal::TimeSignal;
 
 pub fn read_audio(path: impl AsRef<std::path::Path>) -> Result<TimeSignal, audio_file::ReadError> {
     let audio = audio_file::read::<f64>(path, audio_file::ReadConfig::default())?;

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use audio_host::{AudioBackend, AudioBlock, AudioBlockMut, AudioHost, Config};
 
-use crate::signal::signal::TimeSignal;
+use crate::signal::TimeSignal;
 
 pub fn play(signal: &TimeSignal) -> Result<(), audio_host::Error> {
     let num_output_channels = signal.num_channels() as u16;

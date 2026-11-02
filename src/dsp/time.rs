@@ -4,7 +4,7 @@ use ndarray::s;
 use rubato::{Fft, FixedSync, ResampleError, Resampler, ResamplerConstructionError};
 
 use crate::signal::math::db_to_gain;
-use crate::signal::signal::{SignalError, TimeSignal};
+use crate::signal::{SignalError, TimeSignal};
 use audioadapter_buffers::direct::SequentialSlice;
 
 use crate::dsp::apply_hann_right;

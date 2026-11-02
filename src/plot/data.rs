@@ -1,4 +1,4 @@
-use crate::signal::data::real_data::RealData;
+use crate::signal::data::RealData;
 use eframe::egui;
 use egui_plot::{GridInput, GridMark, Legend, Line, Plot, PlotPoint, PlotPoints};
 
@@ -159,7 +159,7 @@ pub fn show_real_data(
 
 #[cfg(test)]
 mod tests {
-    use crate::signal::data::real_data::RealData;
+    use crate::signal::data::RealData;
 
     use super::*;
 

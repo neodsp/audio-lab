@@ -1,4 +1,4 @@
-use crate::signal::{math::gain_to_db, signal::freq_signal::FreqSignal};
+use crate::signal::{FreqSignal, math::gain_to_db};
 use eframe::egui;
 use egui_plot::{GridInput, GridMark, Legend, Line, Plot, PlotPoint, PlotPoints};
 
@@ -224,7 +224,7 @@ pub fn show_freq(title: &str, signals: &[&FreqSignal]) -> Result<(), crate::plot
 
 #[cfg(test)]
 mod tests {
-    use crate::signal::{ndarray::arr2, signal::time_signal::TimeSignal};
+    use crate::signal::{TimeSignal, ndarray::arr2};
 
     use super::*;
 

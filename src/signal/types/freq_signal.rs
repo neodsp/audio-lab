@@ -3,7 +3,7 @@ use ndrustfft::{R2cFftHandler, ndifft_r2c};
 use num::complex::Complex64;
 
 use super::{SignalError, TimeSignal, utils};
-use crate::signal::data::complex_data::ComplexData;
+use crate::signal::data::ComplexData;
 
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -64,7 +64,7 @@ impl FreqSignal {
     }
 
     pub fn from_complex_data(
-        data: crate::signal::data::complex_data::ComplexData,
+        data: crate::signal::data::ComplexData,
         sample_rate: f64,
         num_time_steps: Option<usize>,
     ) -> Result<Self, SignalError> {

@@ -2,7 +2,7 @@ use ndarray::prelude::*;
 use ndrustfft::{R2cFftHandler, ndfft_r2c};
 
 use super::{SignalError, freq_signal::FreqSignal, utils};
-use crate::signal::data::real_data::RealData;
+use crate::signal::data::RealData;
 
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

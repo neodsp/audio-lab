@@ -1,4 +1,4 @@
-use crate::signal::signal::FreqSignal;
+use crate::signal::FreqSignal;
 
 impl FreqSignal {
     pub fn freq_spacing(&self) -> f64 {
@@ -17,7 +17,7 @@ impl FreqSignal {
 
 #[cfg(test)]
 mod tests {
-    use crate::signal::signal::{FreqSignal, SignalError};
+    use crate::signal::{FreqSignal, SignalError};
 
     #[test]
     fn frequency_helpers() -> Result<(), SignalError> {

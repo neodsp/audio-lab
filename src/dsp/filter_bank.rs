@@ -2,7 +2,7 @@ use ndarray::prelude::*;
 use ndrustfft::{R2cFftHandler, ndfft_r2c, ndifft_r2c};
 use num::complex::Complex64;
 
-use crate::signal::signal::{SignalError, TimeSignal};
+use crate::signal::{SignalError, TimeSignal};
 
 use crate::dsp::window::{WindowFn, generate_window};
 

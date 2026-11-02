@@ -1,6 +1,6 @@
 use ndarray::Array3;
 
-use crate::signal::signal::Spectrogram;
+use crate::signal::Spectrogram;
 
 fn one_sided_scale(spec: &Spectrogram, bin: usize) -> f64 {
     let last_bin = spec.num_freq_bins().saturating_sub(1);

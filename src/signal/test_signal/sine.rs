@@ -2,7 +2,7 @@ use std::f64::consts::TAU;
 
 use ndarray::Array2;
 
-use crate::signal::signal::{SignalError, TimeSignal};
+use crate::signal::{SignalError, TimeSignal};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SineConfig {

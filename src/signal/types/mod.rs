@@ -4,9 +4,9 @@ pub use freq_signal::FreqSignal;
 pub use spectrogram::{Spectrogram, SpectrogramNormalization};
 pub use time_signal::TimeSignal;
 
-pub mod freq_signal;
-pub mod spectrogram;
-pub mod time_signal;
+mod freq_signal;
+mod spectrogram;
+mod time_signal;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SignalError {

@@ -1,6 +1,6 @@
 use ndarray::s;
 
-use crate::signal::signal::{SignalError, TimeSignal};
+use crate::signal::{SignalError, TimeSignal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PadMode {

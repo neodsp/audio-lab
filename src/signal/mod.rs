@@ -5,15 +5,15 @@ pub use ndarray;
 pub use blocks::{
     BlockAdapterError, signal_from_block, signal_from_blocks, signal_to_block, signal_to_blocks,
 };
-pub use signal::{
-    FreqSignal, Spectrogram, SpectrogramNormalization, TimeSignal, join_freq_signals,
-    join_time_signals, mix_freq_signals, mix_time_signals,
-};
-pub use test_signal::impulse::{ImpulseConfig, generate_impulse};
-pub use test_signal::noise::{NoiseConfig, Spectrum, generate_noise};
-pub use test_signal::pulsed_noise::{PulsedNoiseConfig, generate_pulsed_noise};
+pub use test_signal::impulse::{ImpulseConfig, ImpulseError, generate_impulse};
+pub use test_signal::noise::{NoiseConfig, NoiseError, Spectrum, generate_noise};
+pub use test_signal::pulsed_noise::{PulsedNoiseConfig, PulsedNoiseError, generate_pulsed_noise};
 pub use test_signal::sine::{SineConfig, generate_sine};
-pub use test_signal::sweep::{SweepConfig, SweepType, generate_sweep};
+pub use test_signal::sweep::{SweepConfig, SweepError, SweepType, generate_sweep};
+pub use types::{
+    FreqSignal, SignalError, Spectrogram, SpectrogramNormalization, TimeSignal, join_freq_signals,
+    join_time_signals, mix_freq_signals, mix_time_signals, utils,
+};
 
 #[macro_export]
 macro_rules! join_time {
@@ -46,14 +46,12 @@ macro_rules! mix_freq {
 // `#[macro_export]` puts the macros at the crate root, this keeps them available here too
 pub use crate::{join_freq, join_time, mix_freq, mix_time};
 
-pub mod blocks;
+mod blocks;
 pub mod data;
 pub mod fs;
 pub mod math;
 mod ops;
 #[cfg(feature = "playback")]
 pub mod playback;
-// same path as before the crates were merged (`audio_lab::signal::signal::...`)
-#[allow(clippy::module_inception)]
-pub mod signal;
-pub mod test_signal;
+mod test_signal;
+mod types;
