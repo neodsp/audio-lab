@@ -24,7 +24,7 @@ pub fn group_delay(signal: &FreqSignal) -> Result<RealData, FrequencyError> {
         return Err(FrequencyError::NonIncreasingFrequencyBins);
     }
 
-    let time = signal.clone().into_time();
+    let time = signal.to_time();
     let weighted_time = Array2::from_shape_fn(time.time_data().raw_dim(), |(channel, sample)| {
         time.time_data()[[channel, sample]] * sample as f64
     });

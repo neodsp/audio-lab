@@ -151,7 +151,13 @@ impl FreqSignal {
         self
     }
 
+    /// Transform to the time domain. Equivalent to [`FreqSignal::to_time`].
     pub fn into_time(self) -> TimeSignal {
+        self.to_time()
+    }
+
+    /// Transform to the time domain without consuming `self`.
+    pub fn to_time(&self) -> TimeSignal {
         let fft_handler = R2cFftHandler::<f64>::new(self.num_time_steps);
         let mut time_signal =
             TimeSignal::zeros(self.num_channels(), self.num_time_steps, self.sample_rate)
