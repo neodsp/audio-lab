@@ -14,12 +14,11 @@ pub fn play(signal: &TimeSignal) -> Result<(), audio_host::Error> {
 
     let mut host = AudioHost::new()?;
     host.start(
-        Config {
-            num_input_channels: 0,
-            num_output_channels,
-            sample_rate,
-            num_frames,
-        },
+        Config::default()
+            .with_input_channels(0)
+            .with_output_channels(num_output_channels)
+            .with_sample_rate(sample_rate)
+            .with_num_frames(num_frames),
         move |_input, mut output| {
             for frame in 0..output.num_frames() {
                 let src_frame = next_frame;

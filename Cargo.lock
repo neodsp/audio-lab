@@ -458,9 +458,9 @@ dependencies = [
 
 [[package]]
 name = "audio-host"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3aee6a54e8efe5279b9ce01516d2c73d802b6a76e6218d21362f5ee83b2dae1f"
+checksum = "6d5e6a31b30a31dad325860ed45f642693ad9f627adf0b7a8f9b1614bb7d9698"
 dependencies = [
  "audio-blocks",
  "rtaudio",
