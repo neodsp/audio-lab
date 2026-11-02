@@ -33,6 +33,9 @@ pub(crate) fn native_options_any_thread() -> eframe::NativeOptions {
                 use winit::platform::windows::EventLoopBuilderExtWindows;
                 builder.with_any_thread(true);
             }
+            // macOS only allows the event loop on the main thread, so there is nothing to set
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+            let _ = builder;
         })),
         ..Default::default()
     }
