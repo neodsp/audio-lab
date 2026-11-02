@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
 
-    let test_signal = audio_lab::mix_time!(sweep, noise)?;
+    let test_signal = audio_lab::signal::mix_time!(sweep, noise)?;
     Ok(())
 }
 ```
@@ -140,10 +140,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-## Workspace crates
+## Modules
 
-- `audio-signal`: signal types, generators, I/O, playback
-- `audio-dsp`: DSP and measurement primitives
-- `audio-plot`: plotting and visualization
+- `signal`: signal types, generators, I/O, playback
+- `dsp`: DSP and measurement primitives
+- `plot`: plotting and visualization
+
+## Cargo features
+
+All of these are enabled by default, except `serde`:
+
+- `plot`: the `plot` module. Pulls in egui, so turn it off if you don't need windows.
+- `playback`: `signal::playback`, plays signals on the default audio device.
+- `audio-file`: `signal::fs::audio`, reads and writes audio files.
+- `numpy`: `signal::fs::npy`, reads and writes NumPy `.npy` files.
+- `serde`: `Serialize` and `Deserialize` for the signal types.
 
 <!-- cargo-rdme end -->
