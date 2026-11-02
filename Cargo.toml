@@ -1,58 +1,70 @@
 [package]
-authors.workspace = true
-categories = ["multimedia::audio", "science"]
-description = "Toolkit for audio research and testing"
-edition.workspace = true
-homepage.workspace = true
-include = ["CHANGELOG.md", "LICENSE", "README.md", "src/**"]
-keywords = ["audio", "dsp", "research", "signal-processing"]
-license.workspace = true
-name = "audio-lab"
-repository.workspace = true
-rust-version.workspace = true
-version.workspace = true
-
-[dependencies]
-audio-dsp.workspace = true
-audio-plot.workspace = true
-audio-signal = { workspace = true, default-features = false }
-
-[features]
-default = ["audio-file", "audio-playback", "numpy"]
-
-audio-file = ["audio-signal/audio-file"]
-audio-playback = ["audio-signal/audio-playback"]
-numpy = ["audio-signal/numpy"]
-serde = ["audio-signal/serde"]
-
-[workspace]
-members = [".", "crates/audio-dsp", "crates/audio-plot", "crates/audio-signal"]
-resolver = "3"
-
-[workspace.package]
 authors = ["Stephan Eckes <stephan@neodsp.com>"]
+categories = ["mathematics", "multimedia::audio", "science", "visualization"]
+description = "Toolkit for audio research and testing"
 edition = "2024"
 homepage = "https://neodsp.com"
+include = ["CHANGELOG.md", "LICENSE", "README.md", "examples/**", "src/**"]
+keywords = ["audio", "dsp", "plot", "research", "signal-processing"]
 license = "MIT"
+name = "audio-lab"
 repository = "https://github.com/neodsp/audio-lab"
 rust-version = "1.95"
 version = "0.1.0"
 
-[workspace.dependencies]
-audio-blocks = "0.7.0"
-audio-dsp = { path = "crates/audio-dsp", version = "0.1.0" }
-audio-host = { version = "0.1.0" }
-audio-plot = { path = "crates/audio-plot", version = "0.1.0" }
-audio-signal = { path = "crates/audio-signal", default-features = false, version = "0.1.0" }
-audioadapter-buffers = "2.0.0"
-
+[dependencies]
 approx = { version = "0.5", features = ["num-complex"] }
-audio-file = { version = "0.4", default-features = false, features = ["all-codecs"] }
+audio-blocks = "0.7.0"
+audioadapter-buffers = "2.0.0"
 ndarray = { version = "0.17", features = ["approx"] }
-ndarray-npy = { version = "0.10", features = ["num-complex-0_4"] }
 ndarray-rand = "0.16"
 ndrustfft = "0.6"
 num = "0.4"
 rubato = "1.0.1"
-serde = { version = "1", features = ["derive"] }
 thiserror = "2.0"
+
+audio-file = { version = "0.4", default-features = false, features = [
+  "all-codecs",
+], optional = true }
+audio-host = { version = "0.1.0", optional = true }
+ndarray-npy = { version = "0.10", features = ["num-complex-0_4"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+
+eframe = { version = "0.36", optional = true }
+egui = { version = "0.36", optional = true }
+egui_plot = { version = "0.37", optional = true }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+rfd = { version = "0.17", optional = true }
+winit = { version = "0.30", features = ["wayland", "x11"], optional = true }
+
+[features]
+default = ["audio-file", "numpy", "playback", "plot"]
+
+# read and write audio files
+audio-file = ["dep:audio-file"]
+# read and write NumPy `.npy` files
+numpy = ["dep:ndarray-npy"]
+# play signals on the default audio device
+playback = ["dep:audio-host"]
+# show signals, spectra and spectrograms in native windows
+plot = ["dep:eframe", "dep:egui", "dep:egui_plot", "dep:image", "dep:rfd", "dep:winit"]
+serde = ["dep:serde", "ndarray/serde", "num/serde"]
+
+[[example]]
+name = "fractional_octave_smoothing"
+required-features = ["plot"]
+
+[[example]]
+name = "octave_filter_bank"
+required-features = ["plot"]
+
+[[example]]
+name = "show_test_signals"
+required-features = ["plot"]
+
+[[example]]
+name = "spectrogram"
+required-features = ["plot"]
+
+[package.metadata.docs.rs]
+all-features = true

@@ -59,16 +59,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.features.name }}
-      - run: cargo clippy --locked --workspace --all-targets $FLAGS -- -D warnings
-      - run: cargo build --locked --workspace --all-targets $FLAGS
+      - run: cargo clippy --locked --all-targets $FLAGS -- -D warnings
+      - run: cargo build --locked --all-targets $FLAGS
       # tests that open windows or play audio are #[ignore]d, run them locally with
       # `cargo test -- --ignored`
-      - run: cargo test --locked --workspace --all-targets $FLAGS
+      - run: cargo test --locked --all-targets $FLAGS
       # the crate docs (= README) examples use the default features
       - if: matrix.features.name != 'no default'
-        run: cargo test --locked --workspace --doc $FLAGS
+        run: cargo test --locked --doc $FLAGS
       - if: runner.os == 'Linux'
-        run: cargo doc --locked --workspace --no-deps --document-private-items $FLAGS
+        run: cargo doc --locked --no-deps --document-private-items $FLAGS
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -94,7 +94,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.features.name }}
-      - run: cargo check --locked --workspace --all-targets $FLAGS
+      - run: cargo check --locked --all-targets $FLAGS
 
   readme:
     name: README Check
@@ -125,5 +125,5 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libjack-jackd2-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # catches publish problems (like dependency cycles) before a release tag is pushed
-      - run: cargo package --workspace --locked
+      # catches publish problems before a release tag is pushed
+      - run: cargo package --locked

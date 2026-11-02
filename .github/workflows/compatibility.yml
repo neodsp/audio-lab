@@ -24,4 +24,4 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libjack-jackd2-dev
       - uses: dtolnay/rust-toolchain@beta
       - run: cargo update
-      - run: RUSTFLAGS="-D deprecated" cargo test --locked --workspace --all-targets --all-features
+      - run: RUSTFLAGS="-D deprecated" cargo test --locked --all-targets --all-features

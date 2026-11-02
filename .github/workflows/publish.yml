@@ -1,7 +1,7 @@
 name: Publish
 
-# Publishes all workspace crates to crates.io when a version tag (e.g. `0.2.0`) is pushed for a
-# commit on main. Uses crates.io trusted publishing, so no API token is stored in the repository.
+# Publishes to crates.io when a version tag (e.g. `0.2.0`) is pushed for a commit on main.
+# Uses crates.io trusted publishing, so no API token is stored in the repository.
 on:
   push:
     tags: ["[0-9]+.[0-9]+.[0-9]+*"]
@@ -32,12 +32,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Check that the tag matches the version of every crate
+      - name: Check that the tag matches the version in Cargo.toml
         run: |
-          mismatches=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r --arg tag "$GITHUB_REF_NAME" '.packages[] | select(.version != $tag) | "\(.name) \(.version)"')
-          if [ -n "$mismatches" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME doesn't match these crate versions: $mismatches"
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match the Cargo.toml version $version"
             exit 1
           fi
 
@@ -46,7 +45,6 @@ jobs:
 
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
-      # publishes the crates in dependency order
-      - run: cargo publish --workspace --locked
+      - run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

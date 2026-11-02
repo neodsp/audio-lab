@@ -446,21 +446,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f93ebbf82d06013f4c41fe71303feb980cddd78496d904d06be627972de51a24"
 
 [[package]]
-name = "audio-dsp"
-version = "0.1.0"
-dependencies = [
- "approx",
- "audio-plot",
- "audio-signal",
- "audioadapter-buffers",
- "ndarray",
- "ndrustfft",
- "num",
- "rubato",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "audio-file"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -491,42 +476,25 @@ dependencies = [
 name = "audio-lab"
 version = "0.1.0"
 dependencies = [
- "audio-dsp",
- "audio-plot",
- "audio-signal",
-]
-
-[[package]]
-name = "audio-plot"
-version = "0.1.0"
-dependencies = [
- "audio-signal",
- "eframe",
- "egui",
- "egui_plot",
- "image",
- "num",
- "rfd",
- "thiserror 2.0.21",
- "winit",
-]
-
-[[package]]
-name = "audio-signal"
-version = "0.1.0"
-dependencies = [
  "approx",
  "audio-blocks",
  "audio-file",
  "audio-host",
- "audio-plot",
+ "audioadapter-buffers",
+ "eframe",
+ "egui",
+ "egui_plot",
+ "image",
  "ndarray",
  "ndarray-npy",
  "ndarray-rand",
  "ndrustfft",
  "num",
+ "rfd",
+ "rubato",
  "serde",
  "thiserror 2.0.21",
+ "winit",
 ]
 
 [[package]]
