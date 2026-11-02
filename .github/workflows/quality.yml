@@ -63,7 +63,10 @@ jobs:
       - run: cargo build --locked --workspace --all-targets $FLAGS
       # tests that open windows or play audio are #[ignore]d, run them locally with
       # `cargo test -- --ignored`
-      - run: cargo test --locked --workspace $FLAGS
+      - run: cargo test --locked --workspace --all-targets $FLAGS
+      # the crate docs (= README) examples use the default features
+      - if: matrix.features.name != 'no default'
+        run: cargo test --locked --workspace --doc $FLAGS
       - if: runner.os == 'Linux'
         run: cargo doc --locked --workspace --no-deps --document-private-items $FLAGS
         env:
