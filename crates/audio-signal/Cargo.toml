@@ -1,6 +1,6 @@
 [package]
 authors.workspace = true
-categories = ["mathematics", "multimedia:audio", "science"]
+categories = ["mathematics", "multimedia::audio", "science"]
 description = "Audio signal types and utilities for research and testing"
 edition.workspace = true
 homepage.workspace = true
@@ -8,6 +8,7 @@ keywords = ["audio", "fft", "ndarray", "signal", "signal-processing"]
 license.workspace = true
 name = "audio-signal"
 repository.workspace = true
+rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
@@ -32,4 +33,6 @@ numpy = ["dep:ndarray-npy"]
 serde = ["dep:serde", "ndarray/serde", "num/serde"]
 
 [dev-dependencies]
-audio-plot.workspace = true
+# path only, so `cargo publish` drops it. audio-plot depends on this crate, so it can't be
+# published first.
+audio-plot = { path = "../audio-plot" }

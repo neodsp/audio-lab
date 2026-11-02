@@ -8,6 +8,7 @@ keywords = ["audio", "dsp", "fft", "filter", "signal-processing"]
 license.workspace = true
 name = "audio-dsp"
 repository.workspace = true
+rust-version.workspace = true
 version.workspace = true
 
 [dependencies]

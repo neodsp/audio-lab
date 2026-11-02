@@ -1,0 +1,126 @@
+name: Quality Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cargo-fmt:
+    name: Code Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  taplo-fmt:
+    name: TOML Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: uncenter/setup-taplo@v2
+      - run: taplo fmt --check
+
+  clippy:
+    name: Clippy (${{ matrix.os }}, ${{ matrix.features.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        features:
+          - { name: default, flags: "" }
+          - { name: no default, flags: "--no-default-features" }
+          - { name: all, flags: "--all-features" }
+    defaults:
+      run:
+        shell: bash
+    env:
+      FLAGS: ${{ matrix.features.flags }}
+    steps:
+      - uses: actions/checkout@v7
+      # audio-host builds rtaudio, which needs the ALSA, PulseAudio and JACK headers
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libjack-jackd2-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.features.name }}
+      - run: cargo clippy --locked --workspace --all-targets $FLAGS -- -D warnings
+      - run: cargo build --locked --workspace --all-targets $FLAGS
+      # tests that open windows or play audio are #[ignore]d, run them locally with
+      # `cargo test -- --ignored`
+      - run: cargo test --locked --workspace $FLAGS
+      - if: runner.os == 'Linux'
+        run: cargo doc --locked --workspace --no-deps --document-private-items $FLAGS
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  msrv:
+    name: MSRV Check (${{ matrix.features.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - { name: default, flags: "" }
+          - { name: no default, flags: "--no-default-features" }
+          - { name: all, flags: "--all-features" }
+    env:
+      FLAGS: ${{ matrix.features.flags }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libjack-jackd2-dev
+      # keep in sync with `rust-version` in Cargo.toml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.features.name }}
+      - run: cargo check --locked --workspace --all-targets $FLAGS
+
+  readme:
+    name: README Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-rdme
+      - run: cargo rdme --check
+
+  unused-dependencies:
+    name: Unused Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-shear
+      - run: cargo shear
+
+  package:
+    name: Package Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libjack-jackd2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # catches publish problems (like dependency cycles) before a release tag is pushed
+      - run: cargo package --workspace --locked

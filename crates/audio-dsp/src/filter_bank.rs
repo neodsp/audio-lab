@@ -335,7 +335,7 @@ mod tests {
         let (c, l, u) = fractional_octave_frequencies(1, (63.0, 16000.0));
         assert!(!c.is_empty());
         for &f in &c {
-            assert!(f >= 63.0 * (1.0 - 1e-5) && f <= 16000.0 * (1.0 + 1e-5));
+            assert!((63.0 * (1.0 - 1e-5)..=16000.0 * (1.0 + 1e-5)).contains(&f));
         }
         for ((&fc, &fl), &fu) in c.iter().zip(&l).zip(&u) {
             assert!(fl < fc && fc < fu);

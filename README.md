@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
 
-    let test_signal = audio_lab::mix_time!(sweep, noise)?;
+    let test_signal = audio_lab::signal::mix_time!(sweep, noise)?;
     Ok(())
 }
 ```

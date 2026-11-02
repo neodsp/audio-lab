@@ -8,6 +8,7 @@ keywords = ["audio", "egui", "plot", "signal", "visualization"]
 license.workspace = true
 name = "audio-plot"
 repository.workspace = true
+rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
