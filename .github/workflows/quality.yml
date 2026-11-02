@@ -33,26 +33,21 @@ jobs:
       - run: taplo fmt --check
 
   clippy:
-    name: Clippy (${{ matrix.os }}, ${{ matrix.features.name }})
-    runs-on: ${{ matrix.os }}
+    name: Clippy (${{ matrix.features.name }})
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
         features:
           - { name: default, flags: "" }
           - { name: no default, flags: "--no-default-features" }
           - { name: all, flags: "--all-features" }
-    defaults:
-      run:
-        shell: bash
     env:
       FLAGS: ${{ matrix.features.flags }}
     steps:
       - uses: actions/checkout@v7
       # audio-host builds rtaudio, which needs the ALSA, PulseAudio and JACK headers
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libjack-jackd2-dev
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libjack-jackd2-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -60,17 +55,44 @@ jobs:
         with:
           key: ${{ matrix.features.name }}
       - run: cargo clippy --locked --workspace --all-targets $FLAGS -- -D warnings
-      - run: cargo build --locked --workspace --all-targets $FLAGS
+      - run: cargo doc --locked --workspace --no-deps --document-private-items $FLAGS
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  test:
+    name: Tests (${{ matrix.os }}, ${{ matrix.features.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, features: { name: default, flags: "" } }
+          - { os: ubuntu-latest, features: { name: no default, flags: "--no-default-features" } }
+          - { os: ubuntu-latest, features: { name: all, flags: "--all-features" } }
+          # clippy only runs on Linux, so compiler warnings are errors here to still catch
+          # platform-specific ones
+          - { os: macos-latest, features: { name: all, flags: "--all-features" } }
+          - { os: windows-latest, features: { name: all, flags: "--all-features" } }
+    defaults:
+      run:
+        shell: bash
+    env:
+      FLAGS: ${{ matrix.features.flags }}
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v7
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libjack-jackd2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.features.name }}
       # tests that open windows or play audio are #[ignore]d, run them locally with
       # `cargo test -- --ignored`
       - run: cargo test --locked --workspace --all-targets $FLAGS
       # the crate docs (= README) examples use the default features
       - if: matrix.features.name != 'no default'
         run: cargo test --locked --workspace --doc $FLAGS
-      - if: runner.os == 'Linux'
-        run: cargo doc --locked --workspace --no-deps --document-private-items $FLAGS
-        env:
-          RUSTDOCFLAGS: -D warnings
 
   msrv:
     name: MSRV Check (${{ matrix.features.name }})
