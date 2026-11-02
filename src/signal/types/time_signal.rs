@@ -45,7 +45,7 @@ impl TimeSignal {
     }
 
     pub fn from_real_data(data: RealData, sample_rate: f64) -> Result<Self, SignalError> {
-        Self::new(data.y_data().to_owned(), sample_rate)
+        Self::new(data.into_y_data(), sample_rate)
     }
 
     pub fn comment(&self) -> Option<&str> {
@@ -309,6 +309,26 @@ mod tests {
         assert_eq!(time_signal.channel(0), arr1(&[0.0, 1.0, 2.0, 3.0]));
         assert_eq!(time_signal.channel(1), arr1(&[4.0, 5.0, 6.0, 7.0]));
         Ok(())
+    }
+
+    #[test]
+    fn constructs_from_owned_data_containers() {
+        use crate::signal::data::{ComplexData, RealData};
+
+        let y = arr2(&[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]);
+        let time = TimeSignal::from_real_data(RealData::from_y_data(y.clone()), 10.0).unwrap();
+        assert_eq!(time.time_data(), y);
+        assert_eq!(time.time_steps(), arr1(&[0.0, 0.1, 0.2]));
+
+        let spectrum = arr2(&[[Complex64::new(1.0, 0.0), Complex64::new(0.0, 1.0)]]);
+        let freq = FreqSignal::from_complex_data(
+            ComplexData::from_y_data(spectrum.clone()),
+            10.0,
+            Some(2),
+        )
+        .unwrap();
+        assert_eq!(freq.freq_data(), spectrum);
+        assert_eq!(freq.freq_bins(), arr1(&[0.0, 5.0]));
     }
 
     #[test]

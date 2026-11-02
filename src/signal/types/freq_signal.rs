@@ -68,7 +68,7 @@ impl FreqSignal {
         sample_rate: f64,
         num_time_steps: Option<usize>,
     ) -> Result<Self, SignalError> {
-        Self::new(data.y_data().to_owned(), sample_rate, num_time_steps)
+        Self::new(data.into_y_data(), sample_rate, num_time_steps)
     }
 
     pub fn comment(&self) -> Option<&str> {

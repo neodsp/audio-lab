@@ -111,6 +111,11 @@ impl ComplexData {
         self.y_data.view_mut()
     }
 
+    /// Consume the data and return the owned y values without copying.
+    pub fn into_y_data(self) -> Array2<Complex64> {
+        self.y_data
+    }
+
     pub fn channel(&self, ch: usize) -> ArrayView1<'_, Complex64> {
         self.y_data.row(ch)
     }
