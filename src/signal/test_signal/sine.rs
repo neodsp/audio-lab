@@ -1,6 +1,6 @@
 use std::f64::consts::TAU;
 
-use ndarray::Array2;
+use ndarray::Array1;
 
 use crate::signal::{SignalError, TimeSignal};
 
@@ -32,10 +32,15 @@ pub fn generate_sine(
         num_channels,
     } = config;
 
-    let data = Array2::from_shape_fn((num_channels, num_time_steps), |(_, frame)| {
+    // Every channel is identical, so compute the waveform once and copy it.
+    let waveform = Array1::from_shape_fn(num_time_steps, |frame| {
         let t = frame as f64 / sample_rate;
         amplitude * (TAU * frequency * t).sin()
     });
+    let data = waveform
+        .broadcast((num_channels, num_time_steps))
+        .expect("waveform length matches num_time_steps")
+        .to_owned();
 
     let mut signal = TimeSignal::new(data, sample_rate)?;
     let comment = format!("Sine signal (frequency = {frequency} Hz, amplitude = {amplitude})");
