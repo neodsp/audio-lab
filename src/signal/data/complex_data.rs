@@ -135,18 +135,32 @@ impl ComplexData {
         self.y_data.iter_mut()
     }
 
+    /// Index of the x value closest to `x`. On a tie the lower index wins.
+    ///
+    /// Uses a binary search, so it relies on x values being strictly
+    /// increasing, which the constructors check. If they were changed
+    /// through [`x_data_mut`](Self::x_data_mut) to be unordered, the result
+    /// is unspecified.
     pub fn nearest_x_index(&self, x: f64) -> usize {
-        self.x_data()
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| {
-                (*a - x)
-                    .abs()
-                    .partial_cmp(&(*b - x).abs())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(index, _)| index)
-            .unwrap_or(0)
+        let x_values = self
+            .x_data
+            .as_slice()
+            .expect("owned 1-D array is contiguous");
+
+        let upper = x_values.partition_point(|&value| value < x);
+        if upper == 0 {
+            return 0;
+        }
+        if upper == x_values.len() {
+            return x_values.len() - 1;
+        }
+
+        let lower = upper - 1;
+        if x - x_values[lower] <= x_values[upper] - x {
+            lower
+        } else {
+            upper
+        }
     }
 }
 
@@ -242,6 +256,47 @@ mod tests {
 
         let error = ComplexData::from_x_data(array![0.0, 0.0, 0.0], 3).err();
         assert!(matches!(error, Some(DataError::NotIncreasing)));
+    }
+
+    #[test]
+    fn nearest_x_index_matches_linear_scan() {
+        let data = ComplexData::from_x_data(array![0.0, 1.0, 2.5, 4.0, 10.0], 1).unwrap();
+        let linear_scan = |x: f64| {
+            data.x_data()
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    (*a - x)
+                        .abs()
+                        .partial_cmp(&(*b - x).abs())
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(index, _)| index)
+                .unwrap()
+        };
+
+        // Exact hits, midpoints (ties go to the lower index), values outside
+        // the range, and NaN.
+        let queries = [
+            -5.0,
+            0.0,
+            0.5,
+            0.6,
+            1.75,
+            2.5,
+            3.25,
+            3.3,
+            7.0,
+            7.1,
+            10.0,
+            42.0,
+            f64::NAN,
+        ];
+        for x in queries {
+            assert_eq!(data.nearest_x_index(x), linear_scan(x), "x = {x}");
+        }
+
+        assert_eq!(ComplexData::zeros(1, 0).nearest_x_index(1.0), 0);
     }
 
     #[test]
