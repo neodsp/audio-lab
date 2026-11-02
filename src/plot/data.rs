@@ -130,7 +130,7 @@ impl eframe::App for RealDataPlot {
                 for (i, points) in self.channels.iter().enumerate() {
                     plot_ui.line(Line::new(
                         format!("Channel {i}"),
-                        PlotPoints::Owned(points.clone()),
+                        PlotPoints::Borrowed(points),
                     ));
                 }
             });
