@@ -1,6 +1,6 @@
 use crate::signal::FreqSignal;
 use crate::signal::data::RealData;
-use ndarray::Array2;
+use ndarray::{Array1, Zip};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FrequencyError {
@@ -24,28 +24,26 @@ pub fn group_delay(signal: &FreqSignal) -> Result<RealData, FrequencyError> {
         return Err(FrequencyError::NonIncreasingFrequencyBins);
     }
 
-    let time = signal.to_time();
-    let weighted_time = Array2::from_shape_fn(time.time_data().raw_dim(), |(channel, sample)| {
-        time.time_data()[[channel, sample]] * sample as f64
-    });
-    let weighted_freq = crate::signal::TimeSignal::new(weighted_time, time.sample_rate())
-        .expect("weighted time data preserves valid signal dimensions")
-        .into_freq();
-
-    let mut group_delay = Array2::zeros((signal.num_channels(), signal.num_freq_bins()));
-    for ((mut out_channel, numerator), denominator) in group_delay
-        .outer_iter_mut()
-        .zip(weighted_freq.freq_data().outer_iter())
-        .zip(signal.freq_data().outer_iter())
-    {
-        for bin in 0..freq_bins.len() {
-            if denominator[bin].norm() < 1e-15 {
-                out_channel[bin] = 0.0;
-            } else {
-                out_channel[bin] = (numerator[bin] / denominator[bin]).re;
-            }
-        }
+    // Weight h[n] by n in place: FFT(n·h[n]) / FFT(h[n]) gives the group delay.
+    let mut weighted_time = signal.to_time();
+    let ramp = Array1::from_iter((0..weighted_time.num_time_steps()).map(|n| n as f64));
+    for mut channel in weighted_time.channel_iter_mut() {
+        channel *= &ramp;
     }
+    let weighted_freq = weighted_time.into_freq();
+
+    // Re(N / D) = Re(N · conj(D)) / |D|², which avoids a sqrt and a full
+    // complex division per bin. |D|² < 1e-30 is the same cutoff as |D| < 1e-15.
+    let group_delay = Zip::from(weighted_freq.freq_data())
+        .and(signal.freq_data())
+        .map_collect(|numerator, denominator| {
+            let denominator_power = denominator.norm_sqr();
+            if denominator_power < 1e-30 {
+                0.0
+            } else {
+                (numerator * denominator.conj()).re / denominator_power
+            }
+        });
 
     Ok(RealData::new(freq_bins.to_owned(), group_delay)
         .expect("freq bins originate from FreqSignal"))
@@ -58,6 +56,35 @@ mod tests {
     use ndarray::arr2;
 
     use super::*;
+
+    #[test]
+    fn group_delay_matches_direct_complex_division() {
+        let time = TimeSignal::new(
+            arr2(&[
+                [0.1, 0.7, -0.4, 0.2, 0.05, -0.1, 0.0, 0.02, 0.3],
+                [0.0, 0.0, 1.0, 0.5, 0.25, 0.0, 0.0, 0.0, 0.0],
+            ]),
+            9.0,
+        )
+        .unwrap();
+        let freq = time.to_freq();
+
+        let mut weighted = time.time_data().to_owned();
+        for mut channel in weighted.outer_iter_mut() {
+            for (n, sample) in channel.iter_mut().enumerate() {
+                *sample *= n as f64;
+            }
+        }
+        let weighted_freq = TimeSignal::new(weighted, 9.0).unwrap().into_freq();
+
+        let delay = group_delay(&freq).unwrap();
+        for ch in 0..2 {
+            for (bin, actual) in delay.channel(ch).iter().enumerate() {
+                let expected = (weighted_freq.channel(ch)[bin] / freq.channel(ch)[bin]).re;
+                assert_abs_diff_eq!(*actual, expected, epsilon = 1e-10);
+            }
+        }
+    }
 
     #[test]
     fn group_delay_matches_integer_sample_delay() {
