@@ -1,7 +1,7 @@
 use crate::signal::{Spectrogram, SpectrogramNormalization, TimeSignal};
 use ndarray::prelude::*;
-use ndrustfft::{R2cFftHandler, ndfft_r2c};
 use num::complex::Complex64;
+use realfft::RealFftPlanner;
 
 pub use crate::dsp::window::WindowFn;
 use crate::dsp::window::generate_window;
@@ -84,31 +84,29 @@ pub fn stft(signal: &TimeSignal, config: &StftConfig) -> Result<Spectrogram, Stf
     let end_freq = (num_freq_bins - 1) as f64 * sample_rate / window_size as f64;
     let freq_bins = Array1::linspace(0.0, end_freq, num_freq_bins);
 
-    let fft_handler = R2cFftHandler::<f64>::new(window_size);
+    let fft = RealFftPlanner::<f64>::new().plan_fft_forward(window_size);
     let mut data: Array3<Complex64> = Array3::zeros((num_channels, num_frames, num_freq_bins));
 
-    // Reusable buffers
-    let mut windowed_frame: Array2<f64> = Array2::zeros((num_channels, window_size));
-    let mut frame_freq: Array2<Complex64> = Array2::zeros((num_channels, num_freq_bins));
+    // Buffers reused for every frame. The FFT writes straight into `data`.
+    let mut windowed_frame = fft.make_input_vec();
+    let mut scratch = fft.make_scratch_vec();
 
-    for frame_idx in 0..num_frames {
-        let start = frame_idx * hop_size;
-        for ch in 0..num_channels {
-            let ch_data = signal.channel(ch);
-            let wf_row = windowed_frame.row_mut(ch);
-            azip!((wf in wf_row, &s in ch_data.slice(s![start..start + window_size]), &w in &window) {
+    for (ch_data, mut ch_out) in signal.channel_iter().zip(data.outer_iter_mut()) {
+        for (frame_idx, mut frame_out) in ch_out.outer_iter_mut().enumerate() {
+            let start = frame_idx * hop_size;
+            azip!((wf in &mut windowed_frame, &s in ch_data.slice(s![start..start + window_size]), &w in &window) {
                 *wf = s * w;
             });
+
+            fft.process_with_scratch(
+                &mut windowed_frame,
+                frame_out
+                    .as_slice_mut()
+                    .expect("spectrogram rows are contiguous"),
+                &mut scratch,
+            )
+            .expect("buffer lengths come from the FFT plan");
         }
-
-        ndfft_r2c(
-            &windowed_frame.view(),
-            &mut frame_freq.view_mut(),
-            &fft_handler,
-            1,
-        );
-
-        data.slice_mut(s![.., frame_idx, ..]).assign(&frame_freq);
     }
 
     let mut spectrogram = Spectrogram::new(

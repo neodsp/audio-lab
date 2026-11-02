@@ -19,6 +19,7 @@ ndarray = { version = "0.17", features = ["approx"] }
 ndarray-rand = "0.16"
 ndrustfft = "0.6"
 num = "0.4"
+realfft = "3.5"
 rubato = "5.0.1"
 thiserror = "2.0"
 
