@@ -1,7 +1,6 @@
 use std::{f64::consts::PI, ops::Range};
 
 use ndarray::Array1;
-use num::complex::Complex64;
 use thiserror::Error;
 
 use crate::signal::{FreqSignal, SignalError, TimeSignal};
@@ -184,7 +183,7 @@ fn regularized_spectrum_inversion(
             .zip(in_channel.iter())
             .zip(reg_channel.iter())
         {
-            *out_bin = in_bin.conj() / (in_bin.conj() * *in_bin + Complex64::from(*reg));
+            *out_bin = in_bin.conj() / (in_bin.norm_sqr() + *reg);
         }
     }
 
@@ -353,6 +352,32 @@ mod tests {
             result,
             Err(DeconvolutionError::InvalidFrequencyRange { .. })
         ));
+    }
+
+    #[test]
+    fn spectrum_inversion_matches_complex_formula() {
+        use num::complex::Complex64;
+
+        let signal = TimeSignal::new(
+            arr2(&[[0.8, -0.3, 0.5, 0.1, -0.2, 0.05, 0.0, 0.3]]),
+            48_000.0,
+        )
+        .unwrap()
+        .into_freq();
+        // Same factor inside and outside the band gives a constant regularization.
+        let factor = 1e-2;
+        let config = DeconvolutionConfig::default()
+            .with_regularized_band(3_000.0..12_000.0)
+            .with_regularization(factor, factor);
+
+        let inverse = regularized_spectrum_inversion(&signal, &config).unwrap();
+
+        let reg = factor * max_squared_magnitude(&signal);
+        for (h, inv) in signal.channel(0).iter().zip(inverse.channel(0).iter()) {
+            let expected = h.conj() / (h.conj() * *h + Complex64::from(reg));
+            assert_abs_diff_eq!(inv.re, expected.re, epsilon = 1e-12);
+            assert_abs_diff_eq!(inv.im, expected.im, epsilon = 1e-12);
+        }
     }
 
     #[test]
