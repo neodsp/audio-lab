@@ -1,9 +1,13 @@
+use std::sync::{Arc, Mutex};
+
 use eframe::egui;
 
 pub(crate) struct SavePlotState {
     button_rect: Option<egui::Rect>,
     title: String,
     default_filename: String,
+    /// filled by the screenshot callback, read by `handle_screenshot` on the next frame
+    screenshot: Arc<Mutex<Option<Arc<egui::ColorImage>>>>,
 }
 
 impl SavePlotState {
@@ -14,6 +18,7 @@ impl SavePlotState {
             button_rect: None,
             title,
             default_filename,
+            screenshot: Arc::default(),
         }
     }
 
@@ -23,8 +28,12 @@ impl SavePlotState {
             let response = ui.button("Save Plot");
             self.button_rect = Some(response.rect);
             if response.clicked() {
-                ui.ctx()
-                    .send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                let slot = Arc::clone(&self.screenshot);
+                let ctx = ui.ctx().clone();
+                ui.ctx().request_screenshot(move |image| {
+                    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(image);
+                    ctx.request_repaint();
+                });
             }
 
             // Paint the heading centered over the full panel width
@@ -44,14 +53,11 @@ impl SavePlotState {
     }
 
     pub(crate) fn handle_screenshot(&self, ctx: &egui::Context) {
-        let screenshot = ctx.input(|i| {
-            for event in &i.raw.events {
-                if let egui::Event::Screenshot { image, .. } = event {
-                    return Some(image.clone());
-                }
-            }
-            None
-        });
+        let screenshot = self
+            .screenshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         if let Some(screenshot) = screenshot
             && let Some(mut path) = rfd::FileDialog::new()
                 .set_file_name(&self.default_filename)
