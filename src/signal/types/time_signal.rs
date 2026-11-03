@@ -5,10 +5,39 @@ use super::{SignalError, freq_signal::FreqSignal, time_axis, utils, validate_sam
 use crate::signal::data::{RealData, XAxis};
 
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "TimeSignalFields")
+)]
 pub struct TimeSignal {
     data: RealData,
     sample_rate: f64,
+}
+
+/// Deserialized fields, checked by `TryFrom` before they become a `TimeSignal`.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct TimeSignalFields {
+    data: RealData,
+    sample_rate: f64,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<TimeSignalFields> for TimeSignal {
+    type Error = SignalError;
+
+    fn try_from(fields: TimeSignalFields) -> Result<Self, Self::Error> {
+        validate_sample_rate(fields.sample_rate)?;
+        let expected_axis = time_axis(fields.data.num_data_points(), fields.sample_rate);
+        if fields.data.x_axis() != &expected_axis {
+            return Err(SignalError::AxisMismatch);
+        }
+        Ok(Self {
+            data: fields.data,
+            sample_rate: fields.sample_rate,
+        })
+    }
 }
 
 impl TimeSignal {

@@ -24,6 +24,8 @@ pub enum SignalError {
     FrequencyBinMismatch,
     #[error("All signals must have the same number of channels")]
     ChannelMismatch,
+    #[error("The x axis does not match the sample rate and signal length")]
+    AxisMismatch,
 }
 
 fn validate_sample_rate(sample_rate: f64) -> Result<(), SignalError> {
@@ -545,5 +547,128 @@ mod tests {
         let result = mix_freq_signals(&[base, stereo]);
         assert!(matches!(result, Err(SignalError::ChannelMismatch)));
         Ok(())
+    }
+}
+
+/// Reading data back runs the same checks as the constructors.
+#[cfg(all(test, feature = "serde"))]
+mod serde_validation_tests {
+    use ndarray::arr2;
+    use num::complex::Complex64;
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::signal::data::{ComplexData, RealData};
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) -> T {
+        serde_json::from_str(&serde_json::to_string(value).unwrap()).unwrap()
+    }
+
+    /// Serialize `value`, apply `edit` to the JSON, and try to read it back.
+    fn read_edited<T: serde::Serialize + serde::de::DeserializeOwned>(
+        value: &T,
+        edit: impl FnOnce(&mut Value),
+    ) -> Result<T, serde_json::Error> {
+        let mut json = serde_json::to_value(value).unwrap();
+        edit(&mut json);
+        serde_json::from_value(json)
+    }
+
+    fn time_signal() -> TimeSignal {
+        let mut signal = TimeSignal::new(arr2(&[[1.0, 2.0, 3.0, 4.0]]), 8.0).unwrap();
+        signal.set_comment(Some("comment"));
+        signal.set_channel_label(0, Some("left"));
+        signal
+    }
+
+    #[test]
+    fn valid_values_round_trip_with_metadata() {
+        let time = time_signal();
+        let back = round_trip(&time);
+        assert_eq!(back, time);
+        assert_eq!(back.comment(), Some("comment"));
+        assert_eq!(back.channel_label(0), Some("left"));
+
+        let freq = time.to_freq();
+        assert_eq!(round_trip(&freq), freq);
+
+        let real =
+            RealData::new(ndarray::arr1(&[0.0, 1.0, 5.0]), arr2(&[[1.0, 2.0, 3.0]])).unwrap();
+        assert_eq!(round_trip(&real), real);
+    }
+
+    #[test]
+    fn data_rejects_y_length_that_does_not_match_x_axis() {
+        let real = RealData::from_y_data(arr2(&[[1.0, 2.0, 3.0]]));
+        let error = read_edited(&real, |json| {
+            json["y_data"] = json!({ "v": 1, "dim": [1, 2], "data": [1.0, 2.0] });
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("same length"), "{error}");
+
+        let complex = ComplexData::from_y_data(arr2(&[[Complex64::new(1.0, 0.0); 3]]));
+        let error = read_edited(&complex, |json| {
+            json["x_axis"] = json!({ "Uniform": { "start": 0.0, "step": 1.0, "len": 2 } });
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("same length"), "{error}");
+    }
+
+    #[test]
+    fn data_rejects_wrong_number_of_channel_labels() {
+        let real = RealData::from_y_data(arr2(&[[1.0, 2.0], [3.0, 4.0]]));
+        let error = read_edited(&real, |json| json["channel_labels"] = json!([null])).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("1 channel labels for 2 channels"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn time_signal_rejects_invalid_sample_rate_and_mismatched_axis() {
+        let signal = time_signal();
+
+        let error = read_edited(&signal, |json| json["sample_rate"] = json!(-8.0)).unwrap_err();
+        assert!(error.to_string().contains("Sample rate"), "{error}");
+
+        // Valid axis, but it does not belong to this sample rate.
+        let error = read_edited(&signal, |json| json["sample_rate"] = json!(16.0)).unwrap_err();
+        assert!(
+            error.to_string().contains("x axis does not match"),
+            "{error}"
+        );
+
+        let error = read_edited(&signal, |json| {
+            json["data"]["x_axis"] =
+                json!({ "Uniform": { "start": 1.0, "step": 0.125, "len": 4 } });
+        })
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("x axis does not match"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn freq_signal_rejects_invalid_sample_rate_and_mismatched_axis() {
+        let signal = time_signal().to_freq();
+
+        let error = read_edited(&signal, |json| json["sample_rate"] = json!(0.0)).unwrap_err();
+        assert!(error.to_string().contains("Sample rate"), "{error}");
+
+        let error = read_edited(&signal, |json| json["num_time_steps"] = json!(6)).unwrap_err();
+        assert!(
+            error.to_string().contains("x axis does not match"),
+            "{error}"
+        );
+
+        // Would make the axis undefined; must be an error, not a panic.
+        let error = read_edited(&signal, |json| json["num_time_steps"] = json!(0)).unwrap_err();
+        assert!(
+            error.to_string().contains("x axis does not match"),
+            "{error}"
+        );
     }
 }

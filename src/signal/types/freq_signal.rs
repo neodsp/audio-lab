@@ -6,11 +6,47 @@ use super::{SignalError, TimeSignal, freq_axis, utils, validate_sample_rate};
 use crate::signal::data::{ComplexData, XAxis};
 
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "FreqSignalFields")
+)]
 pub struct FreqSignal {
     data: ComplexData,
     sample_rate: f64,
     num_time_steps: usize,
+}
+
+/// Deserialized fields, checked by `TryFrom` before they become a `FreqSignal`.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct FreqSignalFields {
+    data: ComplexData,
+    sample_rate: f64,
+    num_time_steps: usize,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<FreqSignalFields> for FreqSignal {
+    type Error = SignalError;
+
+    fn try_from(fields: FreqSignalFields) -> Result<Self, Self::Error> {
+        validate_sample_rate(fields.sample_rate)?;
+        let num_freq_bins = fields.data.num_data_points();
+        // `freq_axis` panics on this combination, so reject it first.
+        if fields.num_time_steps == 0 && num_freq_bins > 1 {
+            return Err(SignalError::AxisMismatch);
+        }
+        let expected_axis = freq_axis(num_freq_bins, fields.sample_rate, fields.num_time_steps);
+        if fields.data.x_axis() != &expected_axis {
+            return Err(SignalError::AxisMismatch);
+        }
+        Ok(Self {
+            data: fields.data,
+            sample_rate: fields.sample_rate,
+            num_time_steps: fields.num_time_steps,
+        })
+    }
 }
 
 impl FreqSignal {

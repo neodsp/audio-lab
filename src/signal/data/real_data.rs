@@ -3,12 +3,44 @@ use ndarray::prelude::*;
 use super::{DataError, XAxis};
 
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "RealDataFields")
+)]
 pub struct RealData {
     x_axis: XAxis,
     y_data: Array2<f64>,
     comment: Option<String>,
     channel_labels: Vec<Option<String>>,
+}
+
+/// Deserialized fields, checked by `TryFrom` before they become a `RealData`.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct RealDataFields {
+    x_axis: XAxis,
+    y_data: Array2<f64>,
+    comment: Option<String>,
+    channel_labels: Vec<Option<String>>,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<RealDataFields> for RealData {
+    type Error = DataError;
+
+    fn try_from(fields: RealDataFields) -> Result<Self, Self::Error> {
+        if fields.channel_labels.len() != fields.y_data.nrows() {
+            return Err(DataError::ChannelLabelMismatch {
+                labels: fields.channel_labels.len(),
+                channels: fields.y_data.nrows(),
+            });
+        }
+        let mut data = Self::from_axis(fields.x_axis, fields.y_data)?;
+        data.comment = fields.comment;
+        data.channel_labels = fields.channel_labels;
+        Ok(data)
+    }
 }
 
 impl RealData {

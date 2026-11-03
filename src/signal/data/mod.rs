@@ -16,4 +16,6 @@ pub enum DataError {
         "uniform axis needs a finite start and a finite, positive step (start: {start}, step: {step})"
     )]
     InvalidUniformAxis { start: f64, step: f64 },
+    #[error("there are {labels} channel labels for {channels} channels")]
+    ChannelLabelMismatch { labels: usize, channels: usize },
 }

@@ -4,12 +4,44 @@ use num::complex::Complex64;
 use super::{DataError, XAxis};
 
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "ComplexDataFields")
+)]
 pub struct ComplexData {
     x_axis: XAxis,
     y_data: Array2<Complex64>,
     comment: Option<String>,
     channel_labels: Vec<Option<String>>,
+}
+
+/// Deserialized fields, checked by `TryFrom` before they become a `ComplexData`.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct ComplexDataFields {
+    x_axis: XAxis,
+    y_data: Array2<Complex64>,
+    comment: Option<String>,
+    channel_labels: Vec<Option<String>>,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<ComplexDataFields> for ComplexData {
+    type Error = DataError;
+
+    fn try_from(fields: ComplexDataFields) -> Result<Self, Self::Error> {
+        if fields.channel_labels.len() != fields.y_data.nrows() {
+            return Err(DataError::ChannelLabelMismatch {
+                labels: fields.channel_labels.len(),
+                channels: fields.y_data.nrows(),
+            });
+        }
+        let mut data = Self::from_axis(fields.x_axis, fields.y_data)?;
+        data.comment = fields.comment;
+        data.channel_labels = fields.channel_labels;
+        Ok(data)
+    }
 }
 
 impl ComplexData {
