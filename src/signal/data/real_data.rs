@@ -1,11 +1,11 @@
 use ndarray::prelude::*;
 
-use super::DataError;
+use super::{DataError, XAxis};
 
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RealData {
-    x_data: Array1<f64>,
+    x_axis: XAxis,
     y_data: Array2<f64>,
     comment: Option<String>,
     channel_labels: Vec<Option<String>>,
@@ -13,20 +13,21 @@ pub struct RealData {
 
 impl RealData {
     pub fn new(x_data: Array1<f64>, y_data: Array2<f64>) -> Result<Self, DataError> {
-        let num_samples = y_data.ncols();
-        if num_samples != x_data.len() {
+        if y_data.ncols() != x_data.len() {
             return Err(DataError::NotMatching);
         }
-        if !x_data
-            .windows(2)
-            .into_iter()
-            .all(|window| window[1] > window[0])
-        {
-            return Err(DataError::NotIncreasing);
+        Self::from_axis(XAxis::explicit(x_data)?, y_data)
+    }
+
+    /// Create data from an existing axis. Only the length is checked, since
+    /// an [`XAxis`] is always valid.
+    pub fn from_axis(x_axis: XAxis, y_data: Array2<f64>) -> Result<Self, DataError> {
+        if y_data.ncols() != x_axis.len() {
+            return Err(DataError::NotMatching);
         }
         let num_channels = y_data.nrows();
         Ok(Self {
-            x_data,
+            x_axis,
             y_data,
             comment: None,
             channel_labels: vec![None; num_channels],
@@ -35,7 +36,7 @@ impl RealData {
 
     pub fn zeros(num_channels: usize, num_data_points: usize) -> Self {
         Self {
-            x_data: Array1::from_iter((0..num_data_points).map(|i| i as f64)),
+            x_axis: XAxis::indices(num_data_points),
             y_data: Array2::zeros((num_channels, num_data_points)),
             comment: None,
             channel_labels: vec![None; num_channels],
@@ -43,16 +44,10 @@ impl RealData {
     }
 
     pub fn from_x_data(x_data: Array1<f64>, num_channels: usize) -> Result<Self, DataError> {
-        if !x_data
-            .windows(2)
-            .into_iter()
-            .all(|window| window[1] > window[0])
-        {
-            return Err(DataError::NotIncreasing);
-        }
+        let x_axis = XAxis::explicit(x_data)?;
         Ok(Self {
-            y_data: Array2::zeros((num_channels, x_data.len())),
-            x_data,
+            y_data: Array2::zeros((num_channels, x_axis.len())),
+            x_axis,
             comment: None,
             channel_labels: vec![None; num_channels],
         })
@@ -61,7 +56,7 @@ impl RealData {
     pub fn from_y_data(y_data: Array2<f64>) -> Self {
         let num_channels = y_data.nrows();
         Self {
-            x_data: Array1::from_iter((0..y_data.ncols()).map(|i| i as f64)),
+            x_axis: XAxis::indices(y_data.ncols()),
             y_data,
             comment: None,
             channel_labels: vec![None; num_channels],
@@ -94,12 +89,26 @@ impl RealData {
         self.y_data.ncols()
     }
 
-    pub fn x_data(&self) -> ArrayView1<'_, f64> {
-        self.x_data.view()
+    /// The x axis. Prefer this over [`x_data`](Self::x_data) for single
+    /// values ([`XAxis::get`]) or iteration, because it never allocates.
+    pub fn x_axis(&self) -> &XAxis {
+        &self.x_axis
     }
 
+    /// The x values as an array. Borrowed for an explicit axis, computed
+    /// (one allocation) for a uniform one.
+    pub fn x_data(&self) -> CowArray<'_, f64, Ix1> {
+        self.x_axis.to_cow_array()
+    }
+
+    /// Mutable access to the x values. Turns a uniform axis into an explicit
+    /// one. The values must stay strictly increasing.
     pub fn x_data_mut(&mut self) -> ArrayViewMut1<'_, f64> {
-        self.x_data.view_mut()
+        if self.x_axis.as_uniform().is_some() {
+            self.x_axis = XAxis::explicit(self.x_axis.to_array())
+                .expect("values of a valid axis are increasing");
+        }
+        self.x_axis.explicit_values_mut()
     }
 
     pub fn y_data(&self) -> ArrayView2<'_, f64> {
@@ -158,7 +167,7 @@ impl std::fmt::Display for RealData {
 
 impl PartialEq for RealData {
     fn eq(&self, other: &Self) -> bool {
-        self.x_data == other.x_data && self.y_data == other.y_data
+        self.x_axis == other.x_axis && self.y_data == other.y_data
     }
 }
 
@@ -170,7 +179,7 @@ impl approx::AbsDiffEq for RealData {
     }
 
     fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
-        if !self.x_data().abs_diff_eq(&other.x_data(), epsilon) {
+        if !self.x_axis.abs_diff_eq(&other.x_axis, epsilon) {
             return false;
         }
 
@@ -216,6 +225,28 @@ impl IntoIterator for RealData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn from_axis_checks_length_and_keeps_axis() {
+        let axis = XAxis::uniform(0.0, 0.5, 3).unwrap();
+        let data = RealData::from_axis(axis.clone(), array![[1.0, 2.0, 3.0]]).unwrap();
+        assert_eq!(data.x_axis(), &axis);
+        assert_eq!(data.x_data(), arr1(&[0.0, 0.5, 1.0]));
+
+        let error = RealData::from_axis(axis, array![[1.0, 2.0]]).err();
+        assert!(matches!(error, Some(DataError::NotMatching)));
+    }
+
+    #[test]
+    fn x_data_mut_turns_uniform_axis_into_explicit_values() {
+        let mut data = RealData::from_y_data(array![[1.0, 2.0, 3.0]]);
+        assert_eq!(data.x_axis().as_uniform(), Some((0.0, 1.0)));
+
+        data.x_data_mut()[2] = 5.0;
+
+        assert_eq!(data.x_axis().as_uniform(), None);
+        assert_eq!(data.x_data(), arr1(&[0.0, 1.0, 5.0]));
+    }
 
     #[test]
     fn time_data_errors() {

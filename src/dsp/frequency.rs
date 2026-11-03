@@ -11,17 +11,10 @@ pub enum FrequencyError {
 }
 
 pub fn group_delay(signal: &FreqSignal) -> Result<RealData, FrequencyError> {
-    let freq_bins = signal.freq_bins();
-    if freq_bins.len() < 2 {
+    // The frequency axis is an `XAxis`, which is always strictly increasing,
+    // so only the length needs checking.
+    if signal.num_freq_bins() < 2 {
         return Err(FrequencyError::TooFewFrequencyBins);
-    }
-
-    if freq_bins
-        .windows(2)
-        .into_iter()
-        .any(|window| window[1] <= window[0])
-    {
-        return Err(FrequencyError::NonIncreasingFrequencyBins);
     }
 
     // Weight h[n] by n in place: FFT(n·h[n]) / FFT(h[n]) gives the group delay.
@@ -45,7 +38,7 @@ pub fn group_delay(signal: &FreqSignal) -> Result<RealData, FrequencyError> {
             }
         });
 
-    Ok(RealData::new(freq_bins.to_owned(), group_delay)
+    Ok(RealData::from_axis(signal.freq_axis().clone(), group_delay)
         .expect("freq bins originate from FreqSignal"))
 }
 

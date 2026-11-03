@@ -3,7 +3,7 @@ use ndrustfft::{R2cFftHandler, ndifft_r2c};
 use num::complex::Complex64;
 
 use super::{SignalError, TimeSignal, utils};
-use crate::signal::data::ComplexData;
+use crate::signal::data::{ComplexData, XAxis};
 
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -107,8 +107,15 @@ impl FreqSignal {
         self.num_time_steps.saturating_sub(1) as f64 / self.sample_rate
     }
 
-    pub fn freq_bins(&self) -> ArrayView1<'_, f64> {
+    /// Frequency of each bin in Hz. See [`ComplexData::x_data`] for when this
+    /// allocates. Use [`freq_axis`](Self::freq_axis) for single values.
+    pub fn freq_bins(&self) -> CowArray<'_, f64, Ix1> {
         self.data.x_data()
+    }
+
+    /// Frequency axis in Hz, without allocating.
+    pub fn freq_axis(&self) -> &XAxis {
+        self.data.x_axis()
     }
 
     pub fn freq_data(&self) -> ArrayView2<'_, Complex64> {

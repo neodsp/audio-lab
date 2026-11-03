@@ -56,15 +56,15 @@ impl RealDataPlot {
         y_label: impl Into<String>,
         options: RealDataPlotOptions,
     ) -> Self {
-        let x_data = data.x_data();
+        let x_axis = data.x_axis();
         let channels = data
             .channel_iter()
             .map(|ch| {
-                x_data
+                x_axis
                     .iter()
                     .zip(ch.iter())
-                    .filter(|&(&x, _)| !options.log_x || x > 0.0)
-                    .map(|(&x, &y)| {
+                    .filter(|&(x, _)| !options.log_x || x > 0.0)
+                    .map(|(x, &y)| {
                         let px = if options.log_x { x.log10() } else { x };
                         PlotPoint::new(px, y)
                     })
