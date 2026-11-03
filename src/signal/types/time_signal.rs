@@ -5,38 +5,58 @@ use super::{SignalError, freq_signal::FreqSignal, time_axis, utils, validate_sam
 use crate::signal::data::{RealData, XAxis};
 
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Serialize, serde::Deserialize),
-    serde(try_from = "TimeSignalFields")
-)]
 pub struct TimeSignal {
     data: RealData,
     sample_rate: f64,
 }
 
-/// Deserialized fields, checked by `TryFrom` before they become a `TimeSignal`.
+/// Stored form: the samples plus what cannot be derived from them. The time
+/// axis follows from the sample rate and is rebuilt when reading, so a file
+/// cannot contain an axis that does not fit the signal.
 #[cfg(feature = "serde")]
-#[derive(serde::Deserialize)]
-struct TimeSignalFields {
-    data: RealData,
-    sample_rate: f64,
+impl serde::Serialize for TimeSignal {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(serde::Serialize)]
+        struct Stored<'a> {
+            samples: ArrayView2<'a, f64>,
+            sample_rate: f64,
+            comment: Option<&'a str>,
+            channel_labels: &'a [Option<String>],
+        }
+
+        Stored {
+            samples: self.time_data(),
+            sample_rate: self.sample_rate,
+            comment: self.comment(),
+            channel_labels: self.data.channel_labels(),
+        }
+        .serialize(serializer)
+    }
 }
 
+/// Reads through [`TimeSignal::new`], so the same checks apply.
 #[cfg(feature = "serde")]
-impl TryFrom<TimeSignalFields> for TimeSignal {
-    type Error = SignalError;
+impl<'de> serde::Deserialize<'de> for TimeSignal {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
 
-    fn try_from(fields: TimeSignalFields) -> Result<Self, Self::Error> {
-        validate_sample_rate(fields.sample_rate)?;
-        let expected_axis = time_axis(fields.data.num_data_points(), fields.sample_rate);
-        if fields.data.x_axis() != &expected_axis {
-            return Err(SignalError::AxisMismatch);
+        #[derive(serde::Deserialize)]
+        struct Stored {
+            samples: Array2<f64>,
+            sample_rate: f64,
+            comment: Option<String>,
+            channel_labels: Vec<Option<String>>,
         }
-        Ok(Self {
-            data: fields.data,
-            sample_rate: fields.sample_rate,
-        })
+
+        let stored = Stored::deserialize(deserializer)?;
+        let mut signal =
+            TimeSignal::new(stored.samples, stored.sample_rate).map_err(Error::custom)?;
+        signal.set_comment(stored.comment.as_deref());
+        signal
+            .data
+            .set_channel_labels(stored.channel_labels)
+            .map_err(Error::custom)?;
+        Ok(signal)
     }
 }
 
@@ -387,6 +407,20 @@ mod tests {
                 Err(SignalError::SampleRateZeroOrNeg)
             ));
         }
+    }
+
+    #[test]
+    fn freq_signal_rejects_zero_time_steps_for_several_bins() {
+        assert!(matches!(
+            FreqSignal::zeros(1, 3, 8.0, Some(0)),
+            Err(SignalError::NumTimeStepsZero { num_freq_bins: 3 })
+        ));
+        assert!(matches!(
+            FreqSignal::new(Array2::zeros((1, 3)), 8.0, Some(0)),
+            Err(SignalError::NumTimeStepsZero { num_freq_bins: 3 })
+        ));
+        // With a single bin there is no spacing to define, so it stays valid.
+        assert!(FreqSignal::zeros(1, 1, 8.0, Some(0)).is_ok());
     }
 
     #[test]

@@ -1,6 +1,8 @@
 use ndarray::prelude::*;
 use num::complex::Complex64;
 
+#[cfg(feature = "serde")]
+use super::check_channel_labels;
 use super::{DataError, XAxis};
 
 #[derive(Clone, Debug)]
@@ -31,16 +33,18 @@ impl TryFrom<ComplexDataFields> for ComplexData {
     type Error = DataError;
 
     fn try_from(fields: ComplexDataFields) -> Result<Self, Self::Error> {
-        if fields.channel_labels.len() != fields.y_data.nrows() {
-            return Err(DataError::ChannelLabelMismatch {
-                labels: fields.channel_labels.len(),
-                channels: fields.y_data.nrows(),
-            });
+        if fields.y_data.ncols() != fields.x_axis.len() {
+            return Err(DataError::NotMatching);
         }
-        let mut data = Self::from_axis(fields.x_axis, fields.y_data)?;
-        data.comment = fields.comment;
-        data.channel_labels = fields.channel_labels;
-        Ok(data)
+        check_channel_labels(&fields.channel_labels, fields.y_data.nrows())?;
+        // Struct literal on purpose: a new field fails to compile here instead
+        // of being silently dropped when reading.
+        Ok(Self {
+            x_axis: fields.x_axis,
+            y_data: fields.y_data,
+            comment: fields.comment,
+            channel_labels: fields.channel_labels,
+        })
     }
 }
 
@@ -112,6 +116,23 @@ impl ComplexData {
         if let Some(slot) = self.channel_labels.get_mut(channel) {
             *slot = label.map(Into::into);
         }
+    }
+
+    /// All channel labels, one per channel.
+    #[cfg(feature = "serde")]
+    pub(crate) fn channel_labels(&self) -> &[Option<String>] {
+        &self.channel_labels
+    }
+
+    /// Replace all channel labels. There must be one per channel.
+    #[cfg(feature = "serde")]
+    pub(crate) fn set_channel_labels(
+        &mut self,
+        channel_labels: Vec<Option<String>>,
+    ) -> Result<(), DataError> {
+        check_channel_labels(&channel_labels, self.num_channels())?;
+        self.channel_labels = channel_labels;
+        Ok(())
     }
 
     pub fn num_channels(&self) -> usize {

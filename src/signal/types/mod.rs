@@ -24,8 +24,8 @@ pub enum SignalError {
     FrequencyBinMismatch,
     #[error("All signals must have the same number of channels")]
     ChannelMismatch,
-    #[error("The x axis does not match the sample rate and signal length")]
-    AxisMismatch,
+    #[error("num_time_steps must be > 0 when there are {num_freq_bins} frequency bins")]
+    NumTimeStepsZero { num_freq_bins: usize },
 }
 
 fn validate_sample_rate(sample_rate: f64) -> Result<(), SignalError> {
@@ -44,17 +44,22 @@ fn time_axis(num_time_steps: usize, sample_rate: f64) -> XAxis {
 
 /// Uniform frequency axis `k · sample_rate / num_time_steps` in Hz.
 /// `sample_rate` must be validated.
-fn freq_axis(num_freq_bins: usize, sample_rate: f64, num_time_steps: usize) -> XAxis {
+fn freq_axis(
+    num_freq_bins: usize,
+    sample_rate: f64,
+    num_time_steps: usize,
+) -> Result<XAxis, SignalError> {
     if num_time_steps == 0 {
         // No spacing is defined. A single bin sits at 0 Hz either way.
-        assert!(
-            num_freq_bins <= 1,
-            "num_time_steps must be > 0 when there are {num_freq_bins} frequency bins"
-        );
-        return XAxis::indices(num_freq_bins);
+        if num_freq_bins > 1 {
+            return Err(SignalError::NumTimeStepsZero { num_freq_bins });
+        }
+        return Ok(XAxis::indices(num_freq_bins));
     }
-    XAxis::uniform(0.0, sample_rate / num_time_steps as f64, num_freq_bins)
-        .expect("validated sample rate gives a finite, positive step")
+    Ok(
+        XAxis::uniform(0.0, sample_rate / num_time_steps as f64, num_freq_bins)
+            .expect("validated sample rate gives a finite, positive step"),
+    )
 }
 
 pub fn join_time_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
@@ -627,48 +632,79 @@ mod serde_validation_tests {
     }
 
     #[test]
-    fn time_signal_rejects_invalid_sample_rate_and_mismatched_axis() {
+    fn signals_store_only_what_cannot_be_derived() {
+        let time = serde_json::to_value(time_signal()).unwrap();
+        let mut keys: Vec<_> = time.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            ["channel_labels", "comment", "sample_rate", "samples"]
+        );
+
+        let freq = serde_json::to_value(time_signal().to_freq()).unwrap();
+        let mut keys: Vec<_> = freq.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "channel_labels",
+                "comment",
+                "num_time_steps",
+                "sample_rate",
+                "spectrum"
+            ]
+        );
+    }
+
+    #[test]
+    fn time_signal_rejects_invalid_sample_rate_and_label_count() {
         let signal = time_signal();
 
         let error = read_edited(&signal, |json| json["sample_rate"] = json!(-8.0)).unwrap_err();
         assert!(error.to_string().contains("Sample rate"), "{error}");
 
-        // Valid axis, but it does not belong to this sample rate.
-        let error = read_edited(&signal, |json| json["sample_rate"] = json!(16.0)).unwrap_err();
+        let error =
+            read_edited(&signal, |json| json["channel_labels"] = json!([null, null])).unwrap_err();
         assert!(
-            error.to_string().contains("x axis does not match"),
-            "{error}"
-        );
-
-        let error = read_edited(&signal, |json| {
-            json["data"]["x_axis"] =
-                json!({ "Uniform": { "start": 1.0, "step": 0.125, "len": 4 } });
-        })
-        .unwrap_err();
-        assert!(
-            error.to_string().contains("x axis does not match"),
+            error
+                .to_string()
+                .contains("2 channel labels for 1 channels"),
             "{error}"
         );
     }
 
     #[test]
-    fn freq_signal_rejects_invalid_sample_rate_and_mismatched_axis() {
+    fn freq_signal_rejects_invalid_sample_rate_time_steps_and_label_count() {
         let signal = time_signal().to_freq();
 
         let error = read_edited(&signal, |json| json["sample_rate"] = json!(0.0)).unwrap_err();
         assert!(error.to_string().contains("Sample rate"), "{error}");
 
-        let error = read_edited(&signal, |json| json["num_time_steps"] = json!(6)).unwrap_err();
+        // No frequency spacing is defined; must be an error, not a panic.
+        let error = read_edited(&signal, |json| json["num_time_steps"] = json!(0)).unwrap_err();
         assert!(
-            error.to_string().contains("x axis does not match"),
+            error.to_string().contains("num_time_steps must be > 0"),
             "{error}"
         );
 
-        // Would make the axis undefined; must be an error, not a panic.
-        let error = read_edited(&signal, |json| json["num_time_steps"] = json!(0)).unwrap_err();
+        let error = read_edited(&signal, |json| json["channel_labels"] = json!([])).unwrap_err();
         assert!(
-            error.to_string().contains("x axis does not match"),
+            error
+                .to_string()
+                .contains("0 channel labels for 1 channels"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn read_signal_rebuilds_axis_from_sample_rate() {
+        let signal = time_signal();
+        let back = round_trip(&signal);
+        assert_eq!(back.time_axis().as_uniform(), Some((0.0, 1.0 / 8.0)));
+
+        // Changing the stored sample rate changes the rebuilt axis with it.
+        let resampled: TimeSignal =
+            read_edited(&signal, |json| json["sample_rate"] = json!(16.0)).unwrap();
+        assert_eq!(resampled.time_axis().as_uniform(), Some((0.0, 1.0 / 16.0)));
     }
 }
