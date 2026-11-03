@@ -97,6 +97,7 @@ pub fn smooth_fractional_octave(
 
     let window = generate_window(config.window_fn, window_len).to_vec();
     let window_sum = window.iter().sum::<f64>();
+    let linear_positions = (1..=num_bins).map(|idx| idx as f64).collect::<Vec<_>>();
     let mut smoothed_magnitude = Array2::zeros((signal.num_channels(), num_bins));
 
     for (mut output_channel, input_channel) in smoothed_magnitude
@@ -109,11 +110,7 @@ pub fn smooth_fractional_octave(
             .collect::<Vec<_>>();
         let warped = interpolate_uniform_catmull_rom(&magnitudes, &n_log);
         let smoothed = smooth_clamped(&warped, &window, window_sum);
-        let unwarped = interpolate_samples_catmull_rom(
-            &n_log,
-            &smoothed,
-            &(1..=num_bins).map(|idx| idx as f64).collect::<Vec<_>>(),
-        );
+        let unwarped = interpolate_samples_catmull_rom(&n_log, &smoothed, &linear_positions);
 
         for (out, value) in output_channel.iter_mut().zip(unwarped) {
             *out = value.max(0.0);
@@ -168,16 +165,26 @@ fn interpolate_uniform_catmull_rom(values: &[f64], query_points: &[f64]) -> Vec<
         .collect()
 }
 
+/// Interpolates at sorted `query_points`. Because both `x_values` and the
+/// queries are increasing, the segment lookup only needs to walk forward.
 fn interpolate_samples_catmull_rom(
     x_values: &[f64],
     y_values: &[f64],
     query_points: &[f64],
 ) -> Vec<f64> {
     debug_assert_eq!(x_values.len(), y_values.len());
+    debug_assert!(query_points.is_sorted());
 
+    let mut upper = 0;
     query_points
         .iter()
-        .map(|&query| sample_nonuniform_catmull_rom(x_values, y_values, query))
+        .map(|&query| {
+            // Same result as `x_values.partition_point(|&x| x < query)`.
+            while upper < x_values.len() && x_values[upper] < query {
+                upper += 1;
+            }
+            sample_nonuniform_catmull_rom(x_values, y_values, query, upper)
+        })
         .collect()
 }
 
@@ -204,7 +211,13 @@ fn sample_uniform_catmull_rom(values: &[f64], query: f64) -> f64 {
     catmull_rom(p0, p1, p2, p3, t)
 }
 
-fn sample_nonuniform_catmull_rom(x_values: &[f64], y_values: &[f64], query: f64) -> f64 {
+/// `upper` is the index of the first x value that is not below `query`.
+fn sample_nonuniform_catmull_rom(
+    x_values: &[f64],
+    y_values: &[f64],
+    query: f64,
+    upper: usize,
+) -> f64 {
     let last = x_values.len() - 1;
     if query <= x_values[0] {
         return y_values[0];
@@ -213,7 +226,6 @@ fn sample_nonuniform_catmull_rom(x_values: &[f64], y_values: &[f64], query: f64)
         return y_values[last];
     }
 
-    let upper = x_values.partition_point(|&x| x < query);
     let index = upper.saturating_sub(1);
 
     let i0 = index.saturating_sub(1);
@@ -243,10 +255,18 @@ fn catmull_rom(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
 }
 
 fn smooth_clamped(values: &[f64], window: &[f64], window_sum: f64) -> Vec<f64> {
+    debug_assert!(window.len() % 2 == 1);
     let radius = window.len() / 2;
 
     (0..values.len())
         .map(|center| {
+            // Away from the edges the window fits inside `values`, so a plain
+            // dot product works and the compiler can vectorize it.
+            if center >= radius && center + radius < values.len() {
+                let start = center - radius;
+                return dot(&values[start..start + window.len()], window) / window_sum;
+            }
+
             let weighted_sum = window
                 .iter()
                 .enumerate()
@@ -260,6 +280,26 @@ fn smooth_clamped(values: &[f64], window: &[f64], window_sum: f64) -> Vec<f64> {
             weighted_sum / window_sum
         })
         .collect()
+}
+
+/// Dot product with independent partial sums, so the compiler can vectorize
+/// it (a single running f64 sum must be added strictly in order).
+fn dot(a: &[f64], b: &[f64]) -> f64 {
+    const LANES: usize = 8;
+    debug_assert_eq!(a.len(), b.len());
+
+    let (a_chunks, a_tail) = a.as_chunks::<LANES>();
+    let (b_chunks, b_tail) = b.as_chunks::<LANES>();
+    let tail = a_tail.iter().zip(b_tail).map(|(x, y)| x * y).sum::<f64>();
+
+    let mut partial = [0.0; LANES];
+    for (a_chunk, b_chunk) in a_chunks.iter().zip(b_chunks) {
+        for lane in 0..LANES {
+            partial[lane] += a_chunk[lane] * b_chunk[lane];
+        }
+    }
+
+    partial.iter().sum::<f64>() + tail
 }
 
 fn force_real_fft_endpoints(
@@ -405,6 +445,49 @@ mod tests {
 
         assert!(smoothed.channel(0)[3].re < 1.0);
         assert!(smoothed.channel(0)[2].norm() > 0.0 || smoothed.channel(0)[4].norm() > 0.0);
+    }
+
+    #[test]
+    fn smooth_clamped_matches_reference_including_edges() {
+        let values: Vec<f64> = (0..40).map(|i| ((i * 13 % 7) as f64) - 2.5).collect();
+        let window = generate_window(WindowFn::Hann, 9).to_vec();
+        let window_sum = window.iter().sum::<f64>();
+        let radius = window.len() / 2;
+
+        let reference: Vec<f64> = (0..values.len())
+            .map(|center| {
+                window
+                    .iter()
+                    .enumerate()
+                    .map(|(offset, weight)| {
+                        let index = (center as isize + offset as isize - radius as isize)
+                            .clamp(0, values.len() as isize - 1)
+                            as usize;
+                        values[index] * weight
+                    })
+                    .sum::<f64>()
+                    / window_sum
+            })
+            .collect();
+
+        let actual = smooth_clamped(&values, &window, window_sum);
+        for (actual, expected) in actual.iter().zip(&reference) {
+            assert_abs_diff_eq!(*actual, *expected, epsilon = 1e-12);
+        }
+    }
+
+    #[test]
+    fn forward_scan_interpolation_matches_binary_search() {
+        let x_values = logarithmic_positions(33);
+        let y_values: Vec<f64> = (0..33).map(|i| (i as f64 * 0.37).sin()).collect();
+        let queries: Vec<f64> = (0..=70).map(|i| i as f64 * 0.5).collect();
+
+        let actual = interpolate_samples_catmull_rom(&x_values, &y_values, &queries);
+        for (&query, actual) in queries.iter().zip(actual) {
+            let upper = x_values.partition_point(|&x| x < query);
+            let expected = sample_nonuniform_catmull_rom(&x_values, &y_values, query, upper);
+            assert_eq!(actual, expected);
+        }
     }
 
     #[test]
