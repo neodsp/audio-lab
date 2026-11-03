@@ -127,15 +127,15 @@ fn linear_sweep(
 ) -> Result<TimeSignal, SignalError> {
     let duration = num_time_steps as f64 / sample_rate;
     let mut signal = TimeSignal::zeros(num_channels, num_time_steps, sample_rate)?;
-    let times = signal.time_steps().to_owned();
 
+    let waveform = signal.time_steps().mapv(|time| {
+        amplitude
+            * (2.0 * PI * freq_range.start * time
+                + PI * (freq_range.end - freq_range.start) * time.powi(2) / duration)
+                .sin()
+    });
     for mut channel in signal.channel_iter_mut() {
-        for (sample, time) in channel.iter_mut().zip(times.iter()) {
-            *sample = amplitude
-                * (2.0 * PI * freq_range.start * *time
-                    + PI * (freq_range.end - freq_range.start) * time.powi(2) / duration)
-                    .sin();
-        }
+        channel.assign(&waveform);
     }
 
     Ok(signal)
@@ -151,13 +151,12 @@ fn exponential_sweep(
     let c = (freq_range.end / freq_range.start).ln();
     let l = num_time_steps as f64 / sample_rate / c;
     let mut signal = TimeSignal::zeros(num_channels, num_time_steps, sample_rate)?;
-    let times = signal.time_steps().to_owned();
 
+    let waveform = signal.time_steps().mapv(|time| {
+        amplitude * (2.0 * PI * freq_range.start * l * ((time / l).exp() - 1.0)).sin()
+    });
     for mut channel in signal.channel_iter_mut() {
-        for (sample, time) in channel.iter_mut().zip(times.iter()) {
-            *sample =
-                amplitude * (2.0 * PI * freq_range.start * l * ((*time / l).exp() - 1.0)).sin();
-        }
+        channel.assign(&waveform);
     }
 
     Ok(signal)
@@ -224,6 +223,46 @@ mod tests {
         );
         assert_abs_diff_eq!(faded.channel(0)[3], dry.channel(0)[3], epsilon = 1e-12);
         assert_abs_diff_eq!(faded.channel(0)[4], dry.channel(0)[4], epsilon = 1e-12);
+    }
+
+    #[test]
+    fn all_channels_match_sweep_formula() {
+        use approx::assert_abs_diff_eq;
+
+        let (n, sr, f0, f1, amplitude) = (64, 8_000.0, 100.0, 2_000.0, 0.7);
+        for sweep_type in [SweepType::Linear, SweepType::Exponential] {
+            let signal = generate_sweep(
+                n,
+                f0..f1,
+                SweepConfig {
+                    amplitude,
+                    sample_rate: sr,
+                    num_channels: 3,
+                    fade_out: 0,
+                    sweep_type,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+            let duration = n as f64 / sr;
+            let l = duration / (f1 / f0).ln();
+            for channel in signal.channel_iter() {
+                for (i, sample) in channel.iter().enumerate() {
+                    let t = i as f64 / sr;
+                    let expected = match sweep_type {
+                        SweepType::Linear => {
+                            amplitude
+                                * (2.0 * PI * f0 * t + PI * (f1 - f0) * t * t / duration).sin()
+                        }
+                        SweepType::Exponential => {
+                            amplitude * (2.0 * PI * f0 * l * ((t / l).exp() - 1.0)).sin()
+                        }
+                    };
+                    assert_abs_diff_eq!(*sample, expected, epsilon = 1e-9);
+                }
+            }
+        }
     }
 
     #[test]
