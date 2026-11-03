@@ -10,8 +10,21 @@ use super::DataError;
 /// values on demand. An explicit axis stores every value. Both kinds are
 /// strictly increasing, which the constructors check.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize), serde(transparent))]
 pub struct XAxis(Repr);
+
+/// Deserialized values go through the same checks as the constructors, so an
+/// edited or corrupted file cannot produce an unordered axis.
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for XAxis {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match Repr::deserialize(deserializer)? {
+            Repr::Uniform { start, step, len } => XAxis::uniform(start, step, len),
+            Repr::Explicit(values) => XAxis::explicit(values),
+        }
+        .map_err(serde::de::Error::custom)
+    }
+}
 
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -253,6 +266,37 @@ mod tests {
         assert_eq!(
             XAxis::uniform(2.0, 1.0, 0).unwrap(),
             XAxis::explicit(Array1::zeros(0)).unwrap()
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deserialization_round_trips_and_validates() {
+        for axis in [
+            XAxis::uniform(0.5, 0.25, 4).unwrap(),
+            XAxis::explicit(array![0.0, 1.0, 5.0]).unwrap(),
+        ] {
+            let json = serde_json::to_string(&axis).unwrap();
+            let back: XAxis = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, axis);
+            assert_eq!(back.as_uniform(), axis.as_uniform());
+        }
+
+        // Valid shape, invalid values: rejected instead of producing an
+        // unordered axis.
+        let unordered = r#"{"Explicit":{"v":1,"dim":[3],"data":[0.0,2.0,1.0]}}"#;
+        let error = serde_json::from_str::<XAxis>(unordered).unwrap_err();
+        assert!(error.to_string().contains("not increasing"), "{error}");
+
+        let zero_step = r#"{"Uniform":{"start":0.0,"step":0.0,"len":3}}"#;
+        assert!(serde_json::from_str::<XAxis>(zero_step).is_err());
+
+        // Signals deserialize through the same check.
+        let signal = crate::signal::TimeSignal::zeros(1, 3, 8.0).unwrap();
+        let json = serde_json::to_string(&signal).unwrap();
+        assert_eq!(
+            serde_json::from_str::<crate::signal::TimeSignal>(&json).unwrap(),
+            signal
         );
     }
 
