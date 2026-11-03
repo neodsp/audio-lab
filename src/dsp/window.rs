@@ -13,13 +13,30 @@ pub enum WindowFn {
     Rectangular,
 }
 
-/// Generate a full window of the requested type.
+/// Generate a symmetric window: both ends have the same value (zero for Hann
+/// and Blackman). Use it for FIR filter design, smoothing kernels and fades.
+/// For spectral analysis use [`generate_periodic_window`].
 pub fn generate_window(window_fn: WindowFn, size: usize) -> Array1<f64> {
+    window_with_period(window_fn, size, size.saturating_sub(1))
+}
+
+/// Generate a periodic ("DFT-even") window: the first `size` samples of a
+/// symmetric window of `size + 1` samples. This is the standard window for
+/// FFT-based spectral analysis such as [`stft`](crate::dsp::stft()), the default
+/// in scipy, librosa and PyTorch. A periodic Hann window at 50 % or 75 % overlap
+/// sums to a constant, and none of these windows is all zeros.
+pub fn generate_periodic_window(window_fn: WindowFn, size: usize) -> Array1<f64> {
+    window_with_period(window_fn, size, size)
+}
+
+/// `size` samples of `window_fn`, where sample `period` would complete one
+/// cycle. Windows of 0 or 1 samples are all ones.
+fn window_with_period(window_fn: WindowFn, size: usize, period: usize) -> Array1<f64> {
     if size <= 1 {
         return Array1::ones(size);
     }
 
-    let n = (size - 1) as f64;
+    let n = period as f64;
     Array1::from_iter((0..size).map(|i| {
         let x = i as f64;
         match window_fn {
@@ -148,5 +165,57 @@ mod tests {
         assert_abs_diff_eq!(data[5], expected[3], epsilon = 1e-12);
         assert_abs_diff_eq!(data[6], 1.0, epsilon = 1e-12);
         assert_abs_diff_eq!(data[7], 1.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn periodic_window_is_symmetric_window_one_sample_longer_without_the_last() {
+        for window_fn in [
+            WindowFn::Hann,
+            WindowFn::Hamming,
+            WindowFn::Blackman,
+            WindowFn::Rectangular,
+        ] {
+            for size in [2, 3, 8, 9, 64] {
+                let periodic = generate_periodic_window(window_fn, size);
+                let symmetric = generate_window(window_fn, size + 1);
+                for (p, s) in periodic.iter().zip(symmetric.iter()) {
+                    assert_abs_diff_eq!(*p, *s, epsilon = 1e-12);
+                }
+            }
+        }
+        assert_eq!(
+            generate_periodic_window(WindowFn::Hann, 1),
+            Array1::<f64>::ones(1)
+        );
+        assert_eq!(
+            generate_periodic_window(WindowFn::Hann, 0),
+            Array1::<f64>::ones(0)
+        );
+    }
+
+    #[test]
+    fn periodic_hann_sums_to_a_constant_at_50_and_75_percent_overlap() {
+        let size = 16;
+        let window = generate_periodic_window(WindowFn::Hann, size);
+        for hop in [size / 2, size / 4] {
+            let expected = size as f64 / (2 * hop) as f64;
+            for offset in 0..hop {
+                let sum: f64 = window.iter().skip(offset).step_by(hop).sum();
+                assert_abs_diff_eq!(sum, expected, epsilon = 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn periodic_windows_are_never_all_zero() {
+        // The symmetric 2-sample Hann and Blackman windows are all zeros.
+        for window_fn in [WindowFn::Hann, WindowFn::Blackman] {
+            assert!(
+                generate_window(window_fn, 2)
+                    .iter()
+                    .all(|w| w.abs() < 1e-12)
+            );
+            assert!(generate_periodic_window(window_fn, 2).sum() > 0.4);
+        }
     }
 }

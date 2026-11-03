@@ -1,10 +1,10 @@
-use crate::signal::{Spectrogram, SpectrogramNormalization, TimeSignal};
+use crate::signal::{Spectrogram, TimeSignal};
 use ndarray::prelude::*;
 use num::complex::Complex64;
 use realfft::RealFftPlanner;
 
 pub use crate::dsp::window::WindowFn;
-use crate::dsp::window::generate_window;
+use crate::dsp::window::generate_periodic_window;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StftError {
@@ -16,11 +16,6 @@ pub enum StftError {
     WindowLargerThanSignal {
         window_size: usize,
         signal_length: usize,
-    },
-    #[error("a {window_fn:?} window of {window_size} samples is all zeros")]
-    DegenerateWindow {
-        window_fn: WindowFn,
-        window_size: usize,
     },
 }
 
@@ -78,14 +73,7 @@ pub fn stft(signal: &TimeSignal, config: &StftConfig) -> Result<Spectrogram, Stf
     let num_freq_bins = window_size / 2 + 1;
     let sample_rate = signal.sample_rate();
 
-    // An all-zero window would zero every frame and make calibrated spectra 0/0.
-    if SpectrogramNormalization::of_window(config.window_fn, window_size).is_none() {
-        return Err(StftError::DegenerateWindow {
-            window_fn: config.window_fn,
-            window_size,
-        });
-    }
-    let window = generate_window(config.window_fn, window_size);
+    let window = generate_periodic_window(config.window_fn, window_size);
 
     let fft = RealFftPlanner::<f64>::new().plan_fft_forward(window_size);
     let mut data: Array3<Complex64> = Array3::zeros((num_channels, num_frames, num_freq_bins));
@@ -169,17 +157,17 @@ mod tests {
             ),
             Err(StftError::WindowLargerThanSignal { .. })
         ));
-        assert!(matches!(
-            stft(
-                &signal,
-                &StftConfig {
-                    window_size: 2,
-                    hop_size: 1,
-                    window_fn: WindowFn::Hann
-                }
-            ),
-            Err(StftError::DegenerateWindow { window_size: 2, .. })
-        ));
+        // A 2-sample Hann window works: its periodic form is [0, 1], not all zeros.
+        let spec = stft(
+            &signal,
+            &StftConfig {
+                window_size: 2,
+                hop_size: 1,
+                window_fn: WindowFn::Hann,
+            },
+        )
+        .unwrap();
+        assert!(spec.normalization().coherent_gain() > 0.0);
     }
 
     #[test]
