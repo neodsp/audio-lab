@@ -8,16 +8,16 @@ const NEG_INF_DB: f64 = -100.0;
 
 impl ComplexData {
     pub fn to_magnitude(&self) -> RealData {
-        RealData::new(
-            self.x_data().to_owned(),
+        RealData::from_axis(
+            self.x_axis().clone(),
             self.y_data().mapv(|value| value.norm()),
         )
         .expect("x/y data originated from ComplexData")
     }
 
     pub fn to_magnitude_db(&self) -> RealData {
-        RealData::new(
-            self.x_data().to_owned(),
+        RealData::from_axis(
+            self.x_axis().clone(),
             self.y_data()
                 .mapv(|value| gain_to_db(value.norm()).max(NEG_INF_DB)),
         )
@@ -25,8 +25,8 @@ impl ComplexData {
     }
 
     pub fn to_phase(&self) -> RealData {
-        RealData::new(
-            self.x_data().to_owned(),
+        RealData::from_axis(
+            self.x_axis().clone(),
             self.y_data().mapv(|value| value.arg()),
         )
         .expect("x/y data originated from ComplexData")
@@ -39,21 +39,21 @@ impl ComplexData {
             unwrap_phase_in_place(channel.as_slice_mut().expect("channel view is contiguous"));
         }
 
-        RealData::new(self.x_data().to_owned(), phase)
+        RealData::from_axis(self.x_axis().clone(), phase)
             .expect("x/y data originated from ComplexData")
     }
 
     pub fn to_phase_2pi(&self) -> RealData {
-        RealData::new(
-            self.x_data().to_owned(),
+        RealData::from_axis(
+            self.x_axis().clone(),
             self.y_data().mapv(|value| wrap_phase_2pi(value.arg())),
         )
         .expect("x/y data originated from ComplexData")
     }
 
     pub fn to_phase_degrees(&self) -> RealData {
-        RealData::new(
-            self.x_data().to_owned(),
+        RealData::from_axis(
+            self.x_axis().clone(),
             self.y_data().mapv(|value| value.arg().to_degrees()),
         )
         .expect("x/y data originated from ComplexData")
@@ -66,7 +66,7 @@ impl ComplexData {
             unwrap_phase_in_place(channel.as_slice_mut().expect("channel view is contiguous"));
         }
 
-        RealData::new(self.x_data().to_owned(), phase.mapv(f64::to_degrees))
+        RealData::from_axis(self.x_axis().clone(), phase.mapv(f64::to_degrees))
             .expect("x/y data originated from ComplexData")
     }
 }

@@ -11,7 +11,7 @@ impl FreqSignal {
 
     pub fn nearest_freq_index(&self, freq: f64) -> usize {
         let index = (freq / self.freq_spacing()).round() as usize;
-        index.min(self.freq_bins().len().saturating_sub(1))
+        index.min(self.num_freq_bins().saturating_sub(1))
     }
 }
 

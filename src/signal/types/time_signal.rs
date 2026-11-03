@@ -2,7 +2,7 @@ use ndarray::prelude::*;
 use ndrustfft::{R2cFftHandler, ndfft_r2c};
 
 use super::{SignalError, freq_signal::FreqSignal, utils};
-use crate::signal::data::RealData;
+use crate::signal::data::{RealData, XAxis};
 
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -84,8 +84,15 @@ impl TimeSignal {
         self.num_time_steps().saturating_sub(1) as f64 / self.sample_rate
     }
 
-    pub fn time_steps(&self) -> ArrayView1<'_, f64> {
+    /// Time of each sample in seconds. See [`RealData::x_data`] for when this
+    /// allocates. Use [`time_axis`](Self::time_axis) for single values.
+    pub fn time_steps(&self) -> CowArray<'_, f64, Ix1> {
         self.data.x_data()
+    }
+
+    /// Time axis in seconds, without allocating.
+    pub fn time_axis(&self) -> &XAxis {
+        self.data.x_axis()
     }
 
     pub fn time_data(&self) -> ArrayView2<'_, f64> {

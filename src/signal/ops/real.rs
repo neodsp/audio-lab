@@ -14,7 +14,7 @@ impl RealData {
                     .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                     .expect("RealData channels always have consistent lengths");
 
-                (self.x_data()[max_index], *max_value)
+                (self.x_axis().get(max_index), *max_value)
             })
             .collect()
     }
@@ -38,7 +38,7 @@ impl RealData {
                     .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                     .expect("RealData channels always have consistent lengths");
 
-                (self.x_data()[max_index], max_abs_value)
+                (self.x_axis().get(max_index), max_abs_value)
             })
             .collect()
     }
@@ -67,8 +67,8 @@ impl RealData {
                     .expect("RealData channels always have consistent lengths");
 
                 (
-                    (self.x_data()[min_index], *min_value),
-                    (self.x_data()[max_index], *max_value),
+                    (self.x_axis().get(min_index), *min_value),
+                    (self.x_axis().get(max_index), *max_value),
                 )
             })
             .collect()
@@ -92,12 +92,12 @@ impl RealData {
     }
 
     pub fn to_decibels(&self) -> RealData {
-        RealData::new(self.x_data().to_owned(), self.y_data().mapv(gain_to_db))
+        RealData::from_axis(self.x_axis().clone(), self.y_data().mapv(gain_to_db))
             .expect("x/y data originated from RealData")
     }
 
     pub fn to_gain(&self) -> RealData {
-        RealData::new(self.x_data().to_owned(), self.y_data().mapv(db_to_gain))
+        RealData::from_axis(self.x_axis().clone(), self.y_data().mapv(db_to_gain))
             .expect("x/y data originated from RealData")
     }
 }
