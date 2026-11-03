@@ -556,10 +556,7 @@ pub fn show_spectrogram(
 
 #[cfg(test)]
 mod tests {
-    use crate::signal::{
-        Spectrogram, SpectrogramNormalization,
-        ndarray::{Array1, Array3},
-    };
+    use crate::signal::{Spectrogram, SpectrogramNormalization, ndarray::Array3};
     use num::complex::Complex64;
 
     use super::*;
@@ -567,23 +564,21 @@ mod tests {
     fn make_spectrogram() -> Spectrogram {
         let num_channels = 2;
         let num_frames = 50;
-        let num_freq_bins = 17;
+        let window_size = 32;
+        let num_freq_bins = window_size / 2 + 1;
         let sample_rate = 16_000.0;
         let data =
             Array3::from_shape_fn((num_channels, num_frames, num_freq_bins), |(ch, f, b)| {
                 Complex64::new((ch as f64 + 1.0) * (f + b) as f64, 0.0)
             });
-        let frame_times = Array1::linspace(0.0, 1.5, num_frames);
-        let freq_bins = Array1::linspace(0.0, 8000.0, num_freq_bins);
         Spectrogram::new(
             data,
-            frame_times,
-            freq_bins,
             sample_rate,
-            256,
-            128,
-            SpectrogramNormalization::new(1.0, 256.0),
+            window_size,
+            window_size / 2,
+            SpectrogramNormalization::new(1.0, window_size as f64),
         )
+        .unwrap()
     }
 
     #[test]

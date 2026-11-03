@@ -77,13 +77,6 @@ pub fn stft(signal: &TimeSignal, config: &StftConfig) -> Result<Spectrogram, Stf
     let coherent_gain = window.sum() / window_size as f64;
     let window_energy = window.iter().map(|w| w * w).sum();
 
-    let frame_times = Array1::from_iter(
-        (0..num_frames).map(|f| (f * hop_size + window_size / 2) as f64 / sample_rate),
-    );
-
-    let end_freq = (num_freq_bins - 1) as f64 * sample_rate / window_size as f64;
-    let freq_bins = Array1::linspace(0.0, end_freq, num_freq_bins);
-
     let fft = RealFftPlanner::<f64>::new().plan_fft_forward(window_size);
     let mut data: Array3<Complex64> = Array3::zeros((num_channels, num_frames, num_freq_bins));
 
@@ -111,13 +104,12 @@ pub fn stft(signal: &TimeSignal, config: &StftConfig) -> Result<Spectrogram, Stf
 
     let mut spectrogram = Spectrogram::new(
         data,
-        frame_times,
-        freq_bins,
         sample_rate,
         window_size,
         hop_size,
         SpectrogramNormalization::new(coherent_gain, window_energy),
-    );
+    )
+    .expect("inputs were validated above and the data has window_size / 2 + 1 bins");
     for ch in 0..signal.num_channels() {
         spectrogram.set_channel_label(ch, signal.channel_label(ch));
     }

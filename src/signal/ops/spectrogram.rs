@@ -77,7 +77,7 @@ impl Spectrogram {
 #[cfg(test)]
 mod tests {
     use approx::assert_abs_diff_eq;
-    use ndarray::{Array1, Array3};
+    use ndarray::Array3;
     use num::complex::Complex64;
 
     use crate::signal::{Spectrogram, SpectrogramNormalization};
@@ -92,13 +92,12 @@ mod tests {
         });
         Spectrogram::new(
             data,
-            Array1::linspace(0.0, 1.0, 3),
-            Array1::linspace(0.0, 4_000.0, num_freq_bins),
             8_000.0,
             window_size,
             window_size / 2,
             SpectrogramNormalization::new(0.5, 3.0),
         )
+        .unwrap()
     }
 
     #[test]
