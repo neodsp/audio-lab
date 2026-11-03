@@ -1,14 +1,50 @@
 use ndarray::prelude::*;
 
+#[cfg(feature = "serde")]
+use super::check_channel_labels;
 use super::{DataError, XAxis};
 
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "RealDataFields")
+)]
 pub struct RealData {
     x_axis: XAxis,
     y_data: Array2<f64>,
     comment: Option<String>,
     channel_labels: Vec<Option<String>>,
+}
+
+/// Deserialized fields, checked by `TryFrom` before they become a `RealData`.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct RealDataFields {
+    x_axis: XAxis,
+    y_data: Array2<f64>,
+    comment: Option<String>,
+    channel_labels: Vec<Option<String>>,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<RealDataFields> for RealData {
+    type Error = DataError;
+
+    fn try_from(fields: RealDataFields) -> Result<Self, Self::Error> {
+        if fields.y_data.ncols() != fields.x_axis.len() {
+            return Err(DataError::NotMatching);
+        }
+        check_channel_labels(&fields.channel_labels, fields.y_data.nrows())?;
+        // Struct literal on purpose: a new field fails to compile here instead
+        // of being silently dropped when reading.
+        Ok(Self {
+            x_axis: fields.x_axis,
+            y_data: fields.y_data,
+            comment: fields.comment,
+            channel_labels: fields.channel_labels,
+        })
+    }
 }
 
 impl RealData {
@@ -79,6 +115,23 @@ impl RealData {
         if let Some(slot) = self.channel_labels.get_mut(channel) {
             *slot = label.map(Into::into);
         }
+    }
+
+    /// All channel labels, one per channel.
+    #[cfg(feature = "serde")]
+    pub(crate) fn channel_labels(&self) -> &[Option<String>] {
+        &self.channel_labels
+    }
+
+    /// Replace all channel labels. There must be one per channel.
+    #[cfg(feature = "serde")]
+    pub(crate) fn set_channel_labels(
+        &mut self,
+        channel_labels: Vec<Option<String>>,
+    ) -> Result<(), DataError> {
+        check_channel_labels(&channel_labels, self.num_channels())?;
+        self.channel_labels = channel_labels;
+        Ok(())
     }
 
     pub fn num_channels(&self) -> usize {

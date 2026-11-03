@@ -6,11 +6,67 @@ use super::{SignalError, TimeSignal, freq_axis, utils, validate_sample_rate};
 use crate::signal::data::{ComplexData, XAxis};
 
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FreqSignal {
     data: ComplexData,
     sample_rate: f64,
     num_time_steps: usize,
+}
+
+/// Stored form: the spectrum plus what cannot be derived from it. The
+/// frequency axis follows from the sample rate and `num_time_steps` and is
+/// rebuilt when reading, so a file cannot contain an axis that does not fit.
+#[cfg(feature = "serde")]
+impl serde::Serialize for FreqSignal {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(serde::Serialize)]
+        struct Stored<'a> {
+            spectrum: ArrayView2<'a, Complex64>,
+            sample_rate: f64,
+            num_time_steps: usize,
+            comment: Option<&'a str>,
+            channel_labels: &'a [Option<String>],
+        }
+
+        Stored {
+            spectrum: self.freq_data(),
+            sample_rate: self.sample_rate,
+            num_time_steps: self.num_time_steps,
+            comment: self.comment(),
+            channel_labels: self.data.channel_labels(),
+        }
+        .serialize(serializer)
+    }
+}
+
+/// Reads through [`FreqSignal::new`], so the same checks apply.
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for FreqSignal {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+
+        #[derive(serde::Deserialize)]
+        struct Stored {
+            spectrum: Array2<Complex64>,
+            sample_rate: f64,
+            num_time_steps: usize,
+            comment: Option<String>,
+            channel_labels: Vec<Option<String>>,
+        }
+
+        let stored = Stored::deserialize(deserializer)?;
+        let mut signal = FreqSignal::new(
+            stored.spectrum,
+            stored.sample_rate,
+            Some(stored.num_time_steps),
+        )
+        .map_err(Error::custom)?;
+        signal.set_comment(stored.comment.as_deref());
+        signal
+            .data
+            .set_channel_labels(stored.channel_labels)
+            .map_err(Error::custom)?;
+        Ok(signal)
+    }
 }
 
 impl FreqSignal {
@@ -27,7 +83,7 @@ impl FreqSignal {
         let num_time_steps = num_time_steps.unwrap_or_else(|| utils::t_from_f(data.ncols()));
         Ok(Self {
             data: ComplexData::from_axis(
-                freq_axis(data.ncols(), sample_rate, num_time_steps),
+                freq_axis(data.ncols(), sample_rate, num_time_steps)?,
                 data,
             )
             .expect("axis length matches the number of bins"),
@@ -50,7 +106,7 @@ impl FreqSignal {
         let num_time_steps = num_time_steps.unwrap_or_else(|| utils::t_from_f(num_freq_bins));
         Ok(Self {
             data: ComplexData::from_axis(
-                freq_axis(num_freq_bins, sample_rate, num_time_steps),
+                freq_axis(num_freq_bins, sample_rate, num_time_steps)?,
                 Array2::zeros((num_channels, num_freq_bins)),
             )
             .expect("axis length matches the number of bins"),

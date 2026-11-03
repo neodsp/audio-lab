@@ -16,4 +16,18 @@ pub enum DataError {
         "uniform axis needs a finite start and a finite, positive step (start: {start}, step: {step})"
     )]
     InvalidUniformAxis { start: f64, step: f64 },
+    #[error("there are {labels} channel labels for {channels} channels")]
+    ChannelLabelMismatch { labels: usize, channels: usize },
+}
+
+#[cfg(feature = "serde")]
+fn check_channel_labels(labels: &[Option<String>], channels: usize) -> Result<(), DataError> {
+    if labels.len() == channels {
+        Ok(())
+    } else {
+        Err(DataError::ChannelLabelMismatch {
+            labels: labels.len(),
+            channels,
+        })
+    }
 }
