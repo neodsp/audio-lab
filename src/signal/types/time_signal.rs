@@ -128,7 +128,13 @@ impl TimeSignal {
         self
     }
 
+    /// Transform to the frequency domain. Equivalent to [`TimeSignal::to_freq`].
     pub fn into_freq(self) -> FreqSignal {
+        self.to_freq()
+    }
+
+    /// Transform to the frequency domain without consuming `self`.
+    pub fn to_freq(&self) -> FreqSignal {
         let num_time_steps = self.num_time_steps();
         let fft_handler = R2cFftHandler::<f64>::new(num_time_steps);
         let mut freq_signal = FreqSignal::zeros(
@@ -309,6 +315,21 @@ mod tests {
         assert_eq!(time_signal.channel(0), arr1(&[0.0, 1.0, 2.0, 3.0]));
         assert_eq!(time_signal.channel(1), arr1(&[4.0, 5.0, 6.0, 7.0]));
         Ok(())
+    }
+
+    #[test]
+    fn borrowing_conversions_match_consuming_conversions() {
+        let mut signal = TimeSignal::new(arr2(&[[1.0, -2.0, 3.0, 0.5, 4.0]]), 10.0).unwrap();
+        signal.set_comment(Some("comment"));
+        signal.set_channel_label(0, Some("left"));
+
+        let freq = signal.to_freq();
+        assert_eq!(freq, signal.clone().into_freq());
+        assert_eq!(freq.channel_label(0), Some("left"));
+
+        let time = freq.to_time();
+        assert_eq!(time, freq.clone().into_time());
+        assert_eq!(time.comment(), Some("comment"));
     }
 
     #[test]
