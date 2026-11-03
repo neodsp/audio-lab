@@ -2,7 +2,7 @@ use ndarray::prelude::*;
 use ndrustfft::{R2cFftHandler, ndifft_r2c};
 use num::complex::Complex64;
 
-use super::{SignalError, TimeSignal, utils};
+use super::{SignalError, TimeSignal, freq_axis, utils, validate_sample_rate};
 use crate::signal::data::{ComplexData, XAxis};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -23,16 +23,14 @@ impl FreqSignal {
         sample_rate: f64,
         num_time_steps: Option<usize>,
     ) -> Result<Self, SignalError> {
-        if sample_rate <= 0.0 {
-            return Err(SignalError::SampleRateZeroOrNeg);
-        }
+        validate_sample_rate(sample_rate)?;
         let num_time_steps = num_time_steps.unwrap_or_else(|| utils::t_from_f(data.ncols()));
         Ok(Self {
-            data: ComplexData::new(
-                utils::generate_freq_steps(data.ncols(), sample_rate, num_time_steps),
+            data: ComplexData::from_axis(
+                freq_axis(data.ncols(), sample_rate, num_time_steps),
                 data,
             )
-            .expect("generate_freq_steps produced invalid data"),
+            .expect("axis length matches the number of bins"),
             sample_rate,
             num_time_steps,
         })
@@ -48,16 +46,14 @@ impl FreqSignal {
         sample_rate: f64,
         num_time_steps: Option<usize>,
     ) -> Result<Self, SignalError> {
-        if sample_rate <= 0.0 {
-            return Err(SignalError::SampleRateZeroOrNeg);
-        }
+        validate_sample_rate(sample_rate)?;
         let num_time_steps = num_time_steps.unwrap_or_else(|| utils::t_from_f(num_freq_bins));
         Ok(Self {
-            data: ComplexData::new(
-                utils::generate_freq_steps(num_freq_bins, sample_rate, num_time_steps),
+            data: ComplexData::from_axis(
+                freq_axis(num_freq_bins, sample_rate, num_time_steps),
                 Array2::zeros((num_channels, num_freq_bins)),
             )
-            .expect("generate_freq_steps produced invalid data"),
+            .expect("axis length matches the number of bins"),
             sample_rate,
             num_time_steps,
         })

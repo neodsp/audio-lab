@@ -1,7 +1,7 @@
 use ndarray::prelude::*;
 use ndrustfft::{R2cFftHandler, ndfft_r2c};
 
-use super::{SignalError, freq_signal::FreqSignal, utils};
+use super::{SignalError, freq_signal::FreqSignal, time_axis, utils, validate_sample_rate};
 use crate::signal::data::{RealData, XAxis};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -13,15 +13,10 @@ pub struct TimeSignal {
 
 impl TimeSignal {
     pub fn new(data: Array2<f64>, sample_rate: f64) -> Result<Self, SignalError> {
-        if sample_rate <= 0.0 {
-            return Err(SignalError::SampleRateZeroOrNeg);
-        }
+        validate_sample_rate(sample_rate)?;
         Ok(Self {
-            data: RealData::new(
-                utils::generate_time_steps(data.shape()[1], sample_rate),
-                data,
-            )
-            .expect("generate_time_steps produced invalid data"),
+            data: RealData::from_axis(time_axis(data.ncols(), sample_rate), data)
+                .expect("axis length matches the number of samples"),
             sample_rate,
         })
     }
@@ -31,15 +26,13 @@ impl TimeSignal {
         num_time_steps: usize,
         sample_rate: f64,
     ) -> Result<Self, SignalError> {
-        if sample_rate <= 0.0 {
-            return Err(SignalError::SampleRateZeroOrNeg);
-        }
+        validate_sample_rate(sample_rate)?;
         Ok(Self {
-            data: RealData::new(
-                utils::generate_time_steps(num_time_steps, sample_rate),
+            data: RealData::from_axis(
+                time_axis(num_time_steps, sample_rate),
                 Array2::zeros((num_channels, num_time_steps)),
             )
-            .expect("generate_time_steps produced invalid data"),
+            .expect("axis length matches the number of samples"),
             sample_rate,
         })
     }
@@ -322,6 +315,49 @@ mod tests {
         assert_eq!(time_signal.channel(0), arr1(&[0.0, 1.0, 2.0, 3.0]));
         assert_eq!(time_signal.channel(1), arr1(&[4.0, 5.0, 6.0, 7.0]));
         Ok(())
+    }
+
+    #[test]
+    fn signals_use_uniform_axes() {
+        let signal = TimeSignal::zeros(2, 6, 4.0).unwrap();
+        assert_eq!(signal.time_axis().as_uniform(), Some((0.0, 0.25)));
+        assert_eq!(
+            signal.time_steps(),
+            arr1(&[0.0, 0.25, 0.5, 0.75, 1.0, 1.25])
+        );
+
+        let freq = signal.to_freq();
+        assert_eq!(freq.freq_axis().as_uniform(), Some((0.0, 4.0 / 6.0)));
+        assert_eq!(freq.freq_axis().len(), 4);
+
+        // Matches the previously stored linspace values. Time values are
+        // identical; frequency values can differ in the last bit because the
+        // spacing is now sample_rate / N instead of end / (bins - 1).
+        for sample_rate in [44_100.0, 48_000.0] {
+            let signal = TimeSignal::zeros(1, 1001, sample_rate).unwrap();
+            assert_eq!(
+                signal.time_steps(),
+                utils::generate_time_steps(1001, sample_rate)
+            );
+            let expected = utils::generate_freq_steps(501, sample_rate, 1001);
+            for (actual, expected) in signal.to_freq().freq_axis().iter().zip(expected) {
+                approx::assert_relative_eq!(actual, expected, max_relative = 1e-15);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_non_finite_sample_rates() {
+        for sample_rate in [f64::NAN, f64::INFINITY] {
+            assert!(matches!(
+                TimeSignal::zeros(1, 4, sample_rate),
+                Err(SignalError::SampleRateZeroOrNeg)
+            ));
+            assert!(matches!(
+                FreqSignal::zeros(1, 3, sample_rate, None),
+                Err(SignalError::SampleRateZeroOrNeg)
+            ));
+        }
     }
 
     #[test]

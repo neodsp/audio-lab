@@ -1,5 +1,7 @@
 use ndarray::prelude::*;
 
+use crate::signal::data::XAxis;
+
 pub use freq_signal::FreqSignal;
 pub use spectrogram::{Spectrogram, SpectrogramNormalization};
 pub use time_signal::TimeSignal;
@@ -10,7 +12,7 @@ mod time_signal;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SignalError {
-    #[error("Sample Rate must be > 0")]
+    #[error("Sample rate must be finite and > 0")]
     SampleRateZeroOrNeg,
     #[error("At least one signal is required")]
     EmptySignalList,
@@ -22,6 +24,35 @@ pub enum SignalError {
     FrequencyBinMismatch,
     #[error("All signals must have the same number of channels")]
     ChannelMismatch,
+}
+
+fn validate_sample_rate(sample_rate: f64) -> Result<(), SignalError> {
+    if sample_rate.is_finite() && sample_rate > 0.0 {
+        Ok(())
+    } else {
+        Err(SignalError::SampleRateZeroOrNeg)
+    }
+}
+
+/// Uniform time axis `i / sample_rate` in seconds. `sample_rate` must be validated.
+fn time_axis(num_time_steps: usize, sample_rate: f64) -> XAxis {
+    XAxis::uniform(0.0, 1.0 / sample_rate, num_time_steps)
+        .expect("validated sample rate gives a finite, positive step")
+}
+
+/// Uniform frequency axis `k · sample_rate / num_time_steps` in Hz.
+/// `sample_rate` must be validated.
+fn freq_axis(num_freq_bins: usize, sample_rate: f64, num_time_steps: usize) -> XAxis {
+    if num_time_steps == 0 {
+        // No spacing is defined. A single bin sits at 0 Hz either way.
+        assert!(
+            num_freq_bins <= 1,
+            "num_time_steps must be > 0 when there are {num_freq_bins} frequency bins"
+        );
+        return XAxis::indices(num_freq_bins);
+    }
+    XAxis::uniform(0.0, sample_rate / num_time_steps as f64, num_freq_bins)
+        .expect("validated sample rate gives a finite, positive step")
 }
 
 pub fn join_time_signals(signals: &[TimeSignal]) -> Result<TimeSignal, SignalError> {
