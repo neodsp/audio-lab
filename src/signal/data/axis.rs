@@ -114,18 +114,6 @@ impl XAxis {
         }
     }
 
-    /// Mutable view of an explicit axis, for `x_data_mut`.
-    ///
-    /// # Panics
-    ///
-    /// Panics on a uniform axis.
-    pub(super) fn explicit_values_mut(&mut self) -> ndarray::ArrayViewMut1<'_, f64> {
-        match &mut self.0 {
-            Repr::Explicit(values) => values.view_mut(),
-            Repr::Uniform { .. } => panic!("uniform axis has no stored values"),
-        }
-    }
-
     /// Index of the value closest to `x`. On a tie the lower index wins.
     /// Returns `0` for an empty axis or a NaN `x`.
     pub fn nearest_index(&self, x: f64) -> usize {
