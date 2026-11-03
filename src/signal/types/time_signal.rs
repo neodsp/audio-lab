@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn time_signal() -> Result<(), SignalError> {
         let signal = TimeSignal::zeros(0, 0, 1.0).unwrap();
-        assert_eq!(signal.time_data(), Array2::zeros((0, 0)));
+        assert_eq!(signal.time_data(), Array2::<f64>::zeros((0, 0)));
 
         let signal = TimeSignal::zeros(2, 10, 1.0).unwrap();
         assert_eq!(signal.time_data(), arr2(&[[0.0; 10], [0.0; 10]]));

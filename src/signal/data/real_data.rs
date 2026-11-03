@@ -101,14 +101,13 @@ impl RealData {
         self.x_axis.to_cow_array()
     }
 
-    /// Mutable access to the x values. Turns a uniform axis into an explicit
-    /// one. The values must stay strictly increasing.
-    pub fn x_data_mut(&mut self) -> ArrayViewMut1<'_, f64> {
-        if self.x_axis.as_uniform().is_some() {
-            self.x_axis = XAxis::explicit(self.x_axis.to_array())
-                .expect("values of a valid axis are increasing");
+    /// Replace the x axis. It must have one value per data point.
+    pub fn set_x_axis(&mut self, x_axis: XAxis) -> Result<(), DataError> {
+        if x_axis.len() != self.num_data_points() {
+            return Err(DataError::NotMatching);
         }
-        self.x_axis.explicit_values_mut()
+        self.x_axis = x_axis;
+        Ok(())
     }
 
     pub fn y_data(&self) -> ArrayView2<'_, f64> {
@@ -238,13 +237,16 @@ mod tests {
     }
 
     #[test]
-    fn x_data_mut_turns_uniform_axis_into_explicit_values() {
+    fn set_x_axis_replaces_axis_of_matching_length() {
         let mut data = RealData::from_y_data(array![[1.0, 2.0, 3.0]]);
         assert_eq!(data.x_axis().as_uniform(), Some((0.0, 1.0)));
 
-        data.x_data_mut()[2] = 5.0;
+        data.set_x_axis(XAxis::explicit(array![0.0, 1.0, 5.0]).unwrap())
+            .unwrap();
+        assert_eq!(data.x_data(), arr1(&[0.0, 1.0, 5.0]));
 
-        assert_eq!(data.x_axis().as_uniform(), None);
+        let error = data.set_x_axis(XAxis::indices(4)).err();
+        assert!(matches!(error, Some(DataError::NotMatching)));
         assert_eq!(data.x_data(), arr1(&[0.0, 1.0, 5.0]));
     }
 
@@ -299,11 +301,6 @@ mod tests {
 
         assert_eq!(
             data.x_data(),
-            arr1(&[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
-        );
-
-        assert_eq!(
-            data.x_data_mut(),
             arr1(&[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
         );
 

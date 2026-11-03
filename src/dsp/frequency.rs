@@ -6,8 +6,6 @@ use ndarray::{Array1, Zip};
 pub enum FrequencyError {
     #[error("group delay requires at least two frequency bins")]
     TooFewFrequencyBins,
-    #[error("frequency bins must be strictly increasing")]
-    NonIncreasingFrequencyBins,
 }
 
 pub fn group_delay(signal: &FreqSignal) -> Result<RealData, FrequencyError> {
