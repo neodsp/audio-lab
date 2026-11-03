@@ -199,19 +199,12 @@ impl OctaveBands {
         // Square magnitudes → -6 dB at cut-off frequencies
         g.mapv_inplace(|v| v * v);
 
-        // Multiply by linear phase term: exp(-j·2π·f·T_d), T_d = n_samples/2 / sr
-        let group_delay = n_samples as f64 / 2.0 / sample_rate;
-        let freq_step = sample_rate / n_samples as f64;
-
-        let mut g_complex = Array2::<Complex64>::zeros((num_bands, n_bins));
-        for b in 0..num_bands {
-            for k in 0..n_bins {
-                let freq = k as f64 * freq_step;
-                let phase = -2.0 * std::f64::consts::PI * freq * group_delay;
-                g_complex[[b, k]] =
-                    Complex64::new(g[[b, k]] * phase.cos(), g[[b, k]] * phase.sin());
-            }
-        }
+        // Multiply by linear phase term: exp(-j·2π·f·T_d), T_d = n_samples/2 / sr.
+        // With f = k·sr/n_samples the phase is exactly -π·k, so the term is (-1)^k.
+        let g_complex = Array2::from_shape_fn((num_bands, n_bins), |(b, k)| {
+            let sign = if k % 2 == 0 { 1.0 } else { -1.0 };
+            Complex64::new(g[[b, k]] * sign, 0.0)
+        });
 
         // IFFT → impulse responses
         let fft_handler = R2cFftHandler::<f64>::new(n_samples);
