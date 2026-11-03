@@ -481,6 +481,7 @@ dependencies = [
  "ndarray-rand",
  "ndrustfft",
  "num",
+ "realfft",
  "rfd",
  "rubato",
  "serde",
