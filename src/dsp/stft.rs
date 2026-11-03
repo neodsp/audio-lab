@@ -17,6 +17,11 @@ pub enum StftError {
         window_size: usize,
         signal_length: usize,
     },
+    #[error("a {window_fn:?} window of {window_size} samples is all zeros")]
+    DegenerateWindow {
+        window_fn: WindowFn,
+        window_size: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -73,16 +78,14 @@ pub fn stft(signal: &TimeSignal, config: &StftConfig) -> Result<Spectrogram, Stf
     let num_freq_bins = window_size / 2 + 1;
     let sample_rate = signal.sample_rate();
 
+    // An all-zero window would zero every frame and make calibrated spectra 0/0.
+    if SpectrogramNormalization::of_window(config.window_fn, window_size).is_none() {
+        return Err(StftError::DegenerateWindow {
+            window_fn: config.window_fn,
+            window_size,
+        });
+    }
     let window = generate_window(config.window_fn, window_size);
-    let coherent_gain = window.sum() / window_size as f64;
-    let window_energy = window.iter().map(|w| w * w).sum();
-
-    let frame_times = Array1::from_iter(
-        (0..num_frames).map(|f| (f * hop_size + window_size / 2) as f64 / sample_rate),
-    );
-
-    let end_freq = (num_freq_bins - 1) as f64 * sample_rate / window_size as f64;
-    let freq_bins = Array1::linspace(0.0, end_freq, num_freq_bins);
 
     let fft = RealFftPlanner::<f64>::new().plan_fft_forward(window_size);
     let mut data: Array3<Complex64> = Array3::zeros((num_channels, num_frames, num_freq_bins));
@@ -109,15 +112,9 @@ pub fn stft(signal: &TimeSignal, config: &StftConfig) -> Result<Spectrogram, Stf
         }
     }
 
-    let mut spectrogram = Spectrogram::new(
-        data,
-        frame_times,
-        freq_bins,
-        sample_rate,
-        window_size,
-        hop_size,
-        SpectrogramNormalization::new(coherent_gain, window_energy),
-    );
+    let mut spectrogram =
+        Spectrogram::new(data, sample_rate, window_size, hop_size, config.window_fn)
+            .expect("inputs were validated above and the data has window_size / 2 + 1 bins");
     for ch in 0..signal.num_channels() {
         spectrogram.set_channel_label(ch, signal.channel_label(ch));
     }
@@ -171,6 +168,17 @@ mod tests {
                 }
             ),
             Err(StftError::WindowLargerThanSignal { .. })
+        ));
+        assert!(matches!(
+            stft(
+                &signal,
+                &StftConfig {
+                    window_size: 2,
+                    hop_size: 1,
+                    window_fn: WindowFn::Hann
+                }
+            ),
+            Err(StftError::DegenerateWindow { window_size: 2, .. })
         ));
     }
 

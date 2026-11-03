@@ -26,6 +26,23 @@ pub enum SignalError {
     ChannelMismatch,
     #[error("num_time_steps must be > 0 when there are {num_freq_bins} frequency bins")]
     NumTimeStepsZero { num_freq_bins: usize },
+    #[error("Window size must be > 0")]
+    WindowSizeZero,
+    #[error("Hop size must be > 0")]
+    HopSizeZero,
+    #[error("A {window_fn:?} window of {window_size} samples is all zeros")]
+    DegenerateWindow {
+        window_fn: crate::dsp::WindowFn,
+        window_size: usize,
+    },
+    #[error(
+        "A window of {window_size} samples gives {expected} frequency bins, but the data has {actual}"
+    )]
+    SpectrogramBinMismatch {
+        window_size: usize,
+        expected: usize,
+        actual: usize,
+    },
 }
 
 fn validate_sample_rate(sample_rate: f64) -> Result<(), SignalError> {

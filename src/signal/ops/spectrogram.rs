@@ -77,10 +77,11 @@ impl Spectrogram {
 #[cfg(test)]
 mod tests {
     use approx::assert_abs_diff_eq;
-    use ndarray::{Array1, Array3};
+    use ndarray::Array3;
     use num::complex::Complex64;
 
-    use crate::signal::{Spectrogram, SpectrogramNormalization};
+    use crate::dsp::{WindowFn, generate_window};
+    use crate::signal::Spectrogram;
 
     fn make_spectrogram(window_size: usize) -> Spectrogram {
         let num_freq_bins = window_size / 2 + 1;
@@ -90,15 +91,7 @@ mod tests {
                 frame as f64 - bin as f64 * 0.25,
             )
         });
-        Spectrogram::new(
-            data,
-            Array1::linspace(0.0, 1.0, 3),
-            Array1::linspace(0.0, 4_000.0, num_freq_bins),
-            8_000.0,
-            window_size,
-            window_size / 2,
-            SpectrogramNormalization::new(0.5, 3.0),
-        )
+        Spectrogram::new(data, 8_000.0, window_size, window_size / 2, WindowFn::Hann).unwrap()
     }
 
     #[test]
@@ -114,9 +107,12 @@ mod tests {
                     2.0
                 }
             };
-            let coherent_sum = 0.5 * window_size as f64;
-            let power_denom = window_size as f64 * 3.0;
-            let psd_denom = 8_000.0 * 3.0;
+            // Gains of the Hann window the spectrogram was built with.
+            let window = generate_window(WindowFn::Hann, window_size);
+            let window_energy: f64 = window.iter().map(|w| w * w).sum();
+            let coherent_sum = window.sum();
+            let power_denom = window_size as f64 * window_energy;
+            let psd_denom = 8_000.0 * window_energy;
 
             let amplitude = spec.amplitude_spectrum();
             let amplitude_db = spec.amplitude_spectrum_db(-200.0);

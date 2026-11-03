@@ -4,6 +4,7 @@ use ndarray::Array1;
 
 /// Public window function identifiers used across generic DSP helpers.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum WindowFn {
     #[default]
     Hann,
