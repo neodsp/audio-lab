@@ -556,7 +556,8 @@ pub fn show_spectrogram(
 
 #[cfg(test)]
 mod tests {
-    use crate::signal::{Spectrogram, SpectrogramNormalization, ndarray::Array3};
+    use crate::dsp::WindowFn;
+    use crate::signal::{Spectrogram, ndarray::Array3};
     use num::complex::Complex64;
 
     use super::*;
@@ -576,7 +577,7 @@ mod tests {
             sample_rate,
             window_size,
             window_size / 2,
-            SpectrogramNormalization::new(1.0, window_size as f64),
+            WindowFn::Rectangular,
         )
         .unwrap()
     }
