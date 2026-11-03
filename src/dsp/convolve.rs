@@ -1,9 +1,9 @@
-use ndarray::s;
+use ndarray::{Array2, s};
+use ndrustfft::{R2cFftHandler, ndfft_r2c, ndifft_r2c};
+use num::complex::Complex64;
 use thiserror::Error;
 
-use crate::signal::{FreqSignal, SignalError, TimeSignal};
-
-use crate::dsp::{PadMode, pad_zeros};
+use crate::signal::{SignalError, TimeSignal};
 
 #[derive(Debug, Error)]
 pub enum ConvolveError {
@@ -50,54 +50,45 @@ pub fn convolve(
     }
 
     let conv_len = n1 + n2 - 1;
-    let padded1 = pad_zeros(signal1, conv_len - n1, PadMode::After)?;
-    let padded2 = pad_zeros(signal2, conv_len - n2, PadMode::After)?;
+    // Power-of-two FFT lengths are much faster than arbitrary (possibly prime)
+    // lengths. The extra zero padding does not change the linear convolution.
+    let fft_len = conv_len.next_power_of_two();
+    let num_freq_bins = fft_len / 2 + 1;
+    let num_channels = signal1.num_channels();
+    let fft_handler = R2cFftHandler::<f64>::new(fft_len);
 
-    let freq1 = padded1.into_freq();
-    let freq2 = padded2.into_freq();
-    let mut result_freq = FreqSignal::zeros(
-        freq1.num_channels(),
-        freq1.num_freq_bins(),
-        freq1.sample_rate(),
-        Some(conv_len),
-    )?;
+    let mut buffer = Array2::<f64>::zeros((num_channels, fft_len));
+    let mut spectrum1 = Array2::<Complex64>::zeros((num_channels, num_freq_bins));
+    let mut spectrum2 = Array2::<Complex64>::zeros((num_channels, num_freq_bins));
 
-    for ((mut out_channel, left_channel), right_channel) in result_freq
-        .channel_iter_mut()
-        .zip(freq1.channel_iter())
-        .zip(freq2.channel_iter())
-    {
-        out_channel.assign(&(&left_channel * &right_channel));
-    }
+    buffer.slice_mut(s![.., ..n1]).assign(&signal1.time_data());
+    ndfft_r2c(&buffer.view(), &mut spectrum1.view_mut(), &fft_handler, 1);
 
-    let result = result_freq.into_time();
+    buffer.slice_mut(s![.., ..n1]).fill(0.0);
+    buffer.slice_mut(s![.., ..n2]).assign(&signal2.time_data());
+    ndfft_r2c(&buffer.view(), &mut spectrum2.view_mut(), &fft_handler, 1);
 
-    match mode {
-        ConvolveMode::Full => Ok(result),
-        ConvolveMode::Cut => truncate(&result, n1.max(n2)),
-        ConvolveMode::Cyclic => {
-            let mut wrapped = result;
-            let wrap_len = n1.min(n2) - 1;
+    spectrum1 *= &spectrum2;
+    ndifft_r2c(&spectrum1.view(), &mut buffer.view_mut(), &fft_handler, 1);
 
-            if wrap_len > 0 {
-                for mut channel in wrapped.channel_iter_mut() {
-                    let tail = channel.slice(s![conv_len - wrap_len..]).to_owned();
-                    for (sample, wrapped_tail) in channel.iter_mut().take(wrap_len).zip(tail.iter())
-                    {
-                        *sample += wrapped_tail;
-                    }
-                }
+    let out_len = match mode {
+        ConvolveMode::Full => conv_len,
+        ConvolveMode::Cut | ConvolveMode::Cyclic => n1.max(n2),
+    };
+
+    if mode == ConvolveMode::Cyclic {
+        // Wrap the tail (out_len..conv_len) back onto the start.
+        let wrap_len = conv_len - out_len;
+        for mut channel in buffer.outer_iter_mut() {
+            for i in 0..wrap_len {
+                channel[i] += channel[out_len + i];
             }
-
-            truncate(&wrapped, n1.max(n2))
         }
     }
-}
 
-fn truncate(signal: &TimeSignal, len: usize) -> Result<TimeSignal, ConvolveError> {
     Ok(TimeSignal::new(
-        signal.time_data().slice(s![.., ..len]).to_owned(),
-        signal.sample_rate(),
+        buffer.slice(s![.., ..out_len]).to_owned(),
+        signal1.sample_rate(),
     )?)
 }
 
@@ -105,7 +96,7 @@ fn truncate(signal: &TimeSignal, len: usize) -> Result<TimeSignal, ConvolveError
 mod tests {
     use crate::signal::{ImpulseConfig, generate_impulse};
     use approx::assert_abs_diff_eq;
-    use ndarray::{arr1, arr2};
+    use ndarray::{Array1, arr1, arr2};
 
     use super::*;
 
@@ -144,6 +135,45 @@ mod tests {
 
         assert_eq!(result.num_time_steps(), 3);
         assert_abs_diff_eq!(result.channel(0), arr1(&[4.0, 3.0, 5.0]), epsilon = 1e-10);
+    }
+
+    #[test]
+    fn convolve_matches_direct_convolution_for_non_power_of_two_lengths() {
+        let n1 = 37;
+        let n2 = 13;
+        let x: Vec<f64> = (0..n1).map(|i| ((i * 7 % 11) as f64) - 5.0).collect();
+        let h: Vec<f64> = (0..n2).map(|i| ((i * 3 % 5) as f64) * 0.5 - 1.0).collect();
+
+        let mut full = vec![0.0; n1 + n2 - 1];
+        for (i, &xi) in x.iter().enumerate() {
+            for (j, &hj) in h.iter().enumerate() {
+                full[i + j] += xi * hj;
+            }
+        }
+        let mut cyclic = full[..n1].to_vec();
+        for (i, &tail) in full[n1..].iter().enumerate() {
+            cyclic[i] += tail;
+        }
+
+        let s1 = TimeSignal::new(Array2::from_shape_vec((1, n1), x).unwrap(), 1.0).unwrap();
+        let s2 = TimeSignal::new(Array2::from_shape_vec((1, n2), h).unwrap(), 1.0).unwrap();
+
+        let result = convolve(&s1, &s2, ConvolveMode::Full).unwrap();
+        assert_abs_diff_eq!(
+            result.channel(0),
+            Array1::from(full.clone()),
+            epsilon = 1e-9
+        );
+
+        let result = convolve(&s1, &s2, ConvolveMode::Cut).unwrap();
+        assert_abs_diff_eq!(
+            result.channel(0),
+            Array1::from(full[..n1].to_vec()),
+            epsilon = 1e-9
+        );
+
+        let result = convolve(&s2, &s1, ConvolveMode::Cyclic).unwrap();
+        assert_abs_diff_eq!(result.channel(0), Array1::from(cyclic), epsilon = 1e-9);
     }
 
     #[test]
