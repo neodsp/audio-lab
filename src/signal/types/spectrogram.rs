@@ -2,7 +2,7 @@ use ndarray::{prelude::*, s};
 use num::complex::Complex64;
 
 use super::{SignalError, validate_sample_rate};
-use crate::dsp::window::{WindowFn, generate_window};
+use crate::dsp::window::{WindowFn, generate_periodic_window};
 use crate::signal::data::XAxis;
 
 /// Window gains used to calibrate spectra. Always computed from the window, see
@@ -16,18 +16,19 @@ pub struct SpectrogramNormalization {
 }
 
 impl SpectrogramNormalization {
-    /// Gains of `window_fn` at `window_size` samples, or `None` if that window
-    /// is all zeros (a Hann or Blackman window of 2 samples). Calibrated
-    /// spectra divide by these gains, so a zero window cannot be used.
-    pub(crate) fn of_window(window_fn: WindowFn, window_size: usize) -> Option<Self> {
-        let window = generate_window(window_fn, window_size);
+    /// Gains of the periodic `window_fn` window of `window_size` samples, the
+    /// window [`stft`](crate::dsp::stft()) tapers frames with.
+    pub(crate) fn of_window(window_fn: WindowFn, window_size: usize) -> Self {
+        let window = generate_periodic_window(window_fn, window_size);
         let coherent_gain = window.sum() / window_size as f64;
         let window_energy = window.iter().map(|w| w * w).sum();
-        // Blackman's zeros come out as about -1.4e-17, so compare with a tolerance.
-        (coherent_gain > f64::EPSILON).then_some(Self {
+        // Periodic windows are never all zeros (Blackman, the smallest, has a
+        // mean of 0.42), so calibrated spectra never divide by zero.
+        debug_assert!(window_size == 0 || coherent_gain > 0.4);
+        Self {
             coherent_gain,
             window_energy,
-        })
+        }
     }
 
     pub fn coherent_gain(&self) -> f64 {
@@ -70,8 +71,8 @@ impl Spectrogram {
     /// Frame `f` is centred at `(f * hop_size + window_size / 2) / sample_rate`
     /// seconds and bin `k` sits at `k * sample_rate / window_size` Hz. The data
     /// must have `window_size / 2 + 1` bins, as a real FFT of that size gives.
-    /// The calibration gains are computed from `window_fn`, the window the
-    /// frames were tapered with.
+    /// The calibration gains are computed from `window_fn`, the periodic window
+    /// the frames were tapered with.
     pub fn new(
         data: Array3<Complex64>,
         sample_rate: f64,
@@ -95,12 +96,7 @@ impl Spectrogram {
                 actual: num_freq_bins,
             });
         }
-        let normalization = SpectrogramNormalization::of_window(window_fn, window_size).ok_or(
-            SignalError::DegenerateWindow {
-                window_fn,
-                window_size,
-            },
-        )?;
+        let normalization = SpectrogramNormalization::of_window(window_fn, window_size);
 
         let frame_axis = XAxis::uniform(
             (window_size / 2) as f64 / sample_rate,
@@ -158,7 +154,7 @@ impl Spectrogram {
         self.hop_size
     }
 
-    /// The window the frames were tapered with.
+    /// The window the frames were tapered with (its periodic form).
     pub fn window_fn(&self) -> WindowFn {
         self.window_fn
     }
@@ -330,7 +326,7 @@ mod tests {
             WindowFn::Rectangular,
         ] {
             let spec = Spectrogram::new(data(8, 3), 8.0, 8, 4, window_fn).unwrap();
-            let window = generate_window(window_fn, 8);
+            let window = generate_periodic_window(window_fn, 8);
             assert_eq!(spec.window_fn(), window_fn);
             approx::assert_relative_eq!(
                 spec.normalization().coherent_gain(),
@@ -346,19 +342,22 @@ mod tests {
     }
 
     #[test]
-    fn new_rejects_all_zero_windows() {
-        // 2-sample Hann and Blackman windows are all zeros (Blackman up to rounding).
-        for window_fn in [WindowFn::Hann, WindowFn::Blackman] {
-            let result = Spectrogram::new(data(2, 3), 8.0, 2, 1, window_fn);
-            assert!(matches!(
-                result,
-                Err(SignalError::DegenerateWindow { window_size: 2, .. })
-            ));
+    fn every_window_gives_positive_gains_down_to_one_sample() {
+        // The symmetric 2-sample Hann and Blackman windows are all zeros; the
+        // periodic ones used here are not.
+        for window_fn in [
+            WindowFn::Hann,
+            WindowFn::Hamming,
+            WindowFn::Blackman,
+            WindowFn::Rectangular,
+        ] {
+            for window_size in [1, 2, 3] {
+                let spec =
+                    Spectrogram::new(data(window_size, 3), 8.0, window_size, 1, window_fn).unwrap();
+                assert!(spec.normalization().coherent_gain() > 0.4);
+                assert!(spec.normalization().window_energy() > 0.0);
+            }
         }
-        // Hamming and rectangular are fine at 2 samples; 1 sample is all ones.
-        assert!(Spectrogram::new(data(2, 3), 8.0, 2, 1, WindowFn::Hamming).is_ok());
-        assert!(Spectrogram::new(data(2, 3), 8.0, 2, 1, WindowFn::Rectangular).is_ok());
-        assert!(Spectrogram::new(data(1, 3), 8.0, 1, 1, WindowFn::Hann).is_ok());
     }
 
     #[test]

@@ -30,4 +30,7 @@ pub use time::{
     TimeError, TimeShiftMode, apply_gain, apply_gain_db, find_impulse_response_start, resample,
     time_shift, time_shift_per_channel, trim_duration, trim_samples, window_and_trim,
 };
-pub use window::{WindowFn, apply_hann, apply_hann_left, apply_hann_right, generate_window};
+pub use window::{
+    WindowFn, apply_hann, apply_hann_left, apply_hann_right, generate_periodic_window,
+    generate_window,
+};

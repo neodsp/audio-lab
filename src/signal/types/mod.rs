@@ -30,11 +30,6 @@ pub enum SignalError {
     WindowSizeZero,
     #[error("Hop size must be > 0")]
     HopSizeZero,
-    #[error("A {window_fn:?} window of {window_size} samples is all zeros")]
-    DegenerateWindow {
-        window_fn: crate::dsp::WindowFn,
-        window_size: usize,
-    },
     #[error(
         "A window of {window_size} samples gives {expected} frequency bins, but the data has {actual}"
     )]

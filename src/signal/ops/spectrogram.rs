@@ -80,7 +80,7 @@ mod tests {
     use ndarray::Array3;
     use num::complex::Complex64;
 
-    use crate::dsp::{WindowFn, generate_window};
+    use crate::dsp::{WindowFn, generate_periodic_window};
     use crate::signal::Spectrogram;
 
     fn make_spectrogram(window_size: usize) -> Spectrogram {
@@ -108,7 +108,7 @@ mod tests {
                 }
             };
             // Gains of the Hann window the spectrogram was built with.
-            let window = generate_window(WindowFn::Hann, window_size);
+            let window = generate_periodic_window(WindowFn::Hann, window_size);
             let window_energy: f64 = window.iter().map(|w| w * w).sum();
             let coherent_sum = window.sum();
             let power_denom = window_size as f64 * window_energy;
