@@ -95,7 +95,8 @@ tests.
 ## Conventions
 
 - Dependent work goes in GitHub stacked PRs (`gh stack`); independent changes get separate PRs.
-- `CHANGELOG.md` stays at "Initial release" until the first release.
+- `CHANGELOG.md`: 0.1.0 is released, so every user-visible change gets an entry under
+  `[Unreleased]`.
 - Before every PR: `cargo fmt --all`, `cargo clippy --all-targets -D warnings` with
   `--all-features` and `--no-default-features`, `cargo test --all-features`,
   `cargo test --no-default-features --all-targets`, `taplo fmt --check`, `cargo shear`.
