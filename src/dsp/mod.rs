@@ -15,6 +15,7 @@ pub mod frequency;
 pub mod pad;
 pub mod stft;
 pub mod time;
+pub mod transfer_function;
 pub mod window;
 
 pub use convolve::{ConvolveError, ConvolveMode, convolve};
@@ -30,6 +31,7 @@ pub use time::{
     TimeError, TimeShiftMode, apply_gain, apply_gain_db, find_impulse_response_start, resample,
     time_shift, time_shift_per_channel, trim_duration, trim_samples, window_and_trim,
 };
+pub use transfer_function::{TransferFunctionConfig, TransferFunctionError, transfer_function};
 pub use window::{
     WindowFn, apply_hann, apply_hann_left, apply_hann_right, generate_periodic_window,
     generate_window,
