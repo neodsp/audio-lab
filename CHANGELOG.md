@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as the source, with gain and on/off that can change while it plays.
 - `dsp::transfer_function`: the transfer function from a reference to each channel, averaged
   over segments. Exact for periodic excitation such as `NoiseSource`.
+- Examples `measure_impulse_response` (sweeps, several speakers and mics) and `live_noise`
+  (live transfer function with pink noise and an adjustable delay). The README's impulse
+  response example now records a real measurement.
 - `signal::audio_blocks`: re-export of `audio-blocks`, whose block types `Sequence` processes.
 
 ## [0.1.0] - 2026-11-04
