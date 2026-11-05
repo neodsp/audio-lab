@@ -6,66 +6,120 @@ Planned features for `audio-lab`, in order. This file isn't published to crates.
 
 ## 1. Play and record (next)
 
-**Goal:** measure a real system response from inside the crate. Everything around the
-measurement exists (sweeps, `deconvolve`, `find_impulse_response_start`,
-`window_and_trim`, smoothing, plots), but the README's "Estimating an impulse response"
-example still fakes the recording with `excitation.clone()`.
+**Goal:** measure real systems from inside the crate, with several microphones at once:
+
+- **Sweep measurements:** play a sweep on each speaker, one after another, while every mic
+  records. The result is one impulse response per speaker and mic.
+- **Realtime noise measurements:** play noise on several speakers at the same time and read the
+  mics continuously, e.g. for a live spectrum while tuning a crossover or a sub delay.
+
+Everything around the measurement exists (sweeps, noise, `deconvolve`,
+`find_impulse_response_start`, `window_and_trim`, smoothing, plots), but the README's
+"Estimating an impulse response" example still fakes the recording with `excitation.clone()`.
+The design follows neodrc's `measurement.rs` and `realtime_spectrum.rs`, without their sample
+loss (`try_lock` on the audio thread) and with tests that don't need audio hardware.
 
 ### API
 
 ```rust
-// `playback` feature
-pub fn play_and_record(
-    excitation: &TimeSignal,
-    config: &RecordConfig,
-) -> Result<TimeSignal, RecordError>;
-
-pub struct RecordConfig {
-    pub num_input_channels: u16,
-    /// Extra recording time after the excitation ends, for reverb tails and device latency.
-    pub tail: Duration,
-    pub input_device: Option<String>,   // `None` = system default
-    pub output_device: Option<String>,
-    /// Record an output channel wired back to an input, to remove device latency exactly.
-    pub loopback: Option<Loopback>,
+// `signal::measure`, always available (no audio device needed)
+pub struct Step {
+    /// Output channels to play on, one per channel of `signal`.
+    pub outputs: Vec<u16>,
+    pub signal: TimeSignal,
 }
+
+pub struct SequenceConfig {
+    /// Input channels to record, one per mic. All of them record during every step.
+    pub inputs: Vec<u16>,
+    /// Silence before the first step, not part of any recording. Lets the device settle.
+    pub warmup: Duration,
+    /// Recorded after each step (silence on the outputs), for reverb tails and device latency.
+    pub tail: Duration,
+}
+
+/// Plays steps one after another on one timeline and records the inputs. Driven block by
+/// block, does no I/O and doesn't allocate while processing.
+pub struct Sequence { .. }
+impl Sequence {
+    pub fn new(steps: Vec<Step>, config: &SequenceConfig) -> Result<Self, RecordError>;
+    pub fn process(&mut self, input: &impl AudioBlock<f32>, output: &mut impl AudioBlockMut<f32>);
+    pub fn is_done(&self) -> bool;
+    /// One `TimeSignal` per step, one channel per input, `step length + tail` long.
+    pub fn into_recordings(self) -> Vec<TimeSignal>;
+}
+
+// `signal::playback`, `playback` feature
+pub fn play_and_record(
+    steps: Vec<Step>,
+    config: &SequenceConfig,
+    device: &DeviceConfig,
+) -> Result<Vec<TimeSignal>, RecordError>;
+
+pub struct DeviceConfig {
+    pub input_device: Option<String>,  // `None` = system default
+    pub output_device: Option<String>,
+    pub num_frames: usize,
+    pub duplex_latency_ms: u32,
+}
+
+/// Non-blocking: plays `source` and records the inputs until stopped.
+pub struct LiveSession { .. }
+impl LiveSession {
+    pub fn start(
+        source: impl FnMut(&mut InterleavedViewMut<f32>) + Send + 'static,
+        inputs: Vec<u16>,
+        sample_rate: f64,
+        device: &DeviceConfig,
+    ) -> Result<Self, RecordError>;
+    /// The most recent `num_samples` of every input, one channel per input.
+    pub fn latest(&mut self, num_samples: usize) -> TimeSignal;
+    pub fn status(&self) -> StreamStatus;
+    pub fn stop(self) -> Result<(), RecordError>;
+}
+
+/// A ready-made `source`: white or pink noise on some outputs, with gain and on/off that can
+/// change while it plays. Wrap it in your own closure to add a crossover or delay.
+pub struct NoiseSource { .. }
 ```
+
+- Several speakers one after another: one `Step` per speaker. Several speakers at once: one
+  `Step` with several outputs.
+- `Sequence` is public, so hosts other than `audio-host` (e.g. a PipeWire app) can drive it.
 
 ### Design
 
-- **Testable core.** A `Measurement` type holds the excitation and a preallocated recording
-  buffer, and is driven block by block: `process(input, output)` writes the next excitation
-  block and appends the input; `is_done()`; `into_recording()`. It does no I/O and doesn't
-  allocate while processing. Tests drive it with a simulated device (a delay plus a known
-  filter), so CI covers it without audio hardware.
-- **Device wrapper.** `play_and_record` runs a `Measurement` inside an `audio-host` duplex
-  stream (`Config::with_input_channels`, `set_input` / `set_output` for device names), waits
-  until it's done, stops the stream and returns the recording. Like `play`, its hardware
-  test is `#[ignore]`d.
-- **Dropouts.** If `status().xruns` is non-zero after the run, return an error instead of a
-  recording with gaps.
-- **Sample rate.** The stream runs at the excitation's sample rate. If the device can't, return
-  the backend's error; don't resample silently.
+- **One stream.** All steps run in one duplex stream, so the device latency is the same for
+  every speaker. Restarting the stream per speaker lets the audio server pick a new latency,
+  which breaks the delay alignment between speakers.
+- **Testable core.** Tests drive `Sequence` with a simulated device (a delay plus a known
+  filter), so CI covers it without audio hardware. The device wrappers' hardware tests are
+  `#[ignore]`d, like `play`'s.
+- **Dropouts.** `play_and_record` returns an error if `status().xruns` is non-zero after the run,
+  instead of a recording with gaps. `LiveSession` reports them through `status()`.
+- **No lost samples in live mode.** The audio thread pushes the inputs into a lock-free queue;
+  `latest` drains it into a ring buffer on the caller's thread.
+- **Sample rate.** All steps must have the same sample rate, and the stream runs at it. If the
+  device can't, return the backend's error; don't resample silently.
 - **Latency.** The cpal backend adds `duplex_latency_ms` (100 ms by default) of input latency.
-  The tail must be longer than that, so `RecordConfig::tail` defaults to 1 s, and the docs say
-  why. With a loopback channel, deconvolving against the recorded reference instead of the
-  excitation removes the latency exactly.
+  `SequenceConfig::tail` defaults to 1 s so it covers that, and the docs say why. For exact
+  latency, record a loopback (an output wired back to an input) as one more input and deconvolve
+  against it.
 
 ### Steps (one stacked PR each)
 
-1. `Measurement` core, plus simulated-device tests (delay, filter, block sizes that don't divide
-   the signal length, multichannel).
-2. `play_and_record` on `audio-host`: device selection, xrun check, ignored hardware test, an
-   example `measure_impulse_response.rs`.
-3. Loopback reference: record it as an extra channel and offer
-   `deconvolve` against it; test that a simulated latency cancels out.
-4. README: replace the faked recording in "Estimating an impulse response" with a real
-   measurement (doc test compiled but not run).
+1. `Sequence` core, plus simulated-device tests (delay, filter, block sizes that don't divide
+   the signal length, several mics, several speakers in one step).
+2. `play_and_record` on `audio-host`: device selection, xrun check, ignored hardware test.
+3. `LiveSession` and `NoiseSource`, plus tests for the input ring buffer.
+4. Examples `measure_impulse_response.rs` and `live_noise.rs`. README: replace the faked recording
+   in "Estimating an impulse response" with a real measurement (doc test compiled but not run).
+
+Moving neodrc to this API is separate work there: it still depends on the old split crates.
 
 ### Open questions
 
 - Should `play_and_record` report the recorded peak level, or warn when it clips (|x| ≥ 1)?
-- Device lookup by exact name only, or also by substring?
 
 ## 2. Room acoustics from an impulse response
 
