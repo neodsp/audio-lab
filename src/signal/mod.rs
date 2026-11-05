@@ -1,5 +1,6 @@
 //! Signal types, test signal generators, file I/O and playback.
 
+pub use audio_blocks;
 pub use ndarray;
 
 pub use blocks::{
@@ -50,6 +51,7 @@ mod blocks;
 pub mod data;
 pub mod fs;
 pub mod math;
+pub mod measure;
 mod ops;
 #[cfg(feature = "playback")]
 pub mod playback;

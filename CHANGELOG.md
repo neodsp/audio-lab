@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `signal::measure::Sequence`: plays signals one after another (or several outputs at once)
+  while recording any number of inputs, driven block by block from any audio host. It is the
+  core for sweep measurements with several speakers and microphones.
+- `signal::audio_blocks`: re-export of `audio-blocks`, whose block types `Sequence` processes.
+
 ## [0.1.0] - 2026-11-04
 
 ### Added
