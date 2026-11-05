@@ -13,8 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while recording any number of inputs, driven block by block from any audio host. It is the
   core for sweep measurements with several speakers and microphones.
 - `signal::playback::play_and_record`: runs a `Sequence` on an audio device in one duplex
-  stream, e.g. a sweep per speaker while several mics record. Fails on dropouts instead of
-  returning a recording with gaps. `DeviceConfig` selects the devices and stream settings.
+  stream, e.g. a sweep per speaker while several mics record. Repeats the measurement on
+  dropouts and ignores those while the device starts up, but never returns a recording with
+  gaps. `DeviceConfig` selects the devices, stream settings, settle time and attempts.
 - Live measurements: `signal::measure::live_channel` records inputs next to a reference signal
   without locks on the audio thread, and `signal::playback::LiveSession` runs it on an audio
   device. `signal::measure::NoiseSource` plays looped pink (or white) noise on several outputs
