@@ -10,8 +10,9 @@ Planned features for `audio-lab`, in order. This file isn't published to crates.
 
 - **Sweep measurements:** play a sweep on each speaker, one after another, while every mic
   records. The result is one impulse response per speaker and mic.
-- **Realtime noise measurements:** play noise on several speakers at the same time and read the
-  mics continuously, e.g. for a live spectrum while tuning a crossover or a sub delay.
+- **Realtime noise measurements:** play pink noise on several speakers at the same time and read
+  the mics continuously, e.g. for a live transfer function while tuning a crossover or a sub
+  delay.
 
 Everything around the measurement exists (sweeps, noise, `deconvolve`,
 `find_impulse_response_start`, `window_and_trim`, smoothing, plots), but the README's
@@ -63,24 +64,42 @@ pub struct DeviceConfig {
     pub duplex_latency_ms: u32,
 }
 
-/// Non-blocking: plays `source` and records the inputs until stopped.
+/// Non-blocking: plays `source` and records the inputs and the reference until stopped.
 pub struct LiveSession { .. }
 impl LiveSession {
+    /// `source` fills the output block and `reference`, one sample per frame: the signal the
+    /// measurement is relative to, before any processing (e.g. the raw noise before a crossover).
     pub fn start(
-        source: impl FnMut(&mut InterleavedViewMut<f32>) + Send + 'static,
+        source: impl FnMut(&mut InterleavedViewMut<f32>, &mut [f32]) + Send + 'static,
         inputs: Vec<u16>,
         sample_rate: f64,
         device: &DeviceConfig,
     ) -> Result<Self, RecordError>;
-    /// The most recent `num_samples` of every input, one channel per input.
-    pub fn latest(&mut self, num_samples: usize) -> TimeSignal;
+    /// The most recent `num_samples` of every input and of the reference, time-aligned.
+    pub fn latest(&mut self, num_samples: usize) -> LiveSnapshot;
     pub fn status(&self) -> StreamStatus;
     pub fn stop(self) -> Result<(), RecordError>;
 }
 
-/// A ready-made `source`: white or pink noise on some outputs, with gain and on/off that can
-/// change while it plays. Wrap it in your own closure to add a crossover or delay.
+pub struct LiveSnapshot {
+    pub inputs: TimeSignal,    // one channel per input
+    pub reference: TimeSignal, // mono
+}
+
+/// A ready-made `source`: noise on some outputs, with gain and on/off that can change while it
+/// plays, and the noise itself as the reference. Pink by default, white is available. Loops a
+/// buffer of `period` samples (default 16384), see "Periodic noise" below. Wrap it in your own
+/// closure to add a crossover or delay.
 pub struct NoiseSource { .. }
+
+// `dsp`
+/// H = Y·X* / (|X|² + ε) per bin, without zero padding, so it is exact for periodic excitation.
+/// A mono `system_input` is used for every channel of `system_output` (one per mic).
+pub fn transfer_function(
+    system_output: &TimeSignal,
+    system_input: &TimeSignal,
+    config: &TransferFunctionConfig,
+) -> Result<FreqSignal, TransferFunctionError>;
 ```
 
 - Several speakers one after another: one `Step` per speaker. Several speakers at once: one
@@ -97,8 +116,23 @@ pub struct NoiseSource { .. }
   `#[ignore]`d, like `play`'s.
 - **Dropouts.** `play_and_record` returns an error if `status().xruns` is non-zero after the run,
   instead of a recording with gaps. `LiveSession` reports them through `status()`.
-- **No lost samples in live mode.** The audio thread pushes the inputs into a lock-free queue;
-  `latest` drains it into a ring buffer on the caller's thread.
+- **No lost samples in live mode.** The audio thread pushes the inputs and the reference into a
+  lock-free queue; `latest` drains it into a ring buffer on the caller's thread.
+- **Pink noise by default.** White noise has most of its power in the treble (+3 dB per octave
+  compared to pink), which stresses tweeters and amplifiers. Pink puts more energy into the
+  bass, where room noise is highest, so the low end gets a better signal-to-noise ratio.
+- **Show the transfer function, not the raw spectrum.** The raw mic spectrum includes the color
+  of the noise: with per-bin or averaging smoothing (`smooth_fractional_octave`, neodrc's
+  `realtime_spectrum`), pink noise slopes down 3 dB per octave on a flat system. Dividing by the
+  reference cancels the excitation and gives the phase too, which crossover and delay tuning
+  need. Because the reference is the raw noise, the result covers the whole chain, including the
+  caller's own processing.
+- **Periodic noise.** `NoiseSource` loops a buffer as long as the analysis. Once the system has
+  settled, every `period` samples of a mic hold one full period, so `transfer_function` over
+  `period` samples is exact without a window. The device latency shows up as a linear phase.
+  This only holds if latency plus the room's impulse response length is shorter than the
+  period: 16384 samples at 48 kHz is 341 ms, enough for a living room with the cpal backend's
+  100 ms. Averaging several periods lowers the noise in the result.
 - **Sample rate.** All steps must have the same sample rate, and the stream runs at it. If the
   device can't, return the backend's error; don't resample silently.
 - **Latency.** The cpal backend adds `duplex_latency_ms` (100 ms by default) of input latency.
@@ -111,7 +145,9 @@ pub struct NoiseSource { .. }
 1. `Sequence` core, plus simulated-device tests (delay, filter, block sizes that don't divide
    the signal length, several mics, several speakers in one step).
 2. `play_and_record` on `audio-host`: device selection, xrun check, ignored hardware test.
-3. `LiveSession` and `NoiseSource`, plus tests for the input ring buffer.
+3. `LiveSession`, `NoiseSource` (pink by default, periodic) and `dsp::transfer_function`, plus
+   tests for the ring buffer, the alignment of inputs and reference, and a transfer function
+   that recovers a simulated delay and filter from periodic pink noise.
 4. Examples `measure_impulse_response.rs` and `live_noise.rs`. README: replace the faked recording
    in "Estimating an impulse response" with a real measurement (doc test compiled but not run).
 
