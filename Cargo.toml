@@ -59,6 +59,14 @@ name = "fractional_octave_smoothing"
 required-features = ["plot"]
 
 [[example]]
+name = "live_noise"
+required-features = ["playback", "plot"]
+
+[[example]]
+name = "measure_impulse_response"
+required-features = ["playback", "plot"]
+
+[[example]]
 name = "octave_filter_bank"
 required-features = ["plot"]
 
