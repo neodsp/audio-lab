@@ -483,6 +483,7 @@ dependencies = [
  "num",
  "realfft",
  "rfd",
+ "rtrb",
  "rubato",
  "serde",
  "serde_json",
