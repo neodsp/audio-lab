@@ -1,10 +1,3 @@
-//! Play signals and record inputs at the same time, for measurements with several microphones.
-//!
-//! [`Sequence`] plays [`Step`]s one after another on one timeline and records every input
-//! during each of them, e.g. a sweep per speaker while all mics record. It is driven block by
-//! block from an audio callback, does no I/O and doesn't allocate while processing, so any
-//! audio host can run it.
-
 use std::time::Duration;
 
 use audio_blocks::{AudioBlock, AudioBlockMut};
@@ -375,67 +368,24 @@ mod tests {
 
     use super::*;
     use crate::dsp::{DeconvolutionConfig, deconvolve};
+    use crate::signal::measure::sim::{Path, SimDevice};
     use crate::signal::{SweepConfig, generate_sweep};
 
     const SAMPLE_RATE: f64 = 48_000.0;
 
-    /// A path from an output to an input: a delay and an FIR filter.
-    #[derive(Clone)]
-    struct Path {
-        output: u16,
-        input: u16,
-        delay: usize,
-        taps: Vec<f64>,
-    }
-
-    impl Path {
-        fn new(output: u16, input: u16, delay: usize, taps: &[f64]) -> Self {
-            Self {
-                output,
-                input,
-                delay,
-                taps: taps.to_vec(),
-            }
-        }
-    }
-
-    /// Runs a sequence on a simulated device. Each input hears the sum of the paths into it.
-    /// Like a real device, the input of a callback only depends on output from earlier
-    /// callbacks, so every delay must be at least the largest block size. `block_sizes` repeats
-    /// until the sequence is done.
+    /// Runs a sequence on a simulated device, see [`SimDevice`]. `block_sizes` repeats until
+    /// the sequence is done.
     fn simulate(mut sequence: Sequence, paths: &[Path], block_sizes: &[usize]) -> Vec<TimeSignal> {
-        let max_block = *block_sizes.iter().max().unwrap();
-        assert!(paths.iter().all(|p| p.delay >= max_block));
-
-        let num_out = sequence.num_output_channels();
-        let num_in = sequence.num_input_channels();
-        let mut played: Vec<Vec<f64>> = vec![Vec::new(); num_out as usize];
+        let mut device = SimDevice::new(
+            paths,
+            sequence.num_input_channels(),
+            sequence.num_output_channels(),
+        );
         let mut sizes = block_sizes.iter().cycle();
-
         while !sequence.is_done() {
-            let n = *sizes.next().unwrap();
-            let start = sequence.position();
-
-            let mut input = Planar::<f32>::new(num_in, n);
-            for path in paths {
-                let history = &played[path.output as usize];
-                for (frame, sample) in input.channel_mut(path.input).iter_mut().enumerate() {
-                    let t = start + frame;
-                    let mut acc = 0.0;
-                    for (k, tap) in path.taps.iter().enumerate() {
-                        if let Some(i) = t.checked_sub(path.delay + k) {
-                            acc += tap * history[i];
-                        }
-                    }
-                    *sample += acc as f32;
-                }
-            }
-
-            let mut output = Interleaved::<f32>::new(num_out, n);
-            sequence.process(&input, &mut output);
-            for (channel, history) in played.iter_mut().enumerate() {
-                history.extend(output.channel_iter(channel as u16).map(|&s| f64::from(s)));
-            }
+            device.callback(*sizes.next().unwrap(), |input, output| {
+                sequence.process(input, output)
+            });
         }
         sequence.into_recordings()
     }
