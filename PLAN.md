@@ -4,7 +4,7 @@ Planned features for `audio-lab`, in order. This file isn't published to crates.
 `include` list in `Cargo.toml` only packages `src/`, `examples/`, `README.md`,
 `CHANGELOG.md` and `LICENSE`.
 
-## 1. Play and record (next)
+## 1. Play and record (in review: stack #30, PRs #26 to #29)
 
 **Goal:** measure real systems from inside the crate, with several microphones at once:
 
@@ -55,7 +55,7 @@ pub fn play_and_record(
     steps: Vec<Step>,
     config: &SequenceConfig,
     device: &DeviceConfig,
-) -> Result<Vec<TimeSignal>, RecordError>;
+) -> Result<Vec<TimeSignal>, PlaybackError>;
 
 pub struct DeviceConfig {
     pub input_device: Option<String>,  // `None` = system default
@@ -71,15 +71,18 @@ impl LiveSession {
     /// measurement is relative to, before any processing (e.g. the raw noise before a crossover).
     pub fn start(
         source: impl FnMut(&mut InterleavedViewMut<f32>, &mut [f32]) + Send + 'static,
-        inputs: Vec<u16>,
-        sample_rate: f64,
+        config: &LiveSessionConfig, // inputs, output channels, sample rate, history
         device: &DeviceConfig,
-    ) -> Result<Self, RecordError>;
+    ) -> Result<Self, PlaybackError>;
     /// The most recent `num_samples` of every input and of the reference, time-aligned.
     pub fn latest(&mut self, num_samples: usize) -> LiveSnapshot;
+    pub fn dropped_frames(&self) -> u64;
     pub fn status(&self) -> StreamStatus;
-    pub fn stop(self) -> Result<(), RecordError>;
+    pub fn stop(self) -> Result<(), PlaybackError>;
 }
+
+// `signal::measure`: the host-independent core of `LiveSession`, like `Sequence`
+pub fn live_channel(config: &LiveConfig) -> Result<(LiveWriter, LiveReader), RecordError>;
 
 pub struct LiveSnapshot {
     pub inputs: TimeSignal,    // one channel per input
