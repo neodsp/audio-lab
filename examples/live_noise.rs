@@ -9,6 +9,9 @@
 //! main speaker around the crossover. Your own processing (a crossover, EQ) goes in the same
 //! place.
 //!
+//! "Hold" keeps the current curves next to the live ones, e.g. to compare delay settings.
+//! Hover a curve to read its level; click its legend entry to hide it.
+//!
 //! ```sh
 //! # speakers on outputs 0 and 1, mics on inputs 0 and 1
 //! cargo run --release --example live_noise -- --outputs 0,1 --inputs 0,1
@@ -24,11 +27,12 @@ use audio_lab::dsp::{
     FractionalOctaveSmoothingConfig, FractionalOctaveSmoothingMode, TransferFunctionConfig,
     smooth_fractional_octave, transfer_function,
 };
+use audio_lab::signal::FreqSignal;
 use audio_lab::signal::audio_blocks::AudioBlockMut;
 use audio_lab::signal::measure::{NoiseControls, NoiseSource, NoiseSourceConfig};
 use audio_lab::signal::playback::{DeviceConfig, LiveSession, LiveSessionConfig};
 use eframe::egui;
-use egui_plot::{Legend, Line, Plot, PlotPoint, PlotPoints};
+use egui_plot::{HoverPosition, Legend, Line, Plot, PlotPoint, PlotPoints};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 /// Length of the looped noise and of each analysis segment: 341 ms at 48 kHz. It must be
@@ -86,7 +90,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         delay_ms: 0.0,
         num_fractions: 6.0,
         num_periods: 4,
+        response: None,
         series: Vec::new(),
+        held: Vec::new(),
+        num_held: 0,
         peak_db: Vec::new(),
         fit_y: true,
     };
@@ -109,7 +116,14 @@ struct LiveNoiseApp {
     num_fractions: f64,
     /// Noise periods averaged per update.
     num_periods: usize,
-    series: Vec<(String, Vec<PlotPoint>)>,
+    /// The latest transfer function, unsmoothed.
+    response: Option<FreqSignal>,
+    /// The latest curve per mic.
+    series: Vec<Series>,
+    /// Curves kept with "Hold".
+    held: Vec<Held>,
+    /// Holds made so far, to number them.
+    num_held: usize,
     /// Recorded peak level per mic.
     peak_db: Vec<f64>,
     /// Fit the magnitude axis to the data on the next frame.
@@ -132,30 +146,83 @@ impl LiveNoiseApp {
         let Ok(response) = transfer_function(&snapshot.inputs, &snapshot.reference, &config) else {
             return;
         };
-        let smoothing = FractionalOctaveSmoothingConfig {
-            num_fractions: self.num_fractions,
-            ..Default::default()
+        self.series = curves(&response, self.num_fractions, None);
+        self.response = Some(response);
+
+        // held curves follow the smoothing slider
+        for held in &mut self.held {
+            if held.num_fractions != self.num_fractions {
+                held.series = curves(&held.response, self.num_fractions, Some(&held.name));
+                held.num_fractions = self.num_fractions;
+            }
         }
-        .with_mode(FractionalOctaveSmoothingMode::MagnitudeZeroPhase);
-        let Ok((response, _)) = smooth_fractional_octave(&response, &smoothing) else {
+    }
+
+    /// Keeps the current curves, named after the hold and the delay setting.
+    fn hold(&mut self) {
+        let Some(response) = self.response.clone() else {
             return;
         };
+        self.num_held += 1;
+        let name = format!("Hold {} (delay {:.1} ms)", self.num_held, self.delay_ms);
+        self.held.push(Held {
+            series: curves(&response, self.num_fractions, Some(&name)),
+            name,
+            response,
+            num_fractions: self.num_fractions,
+        });
+    }
+}
 
-        let freqs = response.freq_bins();
-        self.series = response
-            .channel_iter()
-            .enumerate()
-            .map(|(channel, values)| {
-                let points = freqs
-                    .iter()
-                    .zip(values.iter())
-                    .filter(|&(&f, _)| (20.0..=20_000.0).contains(&f))
-                    .map(|(&f, h)| PlotPoint::new(f.log10(), 20.0 * h.norm().max(1e-12).log10()))
-                    .collect();
-                let label = response.channel_label(channel).unwrap_or("mic").to_string();
-                (label, points)
-            })
-            .collect();
+/// A legend label and the points of one curve.
+type Series = (String, Vec<PlotPoint>);
+
+/// Curves kept with "Hold". Unsmoothed, so the smoothing slider still applies to them.
+struct Held {
+    name: String,
+    response: FreqSignal,
+    series: Vec<Series>,
+    /// The smoothing `series` was made with.
+    num_fractions: f64,
+}
+
+/// One smoothed curve per mic, in dB over log frequency, labeled like the other plots:
+/// `name · mic`.
+fn curves(response: &FreqSignal, num_fractions: f64, name: Option<&str>) -> Vec<Series> {
+    let smoothing = FractionalOctaveSmoothingConfig {
+        num_fractions,
+        ..Default::default()
+    }
+    .with_mode(FractionalOctaveSmoothingMode::MagnitudeZeroPhase);
+    let Ok((response, _)) = smooth_fractional_octave(response, &smoothing) else {
+        return Vec::new();
+    };
+    let freqs = response.freq_bins();
+    response
+        .channel_iter()
+        .enumerate()
+        .map(|(channel, values)| {
+            let points = freqs
+                .iter()
+                .zip(values.iter())
+                .filter(|&(&f, _)| (20.0..=20_000.0).contains(&f))
+                .map(|(&f, h)| PlotPoint::new(f.log10(), 20.0 * h.norm().max(1e-12).log10()))
+                .collect();
+            let mic = response.channel_label(channel).unwrap_or("mic");
+            let label = match name {
+                Some(name) => format!("{name} · {mic}"),
+                None => mic.to_string(),
+            };
+            (label, points)
+        })
+        .collect()
+}
+
+fn format_hz(hz: f64, precision: usize) -> String {
+    if hz >= 1000.0 {
+        format!("{:.*} kHz", precision, hz / 1000.0)
+    } else {
+        format!("{hz:.precision$} Hz")
     }
 }
 
@@ -189,6 +256,14 @@ impl eframe::App for LiveNoiseApp {
                 if ui.button("Fit").clicked() {
                     self.fit_y = true;
                 }
+                let hold = ui.add_enabled(self.response.is_some(), egui::Button::new("Hold"));
+                if hold.on_hover_text("Keep the current curves").clicked() {
+                    self.hold();
+                }
+                let clear = ui.add_enabled(!self.held.is_empty(), egui::Button::new("Clear held"));
+                if clear.clicked() {
+                    self.held.clear();
+                }
             });
             ui.horizontal(|ui| {
                 for (label, peak) in self.series.iter().map(|(l, _)| l).zip(&self.peak_db) {
@@ -218,20 +293,32 @@ impl eframe::App for LiveNoiseApp {
                 .default_y_bounds(-60.0, 20.0)
                 .x_axis_label("Frequency")
                 .y_axis_label("Magnitude (dB)")
-                .x_axis_formatter(|mark, _| {
-                    let hz = 10f64.powf(mark.value);
-                    if hz >= 1000.0 {
-                        format!("{:.0} kHz", hz / 1000.0)
+                .x_axis_formatter(|mark, _| format_hz(10f64.powf(mark.value), 0))
+                // the curve, frequency and level under the mouse
+                .label_formatter(|pos| {
+                    let (name, point) = match pos {
+                        HoverPosition::NearDataPoint {
+                            plot_name,
+                            position,
+                            ..
+                        } => (*plot_name, position),
+                        HoverPosition::Elsewhere { position } => ("", position),
+                    };
+                    let text = format!("{}\n{:.1} dB", format_hz(10f64.powf(point.x), 1), point.y);
+                    Some(if name.is_empty() {
+                        text
                     } else {
-                        format!("{hz:.0} Hz")
-                    }
+                        format!("{name}\n{text}")
+                    })
                 })
                 .legend(Legend::default())
                 .show(ui, |plot_ui| {
+                    let held = self.held.iter().flat_map(|h| &h.series);
                     if self.fit_y && !self.series.is_empty() {
                         let (lo, hi) = self
                             .series
                             .iter()
+                            .chain(held.clone())
                             .flat_map(|(_, points)| points.iter().map(|p| p.y))
                             .fold((f64::MAX, f64::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
                         if lo <= hi {
@@ -239,7 +326,8 @@ impl eframe::App for LiveNoiseApp {
                             self.fit_y = false;
                         }
                     }
-                    for (label, points) in &self.series {
+                    // held first, so the live curves stay on top
+                    for (label, points) in held.chain(&self.series) {
                         plot_ui.line(Line::new(label.clone(), PlotPoints::Borrowed(points)));
                     }
                 });
