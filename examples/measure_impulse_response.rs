@@ -33,8 +33,8 @@ use audio_lab::signal::{SweepConfig, SweepType, TimeSignal, generate_sweep};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const FREQUENCY_RANGE: std::ops::Range<f64> = 20.0..20_000.0;
-/// 2^18 samples, about 5.5 s at 48 kHz. Longer sweeps give more signal-to-noise.
-const SWEEP_LEN: usize = 1 << 18;
+/// 2^16 samples, about 1.4 s at 48 kHz. Longer sweeps give more signal-to-noise.
+const SWEEP_LEN: usize = 1 << 16;
 /// How much of each impulse response to keep, after its start.
 const IR_LENGTH_SECONDS: f64 = 0.5;
 
