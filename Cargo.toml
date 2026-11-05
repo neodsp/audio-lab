@@ -10,7 +10,7 @@ license = "MIT"
 name = "audio-lab"
 repository = "https://github.com/neodsp/audio-lab"
 rust-version = "1.95"
-version = "0.1.0"
+version = "0.1.1"
 
 [dependencies]
 approx = { version = "0.5", features = ["num-complex"] }
@@ -19,15 +19,15 @@ ndarray = { version = "0.17", features = ["approx"] }
 ndarray-rand = "0.16"
 ndrustfft = "0.6"
 num = "0.4"
-realfft = "3.5"
+realfft = "3"
 rtrb = "0.3"
-rubato = "5.0.1"
-thiserror = "2.0"
+rubato = "5"
+thiserror = "2"
 
 audio-file = { version = "0.5", default-features = false, features = [
   "all-codecs",
 ], optional = true }
-audio-host = { version = "0.2.0", default-features = false, features = ["cpal"], optional = true }
+audio-host = { version = "0.2", default-features = false, features = ["cpal"], optional = true }
 ndarray-npy = { version = "0.10", features = ["num-complex-0_4"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 
