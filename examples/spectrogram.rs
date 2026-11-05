@@ -1,3 +1,13 @@
+//! Spectrogram of a mix of test signals.
+//!
+//! Mixes six seconds of an 880 Hz tone with two harmonics, an exponential sweep from 320 Hz to
+//! 16 kHz and repeated bursts of pink noise, computes the STFT (2048-sample Hann window,
+//! 256-sample hop) and shows the spectrogram on a log frequency axis.
+//!
+//! ```sh
+//! cargo run --example spectrogram
+//! ```
+
 use audio_lab::dsp::{StftConfig, WindowFn, stft};
 use audio_lab::plot::{SpectrogramPlotOptions, show_spectrogram};
 use audio_lab::signal::{
