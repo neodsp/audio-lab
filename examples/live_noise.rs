@@ -88,6 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         num_periods: 4,
         series: Vec::new(),
         peak_db: Vec::new(),
+        fit_y: true,
     };
     eframe::run_native(
         "Live transfer function",
@@ -111,6 +112,8 @@ struct LiveNoiseApp {
     series: Vec<(String, Vec<PlotPoint>)>,
     /// Recorded peak level per mic.
     peak_db: Vec<f64>,
+    /// Fit the magnitude axis to the data on the next frame.
+    fit_y: bool,
 }
 
 impl LiveNoiseApp {
@@ -183,6 +186,9 @@ impl eframe::App for LiveNoiseApp {
                         .text("Smoothing (1/N octave)"),
                 );
                 ui.add(egui::Slider::new(&mut self.num_periods, 1..=8).text("Averaged periods"));
+                if ui.button("Fit").clicked() {
+                    self.fit_y = true;
+                }
             });
             ui.horizontal(|ui| {
                 for (label, peak) in self.series.iter().map(|(l, _)| l).zip(&self.peak_db) {
@@ -206,7 +212,10 @@ impl eframe::App for LiveNoiseApp {
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
+            // fixed bounds, so the view doesn't jump with every update; double-click resets
             Plot::new("transfer_function")
+                .default_x_bounds(20f64.log10(), 20_000f64.log10())
+                .default_y_bounds(-60.0, 20.0)
                 .x_axis_label("Frequency")
                 .y_axis_label("Magnitude (dB)")
                 .x_axis_formatter(|mark, _| {
@@ -219,6 +228,17 @@ impl eframe::App for LiveNoiseApp {
                 })
                 .legend(Legend::default())
                 .show(ui, |plot_ui| {
+                    if self.fit_y && !self.series.is_empty() {
+                        let (lo, hi) = self
+                            .series
+                            .iter()
+                            .flat_map(|(_, points)| points.iter().map(|p| p.y))
+                            .fold((f64::MAX, f64::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
+                        if lo <= hi {
+                            plot_ui.set_plot_bounds_y(lo - 6.0..=hi + 6.0);
+                            self.fit_y = false;
+                        }
+                    }
                     for (label, points) in &self.series {
                         plot_ui.line(Line::new(label.clone(), PlotPoints::Borrowed(points)));
                     }
