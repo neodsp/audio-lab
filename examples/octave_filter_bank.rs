@@ -1,5 +1,14 @@
-/// Plot the magnitude responses of a reconstructing octave filter bank applied
-/// to an impulse. Each band appears as a separate channel in the frequency plot.
+//! Octave filter bank applied to an impulse.
+//!
+//! Splits an impulse into octave bands (63 Hz to 16 kHz) with
+//! `reconstructing_fractional_octave_bands` and plots the magnitude response of each band as
+//! its own channel. The bands are linear-phase FIR filters that add up to roughly the
+//! input, delayed by half the filter length. It also prints the band centre frequencies.
+//!
+//! ```sh
+//! cargo run --example octave_filter_bank
+//! ```
+
 use audio_lab::dsp::filter_bank::{OctaveBandsConfig, reconstructing_fractional_octave_bands};
 
 use audio_lab::signal::join_time_signals;
