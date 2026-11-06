@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   device. `signal::measure::NoiseSource` plays looped pink (or white) noise on several outputs
   as the source, with gain and on/off that can change while it plays.
 - `dsp::transfer_function`: the transfer function from a reference to each channel, averaged
-  over segments. Exact for periodic excitation such as `NoiseSource`.
+  over segments. Exact for periodic excitation such as `NoiseSource`. `dsp::coherence` tells
+  per frequency how reliable it is.
 - Examples `measure_impulse_response` (sweeps, several speakers and mics) and `live_noise`
   (live transfer function with pink noise and an adjustable delay). The README's impulse
   response example now records a real measurement.
