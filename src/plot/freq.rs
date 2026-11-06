@@ -1,3 +1,8 @@
+use num::complex::Complex64;
+
+use crate::dsp::{
+    FractionalOctaveSmoothingConfig, FractionalOctaveSmoothingMode, smooth_fractional_octave,
+};
 use crate::signal::FreqSignal;
 use eframe::egui;
 use egui_plot::{GridInput, GridMark, Legend, Line, Plot, PlotPoint, PlotPoints};
@@ -108,10 +113,8 @@ pub(crate) struct FreqSignalPlot {
 impl FreqSignalPlot {
     pub(crate) fn new(signals: &[&FreqSignal], title: &str, options: FreqPlotOptions) -> Self {
         let smoothing = SmoothingControl::new(signals, options);
-        let (series, x_bounds) = match &smoothing {
-            Some(smoothing) => series(&smoothing.signals_to_plot(), options),
-            None => series(signals, options),
-        };
+        let smoothed = smoothing.as_ref().map(SmoothingControl::smoothed);
+        let (series, x_bounds) = series(&plotted(signals, &smoothed), options);
         Self {
             series,
             options,
@@ -122,80 +125,87 @@ impl FreqSignalPlot {
     }
 }
 
+/// `smoothed` if there is a smoothing control, else `signals`.
+fn plotted<'a>(
+    signals: &[&'a FreqSignal],
+    smoothed: &'a Option<Vec<FreqSignal>>,
+) -> Vec<&'a FreqSignal> {
+    match smoothed {
+        Some(smoothed) => smoothed.iter().collect(),
+        None => signals.to_vec(),
+    }
+}
+
 /// A label and points per channel, and the frequency range they cover on the plot's x axis.
 type Series = (Vec<(String, Vec<PlotPoint>)>, Option<(f64, f64)>);
 
 /// The curves of `signals` for `options.value`.
 fn series(signals: &[&FreqSignal], options: FreqPlotOptions) -> Series {
-    {
-        let in_range = |f: f64| {
-            (!options.log_freq || f > 0.0)
-                && options
-                    .freq_range
-                    .is_none_or(|(low, high)| (low..=high).contains(&f))
-        };
-        // on a log axis, magnitudes are drawn at points evenly spaced on the axis, so they look
-        // the same at the low end, where the bins lie far apart, as at the top, where many bins
-        // share a pixel. A phase can't be interpolated across its wraps, so it keeps the bins.
-        let resample = options.log_freq
-            && matches!(options.value, FreqValue::Magnitude | FreqValue::MagnitudeDb);
+    let in_range = |f: f64| {
+        (!options.log_freq || f > 0.0)
+            && options
+                .freq_range
+                .is_none_or(|(low, high)| (low..=high).contains(&f))
+    };
+    // on a log axis, magnitudes are drawn at points evenly spaced on the axis, so they look
+    // the same at the low end, where the bins lie far apart, as at the top, where many bins
+    // share a pixel. A phase can't be interpolated across its wraps, so it keeps the bins.
+    let resample =
+        options.log_freq && matches!(options.value, FreqValue::Magnitude | FreqValue::MagnitudeDb);
 
-        let mut series = Vec::new();
-        let mut shown = (f64::INFINITY, f64::NEG_INFINITY);
-        for (signal_index, signal) in signals.iter().enumerate() {
-            let freq_bins = signal.freq_bins();
-            let derived = match options.value {
-                FreqValue::Magnitude => signal.to_magnitude(),
-                FreqValue::MagnitudeDb => signal.to_magnitude_db(),
-                FreqValue::PhaseRadians | FreqValue::PhaseDegrees => signal.to_phase(),
-            };
-            let display_freqs = resample.then(|| log_spaced(&freq_bins.view(), options.freq_range));
-            let num_channels = signal.num_channels();
-            for channel_index in 0..num_channels {
-                let label = crate::plot::legend::build_channel_label(
-                    signal.channel_label(channel_index),
-                    signal.comment(),
-                    signal_index,
-                    channel_index,
-                    num_channels,
-                );
-                let values: Vec<f64> = derived
-                    .channel(channel_index)
-                    .iter()
-                    .map(|&value| match options.value {
-                        FreqValue::MagnitudeDb => value.max(DB_FLOOR),
-                        FreqValue::PhaseDegrees => value.to_degrees(),
-                        _ => value,
-                    })
-                    .collect();
-                let points: Vec<PlotPoint> = match &display_freqs {
-                    Some(display_freqs) => {
-                        let bin_width = freq_bins.get(1).map_or(1.0, |f| f - freq_bins[0]);
-                        display_freqs
-                            .iter()
-                            .map(|&f| {
-                                let position = (f - freq_bins[0]) / bin_width;
-                                PlotPoint::new(f.log10(), interpolate_monotone(&values, position))
-                            })
-                            .collect()
-                    }
-                    None => freq_bins
+    let mut series = Vec::new();
+    let mut shown = (f64::INFINITY, f64::NEG_INFINITY);
+    for (signal_index, signal) in signals.iter().enumerate() {
+        let freq_bins = signal.freq_bins();
+        let derived = match options.value {
+            FreqValue::Magnitude => signal.to_magnitude(),
+            FreqValue::MagnitudeDb => signal.to_magnitude_db(),
+            FreqValue::PhaseRadians | FreqValue::PhaseDegrees => signal.to_phase(),
+        };
+        let display_freqs = resample.then(|| log_spaced(&freq_bins.view(), options.freq_range));
+        let num_channels = signal.num_channels();
+        for channel_index in 0..num_channels {
+            let label = crate::plot::legend::build_channel_label(
+                signal.channel_label(channel_index),
+                signal.comment(),
+                signal_index,
+                channel_index,
+                num_channels,
+            );
+            let values: Vec<f64> = derived
+                .channel(channel_index)
+                .iter()
+                .map(|&value| match options.value {
+                    FreqValue::MagnitudeDb => value.max(DB_FLOOR),
+                    FreqValue::PhaseDegrees => value.to_degrees(),
+                    _ => value,
+                })
+                .collect();
+            let points: Vec<PlotPoint> = match &display_freqs {
+                Some(display_freqs) => {
+                    let bin_width = freq_bins.get(1).map_or(1.0, |f| f - freq_bins[0]);
+                    display_freqs
                         .iter()
-                        .zip(&values)
-                        .filter(|&(&f, _)| in_range(f))
-                        .map(|(&f, &y)| {
-                            PlotPoint::new(if options.log_freq { f.log10() } else { f }, y)
+                        .map(|&f| {
+                            let position = (f - freq_bins[0]) / bin_width;
+                            PlotPoint::new(f.log10(), interpolate_monotone(&values, position))
                         })
-                        .collect(),
-                };
-                if let (Some(first), Some(last)) = (points.first(), points.last()) {
-                    shown = (shown.0.min(first.x), shown.1.max(last.x));
+                        .collect()
                 }
-                series.push((label, points));
+                None => freq_bins
+                    .iter()
+                    .zip(&values)
+                    .filter(|&(&f, _)| in_range(f))
+                    .map(|(&f, &y)| PlotPoint::new(if options.log_freq { f.log10() } else { f }, y))
+                    .collect(),
+            };
+            if let (Some(first), Some(last)) = (points.first(), points.last()) {
+                shown = (shown.0.min(first.x), shown.1.max(last.x));
             }
+            series.push((label, points));
         }
-        (series, (shown.0 < shown.1).then_some(shown))
     }
+    (series, (shown.0 < shown.1).then_some(shown))
 }
 
 /// The signals as given and the smoothing chosen in the window.
@@ -220,7 +230,8 @@ impl SmoothingControl {
         if !self.enabled {
             return self.signals.clone();
         }
-        let config = |mode| FractionalOctaveSmoothingConfig::new(self.num_fractions).with_mode(mode);
+        let config =
+            |mode| FractionalOctaveSmoothingConfig::new(self.num_fractions).with_mode(mode);
         self.signals
             .iter()
             .map(|signal| {
@@ -228,20 +239,21 @@ impl SmoothingControl {
                     signal,
                     &config(FractionalOctaveSmoothingMode::MagnitudeZeroPhase),
                 );
-                let phase =
-                    smooth_fractional_octave(signal, &config(FractionalOctaveSmoothingMode::Complex));
+                let phase = smooth_fractional_octave(
+                    signal,
+                    &config(FractionalOctaveSmoothingMode::Complex),
+                );
                 let (Ok((magnitude, _)), Ok((mut phase, _))) = (magnitude, phase) else {
                     return signal.clone();
                 };
-                phase.zip_mut_with(&magnitude, |p, m| *p = Complex64::from_polar(m.norm(), p.arg()));
+                phase
+                    .freq_data_mut()
+                    .zip_mut_with(&magnitude.freq_data(), |p, m| {
+                        *p = Complex64::from_polar(m.norm(), p.arg());
+                    });
                 phase
             })
             .collect()
-    }
-
-    fn signals_to_plot(&self) -> Vec<&FreqSignal> {
-        // kept alive by the caller's binding; see `with_smoothed`
-        unreachable!()
     }
 
     /// The checkbox and slider. Returns whether the smoothing changed.
@@ -311,6 +323,12 @@ impl eframe::App for FreqSignalPlot {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::Panel::top("controls").show(ui, |ui| {
             self.save.show_panel(ui);
+            if let Some(smoothing) = &mut self.smoothing
+                && smoothing.show(ui)
+            {
+                let smoothed = smoothing.smoothed();
+                self.series = series(&smoothed.iter().collect::<Vec<_>>(), self.options).0;
+            }
         });
         egui::CentralPanel::default().show(ui, |ui| {
             let value = self.options.value;
@@ -385,44 +403,54 @@ pub(crate) struct MagnitudePhasePlot {
     magnitude: Vec<(String, egui::Color32, Vec<PlotPoint>)>,
     /// Label, color and the pieces between the phase's wraps per channel.
     phase: Vec<(String, egui::Color32, Vec<Vec<PlotPoint>>)>,
-    log_freq: bool,
+    options: FreqPlotOptions,
     x_bounds: Option<(f64, f64)>,
+    smoothing: Option<SmoothingControl>,
     save: SavePlotState,
 }
 
 impl MagnitudePhasePlot {
     pub(crate) fn new(signals: &[&FreqSignal], title: &str, options: FreqPlotOptions) -> Self {
-        let magnitude = FreqSignalPlot::new(
-            signals,
-            title,
-            FreqPlotOptions {
-                value: FreqValue::MagnitudeDb,
-                ..options
-            },
-        );
-        let phase = phase_series(signals, options);
+        let smoothing = SmoothingControl::new(signals, options);
+        let smoothed = smoothing.as_ref().map(SmoothingControl::smoothed);
+        let mut plot = Self {
+            magnitude: Vec::new(),
+            phase: Vec::new(),
+            options,
+            x_bounds: None,
+            smoothing: None,
+            save: SavePlotState::new(title),
+        };
+        plot.x_bounds = plot.set_curves(&plotted(signals, &smoothed));
+        plot.smoothing = smoothing;
+        plot
+    }
+
+    /// Draws `signals` from now on. Returns the frequency range they cover.
+    fn set_curves(&mut self, signals: &[&FreqSignal]) -> Option<(f64, f64)> {
+        let magnitude_options = FreqPlotOptions {
+            value: FreqValue::MagnitudeDb,
+            ..self.options
+        };
+        let (magnitude, x_bounds) = series(signals, magnitude_options);
+        let phase = phase_series(signals, self.options);
         // the same color for a channel in both plots
         let color = |index: usize| {
             let golden_ratio = (5f32.sqrt() - 1.0) / 2.0;
             egui::epaint::Hsva::new(index as f32 * golden_ratio, 0.85, 0.5, 1.0).into()
         };
-        Self {
-            phase: phase
-                .into_iter()
-                .zip(&magnitude.series)
-                .enumerate()
-                .map(|(index, (pieces, (label, _)))| (label.clone(), color(index), pieces))
-                .collect(),
-            magnitude: magnitude
-                .series
-                .into_iter()
-                .enumerate()
-                .map(|(index, (label, points))| (label, color(index), points))
-                .collect(),
-            log_freq: options.log_freq,
-            x_bounds: magnitude.x_bounds,
-            save: SavePlotState::new(title),
-        }
+        self.phase = phase
+            .into_iter()
+            .zip(&magnitude)
+            .enumerate()
+            .map(|(index, (pieces, (label, _)))| (label.clone(), color(index), pieces))
+            .collect();
+        self.magnitude = magnitude
+            .into_iter()
+            .enumerate()
+            .map(|(index, (label, points))| (label, color(index), points))
+            .collect();
+        x_bounds
     }
 }
 
@@ -495,6 +523,12 @@ impl eframe::App for MagnitudePhasePlot {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::Panel::top("controls").show(ui, |ui| {
             self.save.show_panel(ui);
+            if let Some(smoothing) = &mut self.smoothing
+                && smoothing.show(ui)
+            {
+                let smoothed = smoothing.smoothed();
+                self.set_curves(&smoothed.iter().collect::<Vec<_>>());
+            }
         });
         egui::CentralPanel::default().show(ui, |ui| {
             let link = egui::Id::unique("audio_lab_magnitude_phase");
@@ -518,21 +552,21 @@ impl eframe::App for MagnitudePhasePlot {
                 .allow_boxed_zoom(false)
                 .y_grid_spacer(egui_plot::uniform_grid_spacer(|_| [15.0, 45.0, 90.0]))
                 .y_axis_formatter(|mark, _| format!("{:.0}°", mark.value));
-            frequency_axis(phase, self.log_freq, self.x_bounds, |y| format!("{y:.1}°")).show(
-                ui,
-                |plot_ui| {
-                    plot_ui.set_plot_bounds_y(-180.0..=180.0);
-                    for (label, color, pieces) in &self.phase {
-                        if hidden.contains(&egui_plot::ItemId::new(label)) {
-                            continue;
-                        }
-                        for piece in pieces.iter().filter(|piece| piece.len() > 1) {
-                            let line = Line::new(label, PlotPoints::Borrowed(piece));
-                            plot_ui.line(line.color(*color));
-                        }
+            frequency_axis(phase, self.options.log_freq, self.x_bounds, |y| {
+                format!("{y:.1}°")
+            })
+            .show(ui, |plot_ui| {
+                plot_ui.set_plot_bounds_y(-180.0..=180.0);
+                for (label, color, pieces) in &self.phase {
+                    if hidden.contains(&egui_plot::ItemId::new(label)) {
+                        continue;
                     }
-                },
-            );
+                    for piece in pieces.iter().filter(|piece| piece.len() > 1) {
+                        let line = Line::new(label, PlotPoints::Borrowed(piece));
+                        plot_ui.line(line.color(*color));
+                    }
+                }
+            });
 
             let magnitude = Plot::new("magnitude")
                 .id(magnitude_id)
@@ -541,7 +575,7 @@ impl eframe::App for MagnitudePhasePlot {
                 .link_axis(link, [true, false])
                 .link_cursor(link, [true, false])
                 .legend(Legend::default());
-            frequency_axis(magnitude, self.log_freq, self.x_bounds, |y| {
+            frequency_axis(magnitude, self.options.log_freq, self.x_bounds, |y| {
                 FreqValue::MagnitudeDb.format_y(y)
             })
             .show(ui, |plot_ui| {
@@ -685,6 +719,28 @@ mod tests {
             assert_eq!(m_color, p_color);
         }
         assert_ne!(plot.magnitude[0].1, plot.magnitude[1].1);
+    }
+
+    #[test]
+    fn smoothing_control_smooths_and_switches_off() {
+        let mut signal = make_signal();
+        signal.set_comment(Some("sines"));
+        let options = FreqPlotOptions {
+            smoothing: Some(3.0),
+            ..Default::default()
+        };
+        assert!(SmoothingControl::new(&[&signal], FreqPlotOptions::default()).is_none());
+        let mut control = SmoothingControl::new(&[&signal], options).unwrap();
+
+        let smoothed = control.smoothed();
+        assert_eq!(smoothed[0].comment(), Some("sines"));
+        assert_eq!(smoothed[0].num_freq_bins(), signal.num_freq_bins());
+        // the sine's peak gets spread over its neighbors
+        let peak = |s: &FreqSignal| s.channel(0).iter().map(|c| c.norm()).fold(0.0, f64::max);
+        assert!(peak(&smoothed[0]) < 0.5 * peak(&signal));
+
+        control.enabled = false;
+        assert_eq!(control.smoothed()[0], signal);
     }
 
     #[test]
