@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `plot::freq::FreqPlotOptions::freq_range` limits a frequency plot to a range.
 - `plot::show_magnitude_and_phase`: magnitude and phase in one window, phase on top, zooming
   together, the phase wrapped to ±180°. `measure_impulse_response` uses it.
+- `plot::freq::FreqPlotOptions::smoothing` adds adjustable fractional-octave smoothing to a
+  frequency plot window.
 
 ### Changed
 
