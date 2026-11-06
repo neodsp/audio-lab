@@ -16,8 +16,8 @@
 //! shows up in the phase.
 //!
 //! Where the coherence is low, i.e. the result changes from one noise period to the next
-//! because room noise or distortion dominates, the phase is hidden and the magnitude faded.
-//! "Min. coherence" sets the limit.
+//! because room noise or distortion dominates, the curves are hidden. "Min. coherence" sets the
+//! limit; 0 shows everything.
 //!
 //! "Hold" keeps the current curves next to the live ones, e.g. to compare delay settings.
 //! Hover a curve to read its value; click its legend entry to hide it in both plots.
@@ -44,8 +44,8 @@ use audio_lab::signal::measure::{NoiseControls, NoiseSource, NoiseSourceConfig};
 use audio_lab::signal::playback::{DeviceConfig, LiveSession, LiveSessionConfig};
 use eframe::egui;
 use egui_plot::{
-    ColorConflictHandling, HoverPosition, ItemId, Legend, Line, Plot, PlotMemory, PlotPoint,
-    PlotPoints, uniform_grid_spacer,
+    HoverPosition, ItemId, Legend, Line, Plot, PlotMemory, PlotPoint, PlotPoints,
+    uniform_grid_spacer,
 };
 use num::complex::Complex64;
 
@@ -223,8 +223,8 @@ impl LiveNoiseApp {
 struct Curve {
     label: String,
     color: egui::Color32,
-    /// Pieces of the magnitude, and whether their coherence is high enough to trust.
-    magnitude: Vec<(bool, Vec<PlotPoint>)>,
+    /// Pieces of the magnitude where the coherence is high enough.
+    magnitude: Vec<Vec<PlotPoint>>,
     /// Pieces of the phase where the coherence is high enough, split at the wraps so a wrap
     /// from -180° to 180° is not drawn as a line across the plot.
     phase: Vec<Vec<PlotPoint>>,
@@ -308,38 +308,49 @@ fn curves(
         return Vec::new();
     };
 
-    let in_range = |f: &f64| (20.0..=20_000.0).contains(f);
+    // the curves are drawn at points evenly spaced on the log axis, read from the bins with
+    // smooth interpolation, so they look the same at the low end, where the bins lie far apart,
+    // as at the top, where many bins share a pixel
+    let bin_width = response.sample_rate() / response.num_time_steps() as f64;
+    let display_freqs = display_frequencies();
     (0..response.num_channels())
         .map(|channel| {
-            let bins = || {
-                freqs
-                    .iter()
-                    .zip(coherence.channel(channel))
-                    .enumerate()
-                    .filter(|(_, (f, _))| in_range(f))
-                    .map(|(bin, (&f, c))| (bin, f.log10(), c.re >= settings.min_coherence))
-            };
+            let magnitude_db: Vec<f64> = magnitude
+                .channel(channel)
+                .iter()
+                .map(|h| 20.0 * h.norm().max(1e-12).log10())
+                .collect();
+            let coherence: Vec<f64> = coherence.channel(channel).iter().map(|c| c.re).collect();
+            let phase_re: Vec<f64> = phase.channel(channel).iter().map(|h| h.re).collect();
+            let phase_im: Vec<f64> = phase.channel(channel).iter().map(|h| h.im).collect();
+            let points = display_freqs.iter().map(|&f| {
+                let bin = f / bin_width;
+                let good = interpolate(&coherence, bin) >= settings.min_coherence;
+                let phase = interpolate(&phase_im, bin).atan2(interpolate(&phase_re, bin));
+                (
+                    f.log10(),
+                    interpolate(&magnitude_db, bin),
+                    phase.to_degrees(),
+                    good,
+                )
+            });
 
-            // trusted and faded pieces, sharing their end points so the line stays connected
-            let mut magnitude_pieces: Vec<(bool, Vec<PlotPoint>)> = Vec::new();
-            for (bin, x, good) in bins() {
-                let h = magnitude.channel(channel)[bin];
-                let point = PlotPoint::new(x, 20.0 * h.norm().max(1e-12).log10());
-                match magnitude_pieces.last_mut() {
-                    Some((piece_good, piece)) if *piece_good == good => piece.push(point),
-                    last => {
-                        let start = last.and_then(|(_, piece)| piece.last().copied());
-                        magnitude_pieces.push((good, start.into_iter().chain([point]).collect()));
-                    }
+            // only where it is trusted
+            let mut magnitude_pieces = vec![Vec::new()];
+            for (x, db, _, good) in points.clone() {
+                if good {
+                    magnitude_pieces
+                        .last_mut()
+                        .unwrap()
+                        .push(PlotPoint::new(x, db));
+                } else if !magnitude_pieces.last().unwrap().is_empty() {
+                    magnitude_pieces.push(Vec::new());
                 }
             }
-
-            // the phase only where it is trusted
             let mut phase_pieces = Vec::new();
             let mut run = Vec::new();
-            for (bin, x, good) in bins() {
+            for (x, _, degrees, good) in points {
                 if good {
-                    let degrees = phase.channel(channel)[bin].arg().to_degrees();
                     run.push(PlotPoint::new(x, degrees));
                 } else if !run.is_empty() {
                     phase_pieces.extend(split_at_wraps(std::mem::take(&mut run).into_iter()));
@@ -359,6 +370,42 @@ fn curves(
             }
         })
         .collect()
+}
+
+/// Frequencies the curves are drawn at: 96 per octave from 20 Hz to 20 kHz, fine enough for the
+/// narrowest smoothing (1/48 octave).
+fn display_frequencies() -> Vec<f64> {
+    const PER_OCTAVE: f64 = 96.0;
+    let num_points = (PER_OCTAVE * (20_000f64 / 20.0).log2()).ceil() as usize + 1;
+    (0..num_points)
+        .map(|i| (20.0 * 2f64.powf(i as f64 / PER_OCTAVE)).min(20_000.0))
+        .collect()
+}
+
+/// `values` at the fractional index `position`, by monotone cubic interpolation: a smooth
+/// curve through the values that never goes above or below its neighbors, so sparse points
+/// don't turn into lobes and notches that weren't measured.
+fn interpolate(values: &[f64], position: f64) -> f64 {
+    let last = values.len() - 1;
+    let index = (position.max(0.0).floor() as usize).min(last);
+    let t = (position - index as f64).clamp(0.0, 1.0);
+    let at = |i: isize| values[i.clamp(0, last as isize) as usize];
+    let i = index as isize;
+    let (p0, p1, p2, p3) = (at(i - 1), at(i), at(i + 1), at(i + 2));
+    // slopes at both ends: flat at a peak or dip, else the harmonic mean of the neighbors
+    let slope = |before: f64, after: f64| {
+        if before * after <= 0.0 {
+            0.0
+        } else {
+            2.0 / (1.0 / before + 1.0 / after)
+        }
+    };
+    let (m1, m2) = (slope(p1 - p0, p2 - p1), slope(p2 - p1, p3 - p2));
+    let (t2, t3) = (t * t, t * t * t);
+    (2.0 * t3 - 3.0 * t2 + 1.0) * p1
+        + (t3 - 2.0 * t2 + t) * m1
+        + (3.0 * t2 - 2.0 * t3) * p2
+        + (t3 - t2) * m2
 }
 
 /// Splits a wrapped phase into pieces that each run to the edge where the phase wraps and
@@ -463,7 +510,7 @@ impl eframe::App for LiveNoiseApp {
                 let coherence =
                     egui::Slider::new(&mut self.min_coherence, 0.0..=1.0).text("Min. coherence");
                 ui.add(coherence).on_hover_text(
-                    "Hides the phase and fades the magnitude where the result changes from one \
+                    "Hides the curves where the result changes from one \
                      noise period to the next, e.g. room noise. Needs at least 2 averaged \
                      periods; with n periods pure noise reads about 1/n.",
                 );
@@ -562,13 +609,13 @@ impl eframe::App for LiveNoiseApp {
                 .x_axis_label("Frequency")
                 .y_axis_label("Magnitude (dB)")
                 .label_formatter(|pos| hover_label(pos, "dB"))
-                // a curve's faded pieces must not take the color out of its legend entry
-                .legend(Legend::default().color_conflict_handling(ColorConflictHandling::PickFirst))
+                .legend(Legend::default())
                 .show(ui, |plot_ui| {
-                    if self.fit_y && !self.curves.is_empty() {
+                    // fit once there is something to fit
+                    if self.fit_y {
                         let (lo, hi) = all_curves()
                             .flat_map(|curve| &curve.magnitude)
-                            .flat_map(|(_, piece)| piece.iter().map(|p| p.y))
+                            .flat_map(|piece| piece.iter().map(|p| p.y))
                             .fold((f64::MAX, f64::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
                         if lo <= hi {
                             plot_ui.set_plot_bounds_y(lo - 6.0..=hi + 6.0);
@@ -576,17 +623,9 @@ impl eframe::App for LiveNoiseApp {
                         }
                     }
                     for curve in all_curves() {
-                        // trusted pieces first: the legend takes the first piece's color
-                        let mut pieces: Vec<_> = curve.magnitude.iter().collect();
-                        pieces.sort_by_key(|(good, _)| !good);
-                        for (good, piece) in pieces {
-                            let color = if *good {
-                                curve.color
-                            } else {
-                                curve.color.gamma_multiply(0.3)
-                            };
+                        for piece in curve.magnitude.iter().filter(|piece| piece.len() > 1) {
                             let line = Line::new(&curve.label, PlotPoints::Borrowed(piece));
-                            plot_ui.line(line.color(color));
+                            plot_ui.line(line.color(curve.color));
                         }
                     }
                 });
