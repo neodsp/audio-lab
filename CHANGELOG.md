@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `FractionalOctaveSmoothingMode::Complex`: smooths the real and imaginary parts, so the phase
   is smoothed too.
 - `signal::audio_blocks`: re-export of `audio-blocks`, whose block types `Sequence` processes.
+- `plot::freq::FreqPlotOptions::freq_range` limits a frequency plot to a range.
+
+### Changed
+
+- Frequency plots on a log axis draw magnitudes at points evenly spaced on the axis, with an
+  interpolation that doesn't overshoot, so the low end looks as smooth as the top. They start
+  zoomed to the data instead of adding margins.
 
 ## [0.1.0] - 2026-11-04
 

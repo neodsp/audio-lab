@@ -27,6 +27,7 @@ use audio_lab::dsp::{
     DeconvolutionConfig, FractionalOctaveSmoothingConfig, FractionalOctaveSmoothingMode,
     deconvolve, smooth_fractional_octave, window_and_trim,
 };
+use audio_lab::plot::freq::{FreqPlotOptions, show_freq_with_options};
 use audio_lab::signal::measure::{SequenceConfig, Step};
 use audio_lab::signal::playback::{DeviceConfig, play_and_record};
 use audio_lab::signal::{SweepConfig, SweepType, TimeSignal, generate_sweep};
@@ -120,7 +121,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("no impulse response found, check the routing and levels".into());
     }
     let responses: Vec<_> = responses.iter().collect();
-    audio_lab::plot::show_freq("Frequency responses (1/3 octave)", &responses)?;
+    // only the range the sweep covered: outside it there is nothing to measure
+    let options = FreqPlotOptions {
+        freq_range: Some((FREQUENCY_RANGE.start, FREQUENCY_RANGE.end)),
+        ..Default::default()
+    };
+    show_freq_with_options("Frequency responses (1/3 octave)", &responses, options)?;
     Ok(())
 }
 
