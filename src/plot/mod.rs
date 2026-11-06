@@ -8,7 +8,7 @@ pub mod spectrogram;
 pub mod time;
 
 pub use data::show_real_data;
-pub use freq::show_freq;
+pub use freq::{show_freq, show_magnitude_and_phase};
 pub use spectrogram::{SpectrogramPlotOptions, show_spectrogram};
 pub use time::{TimePlotOptions, TimeValue, show_time};
 

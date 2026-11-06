@@ -3,7 +3,9 @@
 //! Every speaker plays a sweep, one after another, while all microphones record. All of it runs
 //! in one audio stream, so the device latency is the same for every speaker and the delays
 //! between them stay comparable. The result is one impulse response per speaker and mic: the
-//! example prints where each one starts and plots the smoothed frequency responses.
+//! example prints where each one starts and plots the smoothed frequency responses, magnitude
+//! and phase. Each phase is relative to the peak of its impulse response, so the delays are taken
+//! out; compare them with the printed start times.
 //!
 //! ```sh
 //! # speakers on outputs 0 and 1, mics on inputs 0 and 1
@@ -21,16 +23,18 @@
 //! printed start times are only meaningful relative to each other. Wire an output back to an
 //! input and measure it as one more speaker to get the latency itself.
 
+use std::f64::consts::TAU;
 use std::time::Duration;
 
 use audio_lab::dsp::{
     DeconvolutionConfig, FractionalOctaveSmoothingConfig, FractionalOctaveSmoothingMode,
     deconvolve, smooth_fractional_octave, window_and_trim,
 };
-use audio_lab::plot::freq::{FreqPlotOptions, show_freq_with_options};
+use audio_lab::plot::freq::{FreqPlotOptions, show_magnitude_and_phase};
 use audio_lab::signal::measure::{SequenceConfig, Step};
 use audio_lab::signal::playback::{DeviceConfig, play_and_record};
-use audio_lab::signal::{SweepConfig, SweepType, TimeSignal, generate_sweep};
+use audio_lab::signal::{FreqSignal, SweepConfig, SweepType, TimeSignal, generate_sweep};
+use num::complex::Complex64;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const FREQUENCY_RANGE: std::ops::Range<f64> = 20.0..20_000.0;
@@ -83,8 +87,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let recordings = play_and_record(steps, &config, &device)?;
 
     let deconvolution = DeconvolutionConfig::default().with_frequency_range(FREQUENCY_RANGE);
-    let smoothing = FractionalOctaveSmoothingConfig::default()
-        .with_mode(FractionalOctaveSmoothingMode::MagnitudeZeroPhase);
     let mut responses = Vec::new();
 
     println!("\nspeaker  mic  peak (dBFS)  IR start (ms)");
@@ -111,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 starts[0] as f64 / SAMPLE_RATE * 1000.0
             );
 
-            let (mut response, _) = smooth_fractional_octave(&ir.into_freq(), &smoothing)?;
+            let mut response = smoothed_response(&ir)?;
             response.set_comment(Some(&label));
             responses.push(response);
         }
@@ -126,8 +128,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         freq_range: Some((FREQUENCY_RANGE.start, FREQUENCY_RANGE.end)),
         ..Default::default()
     };
-    show_freq_with_options("Frequency responses (1/3 octave)", &responses, options)?;
+    show_magnitude_and_phase("Frequency responses (1/3 octave)", &responses, options)?;
     Ok(())
+}
+
+/// The frequency response of `ir`, smoothed to 1/3 octave, with the phase relative to the
+/// impulse response's peak: the delay up to it would turn the phase so quickly that it wraps
+/// every few Hz. The magnitude is smoothed on its own, the phase as complex values.
+fn smoothed_response(ir: &TimeSignal) -> Result<FreqSignal, Box<dyn std::error::Error>> {
+    let peak = ir
+        .channel(0)
+        .iter()
+        .enumerate()
+        .fold(
+            (0, 0.0),
+            |best, (i, s)| if s.abs() > best.1 { (i, s.abs()) } else { best },
+        )
+        .0;
+    let mut response = ir.to_freq();
+    let freqs = response.freq_bins().to_owned();
+    for (h, f) in response.channel_mut(0).iter_mut().zip(freqs) {
+        *h *= Complex64::from_polar(1.0, TAU * f * peak as f64 / SAMPLE_RATE);
+    }
+
+    let smoothing = |mode| FractionalOctaveSmoothingConfig::default().with_mode(mode);
+    let (magnitude, _) = smooth_fractional_octave(
+        &response,
+        &smoothing(FractionalOctaveSmoothingMode::MagnitudeZeroPhase),
+    )?;
+    let (phase, _) = smooth_fractional_octave(
+        &response,
+        &smoothing(FractionalOctaveSmoothingMode::Complex),
+    )?;
+    for ((h, m), p) in response
+        .channel_mut(0)
+        .iter_mut()
+        .zip(magnitude.channel(0))
+        .zip(phase.channel(0))
+    {
+        *h = Complex64::from_polar(m.norm(), p.arg());
+    }
+    Ok(response)
 }
 
 /// One channel of `signal` as a mono signal.

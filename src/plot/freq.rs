@@ -22,6 +22,10 @@ pub struct FreqPlotOptions {
     /// Only show this range in Hz, e.g. the range a sweep covered. `None` for everything above
     /// 0 Hz (on a log axis) up to half the sample rate.
     pub freq_range: Option<(f64, f64)>,
+    /// Fractional-octave smoothing to start with, `Some(3.0)` for 1/3 octave. With `Some`, the
+    /// window has controls to change it or switch it off, and smooths the signals itself: pass
+    /// them unsmoothed. The magnitude is smoothed on its own, the phase as complex values.
+    pub smoothing: Option<f64>,
 }
 
 impl Default for FreqPlotOptions {
@@ -30,6 +34,7 @@ impl Default for FreqPlotOptions {
             log_freq: true,
             value: FreqValue::MagnitudeDb,
             freq_range: None,
+            smoothing: None,
         }
     }
 }
@@ -96,11 +101,33 @@ pub(crate) struct FreqSignalPlot {
     options: FreqPlotOptions,
     /// The frequency range shown at the start and after a double-click, on the plot's x axis.
     x_bounds: Option<(f64, f64)>,
+    smoothing: Option<SmoothingControl>,
     save: SavePlotState,
 }
 
 impl FreqSignalPlot {
     pub(crate) fn new(signals: &[&FreqSignal], title: &str, options: FreqPlotOptions) -> Self {
+        let smoothing = SmoothingControl::new(signals, options);
+        let (series, x_bounds) = match &smoothing {
+            Some(smoothing) => series(&smoothing.signals_to_plot(), options),
+            None => series(signals, options),
+        };
+        Self {
+            series,
+            options,
+            x_bounds,
+            smoothing,
+            save: SavePlotState::new(title),
+        }
+    }
+}
+
+/// A label and points per channel, and the frequency range they cover on the plot's x axis.
+type Series = (Vec<(String, Vec<PlotPoint>)>, Option<(f64, f64)>);
+
+/// The curves of `signals` for `options.value`.
+fn series(signals: &[&FreqSignal], options: FreqPlotOptions) -> Series {
+    {
         let in_range = |f: f64| {
             (!options.log_freq || f > 0.0)
                 && options
@@ -167,12 +194,67 @@ impl FreqSignalPlot {
                 series.push((label, points));
             }
         }
-        Self {
-            series,
-            options,
-            x_bounds: (shown.0 < shown.1).then_some(shown),
-            save: SavePlotState::new(title),
+        (series, (shown.0 < shown.1).then_some(shown))
+    }
+}
+
+/// The signals as given and the smoothing chosen in the window.
+struct SmoothingControl {
+    signals: Vec<FreqSignal>,
+    enabled: bool,
+    num_fractions: f64,
+}
+
+impl SmoothingControl {
+    /// `None` without `options.smoothing`: then the window has no smoothing controls.
+    fn new(signals: &[&FreqSignal], options: FreqPlotOptions) -> Option<Self> {
+        options.smoothing.map(|num_fractions| Self {
+            signals: signals.iter().map(|&signal| signal.clone()).collect(),
+            enabled: true,
+            num_fractions,
+        })
+    }
+
+    /// The signals with the chosen smoothing. A signal too short for it stays as it is.
+    fn smoothed(&self) -> Vec<FreqSignal> {
+        if !self.enabled {
+            return self.signals.clone();
         }
+        let config = |mode| FractionalOctaveSmoothingConfig::new(self.num_fractions).with_mode(mode);
+        self.signals
+            .iter()
+            .map(|signal| {
+                let magnitude = smooth_fractional_octave(
+                    signal,
+                    &config(FractionalOctaveSmoothingMode::MagnitudeZeroPhase),
+                );
+                let phase =
+                    smooth_fractional_octave(signal, &config(FractionalOctaveSmoothingMode::Complex));
+                let (Ok((magnitude, _)), Ok((mut phase, _))) = (magnitude, phase) else {
+                    return signal.clone();
+                };
+                phase.zip_mut_with(&magnitude, |p, m| *p = Complex64::from_polar(m.norm(), p.arg()));
+                phase
+            })
+            .collect()
+    }
+
+    fn signals_to_plot(&self) -> Vec<&FreqSignal> {
+        // kept alive by the caller's binding; see `with_smoothed`
+        unreachable!()
+    }
+
+    /// The checkbox and slider. Returns whether the smoothing changed.
+    fn show(&mut self, ui: &mut egui::Ui) -> bool {
+        ui.horizontal(|ui| {
+            let enabled = ui.checkbox(&mut self.enabled, "Smoothing").changed();
+            let slider = egui::Slider::new(&mut self.num_fractions, 1.0..=48.0)
+                .text("1/N octave")
+                .logarithmic(true);
+            let fractions = ui.add_enabled(self.enabled, slider).changed();
+            enabled || fractions
+        })
+        .inner
     }
 }
 
@@ -231,51 +313,14 @@ impl eframe::App for FreqSignalPlot {
             self.save.show_panel(ui);
         });
         egui::CentralPanel::default().show(ui, |ui| {
-            let mut plot = Plot::new("freq_signal")
+            let value = self.options.value;
+            let plot = Plot::new("freq_signal")
                 .x_axis_label("Frequency (Hz)")
-                .y_axis_label(self.options.value.y_label())
+                .y_axis_label(value.y_label())
                 .legend(Legend::default());
-            // exactly the data, without the margins auto-fitting adds
-            if let Some((low, high)) = self.x_bounds {
-                plot = plot.default_x_bounds(low, high);
-            }
-
-            if self.options.log_freq {
-                let value = self.options.value;
-                plot = plot
-                    .x_grid_spacer(spectrum_grid_spacer)
-                    .x_axis_formatter(|mark, _range| {
-                        let hz = 10f64.powf(mark.value);
-                        if hz >= 1000.0 {
-                            format!("{:.0} kHz", hz / 1000.0)
-                        } else {
-                            format!("{hz:.0} Hz")
-                        }
-                    })
-                    .label_formatter(move |pos| {
-                        let (name, point) = match pos {
-                            egui_plot::HoverPosition::NearDataPoint {
-                                plot_name,
-                                position,
-                                ..
-                            } => (*plot_name, position),
-                            egui_plot::HoverPosition::Elsewhere { position } => ("", position),
-                        };
-                        let hz = 10f64.powf(point.x);
-                        let freq_str = if hz >= 1000.0 {
-                            format!("{:.1} kHz", hz / 1000.0)
-                        } else {
-                            format!("{hz:.1} Hz")
-                        };
-                        let y_str = value.format_y(point.y);
-                        Some(if name.is_empty() {
-                            format!("{freq_str}\n{y_str}")
-                        } else {
-                            format!("{name}\n{freq_str}\n{y_str}")
-                        })
-                    });
-            }
-
+            let plot = frequency_axis(plot, self.options.log_freq, self.x_bounds, move |y| {
+                value.format_y(y)
+            });
             plot.show(ui, |plot_ui| {
                 for (label, points) in &self.series {
                     plot_ui.line(Line::new(label.clone(), PlotPoints::Borrowed(points)));
@@ -284,6 +329,248 @@ impl eframe::App for FreqSignalPlot {
         });
         self.save.handle_screenshot(ui.ctx());
     }
+}
+
+/// Sets up the frequency axis of `plot`: the range shown at the start and after a
+/// double-click, and on a log axis the grid, the tick labels in Hz and the readout under the
+/// mouse, with `format_y` for the value.
+fn frequency_axis<'a>(
+    mut plot: Plot<'a>,
+    log_freq: bool,
+    x_bounds: Option<(f64, f64)>,
+    format_y: impl Fn(f64) -> String + 'a,
+) -> Plot<'a> {
+    // exactly the data, without the margins auto-fitting adds
+    if let Some((low, high)) = x_bounds {
+        plot = plot.default_x_bounds(low, high);
+    }
+    if !log_freq {
+        return plot;
+    }
+    let format_hz = |hz: f64, decimals: usize| {
+        if hz >= 1000.0 {
+            format!("{:.*} kHz", decimals, hz / 1000.0)
+        } else {
+            format!("{hz:.decimals$} Hz")
+        }
+    };
+    plot.x_grid_spacer(spectrum_grid_spacer)
+        .x_axis_formatter(move |mark, _range| format_hz(10f64.powf(mark.value), 0))
+        .label_formatter(move |pos| {
+            let (name, point) = match pos {
+                egui_plot::HoverPosition::NearDataPoint {
+                    plot_name,
+                    position,
+                    ..
+                } => (*plot_name, position),
+                egui_plot::HoverPosition::Elsewhere { position } => ("", position),
+            };
+            let text = format!(
+                "{}\n{}",
+                format_hz(10f64.powf(point.x), 1),
+                format_y(point.y)
+            );
+            Some(if name.is_empty() {
+                text
+            } else {
+                format!("{name}\n{text}")
+            })
+        })
+}
+
+/// Magnitude and phase of the same signals in two plots, phase on top, like a measurement
+/// program shows a transfer function.
+pub(crate) struct MagnitudePhasePlot {
+    /// Label, color and points per channel.
+    magnitude: Vec<(String, egui::Color32, Vec<PlotPoint>)>,
+    /// Label, color and the pieces between the phase's wraps per channel.
+    phase: Vec<(String, egui::Color32, Vec<Vec<PlotPoint>>)>,
+    log_freq: bool,
+    x_bounds: Option<(f64, f64)>,
+    save: SavePlotState,
+}
+
+impl MagnitudePhasePlot {
+    pub(crate) fn new(signals: &[&FreqSignal], title: &str, options: FreqPlotOptions) -> Self {
+        let magnitude = FreqSignalPlot::new(
+            signals,
+            title,
+            FreqPlotOptions {
+                value: FreqValue::MagnitudeDb,
+                ..options
+            },
+        );
+        let phase = phase_series(signals, options);
+        // the same color for a channel in both plots
+        let color = |index: usize| {
+            let golden_ratio = (5f32.sqrt() - 1.0) / 2.0;
+            egui::epaint::Hsva::new(index as f32 * golden_ratio, 0.85, 0.5, 1.0).into()
+        };
+        Self {
+            phase: phase
+                .into_iter()
+                .zip(&magnitude.series)
+                .enumerate()
+                .map(|(index, (pieces, (label, _)))| (label.clone(), color(index), pieces))
+                .collect(),
+            magnitude: magnitude
+                .series
+                .into_iter()
+                .enumerate()
+                .map(|(index, (label, points))| (label, color(index), points))
+                .collect(),
+            log_freq: options.log_freq,
+            x_bounds: magnitude.x_bounds,
+            save: SavePlotState::new(title),
+        }
+    }
+}
+
+/// The phase in degrees of every channel, wrapped to ±180° and split into pieces at the wraps.
+/// On a log axis it is drawn at evenly spaced points like the magnitude, interpolated as
+/// complex values so the wraps don't get in the way.
+fn phase_series(signals: &[&FreqSignal], options: FreqPlotOptions) -> Vec<Vec<Vec<PlotPoint>>> {
+    let mut series = Vec::new();
+    for signal in signals {
+        let freq_bins = signal.freq_bins();
+        let display_freqs = options
+            .log_freq
+            .then(|| log_spaced(&freq_bins.view(), options.freq_range));
+        for channel in signal.channel_iter() {
+            let points: Vec<PlotPoint> = match &display_freqs {
+                Some(display_freqs) => {
+                    let re: Vec<f64> = channel.iter().map(|c| c.re).collect();
+                    let im: Vec<f64> = channel.iter().map(|c| c.im).collect();
+                    let bin_width = freq_bins.get(1).map_or(1.0, |f| f - freq_bins[0]);
+                    display_freqs
+                        .iter()
+                        .map(|&f| {
+                            let position = (f - freq_bins[0]) / bin_width;
+                            let phase = interpolate_monotone(&im, position)
+                                .atan2(interpolate_monotone(&re, position));
+                            PlotPoint::new(f.log10(), phase.to_degrees())
+                        })
+                        .collect()
+                }
+                None => freq_bins
+                    .iter()
+                    .zip(channel.iter())
+                    .filter(|&(&f, _)| {
+                        options
+                            .freq_range
+                            .is_none_or(|(low, high)| (low..=high).contains(&f))
+                    })
+                    .map(|(&f, c)| PlotPoint::new(f, c.arg().to_degrees()))
+                    .collect(),
+            };
+            series.push(split_at_wraps(&points));
+        }
+    }
+    series
+}
+
+/// Splits a wrapped phase in degrees into pieces that each run to the edge where the phase
+/// wraps and continue from the other edge, so it looks continuous instead of having a line
+/// across the plot at every wrap.
+fn split_at_wraps(points: &[PlotPoint]) -> Vec<Vec<PlotPoint>> {
+    let mut pieces = vec![Vec::new()];
+    for (index, &point) in points.iter().enumerate() {
+        if let Some(&last) = index.checked_sub(1).map(|i| &points[i]) {
+            let step = point.y - last.y;
+            // a jump of more than half a turn is a wrap: the phase went the short way round
+            if step.abs() > 180.0 {
+                let unwrapped = point.y - 360.0 * step.signum();
+                let edge = if unwrapped > last.y { 180.0 } else { -180.0 };
+                let x = last.x + (point.x - last.x) * (edge - last.y) / (unwrapped - last.y);
+                pieces.last_mut().unwrap().push(PlotPoint::new(x, edge));
+                pieces.push(vec![PlotPoint::new(x, -edge)]);
+            }
+        }
+        pieces.last_mut().unwrap().push(point);
+    }
+    pieces
+}
+
+impl eframe::App for MagnitudePhasePlot {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::Panel::top("controls").show(ui, |ui| {
+            self.save.show_panel(ui);
+        });
+        egui::CentralPanel::default().show(ui, |ui| {
+            let link = egui::Id::unique("audio_lab_magnitude_phase");
+            let magnitude_id = egui::Id::unique("audio_lab_magnitude");
+            // curves hidden in the magnitude plot's legend are hidden in the phase plot too
+            let hidden = egui_plot::PlotMemory::load(ui.ctx(), magnitude_id)
+                .map(|memory| memory.hidden_items)
+                .unwrap_or_default();
+
+            let phase = Plot::new("phase")
+                .height(ui.available_height() * 0.35)
+                .y_axis_label("Phase (°)")
+                .link_axis(link, [true, false])
+                .link_cursor(link, [true, false])
+                .default_y_bounds(-180.0, 180.0)
+                // the phase always shows the full turn; only the frequency zooms and pans
+                .allow_zoom([true, false])
+                .allow_drag([true, false])
+                .allow_scroll([true, false])
+                .allow_axis_zoom_drag([true, false])
+                .allow_boxed_zoom(false)
+                .y_grid_spacer(egui_plot::uniform_grid_spacer(|_| [15.0, 45.0, 90.0]))
+                .y_axis_formatter(|mark, _| format!("{:.0}°", mark.value));
+            frequency_axis(phase, self.log_freq, self.x_bounds, |y| format!("{y:.1}°")).show(
+                ui,
+                |plot_ui| {
+                    plot_ui.set_plot_bounds_y(-180.0..=180.0);
+                    for (label, color, pieces) in &self.phase {
+                        if hidden.contains(&egui_plot::ItemId::new(label)) {
+                            continue;
+                        }
+                        for piece in pieces.iter().filter(|piece| piece.len() > 1) {
+                            let line = Line::new(label, PlotPoints::Borrowed(piece));
+                            plot_ui.line(line.color(*color));
+                        }
+                    }
+                },
+            );
+
+            let magnitude = Plot::new("magnitude")
+                .id(magnitude_id)
+                .x_axis_label("Frequency (Hz)")
+                .y_axis_label(FreqValue::MagnitudeDb.y_label())
+                .link_axis(link, [true, false])
+                .link_cursor(link, [true, false])
+                .legend(Legend::default());
+            frequency_axis(magnitude, self.log_freq, self.x_bounds, |y| {
+                FreqValue::MagnitudeDb.format_y(y)
+            })
+            .show(ui, |plot_ui| {
+                for (label, color, points) in &self.magnitude {
+                    let line = Line::new(label, PlotPoints::Borrowed(points));
+                    plot_ui.line(line.color(*color));
+                }
+            });
+        });
+        self.save.handle_screenshot(ui.ctx());
+    }
+}
+
+/// Shows the magnitude and phase of `signals` in one window, phase on top, e.g. measured
+/// transfer functions. Both plots zoom and pan together along the frequency axis; the phase is
+/// wrapped to ±180°. `options.value` is not used. Blocks until the window is closed.
+///
+/// Remove the delay first, e.g. up to the peak of the impulse response: a delay turns the
+/// phase so quickly that it wraps every few Hz.
+pub fn show_magnitude_and_phase(
+    title: &str,
+    signals: &[&FreqSignal],
+    options: FreqPlotOptions,
+) -> Result<(), crate::plot::Error> {
+    Ok(eframe::run_native(
+        title,
+        native_options_any_thread(),
+        Box::new(|_cc| Ok(Box::new(MagnitudePhasePlot::new(signals, title, options)))),
+    )?)
 }
 
 pub fn show_freq_with_options(
@@ -358,6 +645,53 @@ mod tests {
                 assert!((low - 1e-9..=high + 1e-9).contains(&y), "{i} + {k}: {y}");
             }
         }
+    }
+
+    #[test]
+    fn phase_pieces_meet_at_the_edges() {
+        let points: Vec<PlotPoint> = (0..200)
+            .map(|i| {
+                let unwrapped = -7.0 * i as f64;
+                let wrapped = (unwrapped + 180.0f64).rem_euclid(360.0) - 180.0;
+                PlotPoint::new(i as f64, wrapped)
+            })
+            .collect();
+        let pieces = split_at_wraps(&points);
+        assert_eq!(pieces.len(), 1 + (7.0 * 199.0 + 180.0) as usize / 360);
+        for pair in pieces.windows(2) {
+            let (end, start) = (pair[0].last().unwrap(), pair[1][0]);
+            assert_eq!((end.x, end.y), (start.x, -start.y));
+            assert_eq!(end.y, -180.0);
+        }
+        let originals = pieces
+            .iter()
+            .flatten()
+            .filter(|p| p.x.fract() == 0.0 && p.y.abs() < 180.0);
+        assert_eq!(
+            originals.count(),
+            points.iter().filter(|p| p.y.abs() < 180.0).count()
+        );
+    }
+
+    #[test]
+    fn magnitude_and_phase_share_labels_and_colors() {
+        let signal = make_signal();
+        let plot = MagnitudePhasePlot::new(&[&signal], "test", FreqPlotOptions::default());
+        assert_eq!(plot.magnitude.len(), 2);
+        assert_eq!(plot.phase.len(), 2);
+        for ((m_label, m_color, _), (p_label, p_color, _)) in plot.magnitude.iter().zip(&plot.phase)
+        {
+            assert_eq!(m_label, p_label);
+            assert_eq!(m_color, p_color);
+        }
+        assert_ne!(plot.magnitude[0].1, plot.magnitude[1].1);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_show_magnitude_and_phase() {
+        show_magnitude_and_phase("Magnitude and phase", &[&make_signal()], Default::default())
+            .unwrap();
     }
 
     #[test]
