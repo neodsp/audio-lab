@@ -15,6 +15,10 @@
 //! can be nudged by hand; between finds it stays fixed, so a change such as the delay slider
 //! shows up in the phase.
 //!
+//! Where the coherence is low, i.e. the result changes from one noise period to the next
+//! because room noise or distortion dominates, the phase is hidden and the magnitude faded.
+//! "Min. coherence" sets the limit.
+//!
 //! "Hold" keeps the current curves next to the live ones, e.g. to compare delay settings.
 //! Hover a curve to read its value; click its legend entry to hide it in both plots.
 //!
