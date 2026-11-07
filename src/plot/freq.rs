@@ -44,8 +44,9 @@ impl Default for FreqPlotOptions {
     }
 }
 
-/// Points per octave that magnitudes are drawn at on a log axis.
-const POINTS_PER_OCTAVE: f64 = 96.0;
+/// Points drawn per screen point along a log frequency axis. The interpolation between the bins
+/// is smooth, so more wouldn't look different.
+const POINTS_PER_SCREEN_POINT: f64 = 1.0;
 
 impl FreqValue {
     fn y_label(&self) -> &'static str {
@@ -102,7 +103,7 @@ fn spectrum_grid_spacer(input: GridInput) -> Vec<GridMark> {
 }
 
 pub(crate) struct FreqSignalPlot {
-    series: Vec<(String, Vec<PlotPoint>)>,
+    series: Vec<Series>,
     options: FreqPlotOptions,
     /// The frequency range shown at the start and after a double-click, on the plot's x axis.
     x_bounds: Option<(f64, f64)>,
@@ -136,33 +137,20 @@ fn plotted<'a>(
     }
 }
 
-/// A label and points per channel, and the frequency range they cover on the plot's x axis.
-type Series = (Vec<(String, Vec<PlotPoint>)>, Option<(f64, f64)>);
+/// One channel's curve with its legend label and color.
+struct Series {
+    label: String,
+    color: egui::Color32,
+    curve: Curve,
+}
 
-/// The curves of `signals` for `options.value`.
-fn series(signals: &[&FreqSignal], options: FreqPlotOptions) -> Series {
-    let in_range = |f: f64| {
-        (!options.log_freq || f > 0.0)
-            && options
-                .freq_range
-                .is_none_or(|(low, high)| (low..=high).contains(&f))
-    };
-    // on a log axis, magnitudes are drawn at points evenly spaced on the axis, so they look
-    // the same at the low end, where the bins lie far apart, as at the top, where many bins
-    // share a pixel. A phase can't be interpolated across its wraps, so it keeps the bins.
-    let resample =
-        options.log_freq && matches!(options.value, FreqValue::Magnitude | FreqValue::MagnitudeDb);
-
+/// The curve of every channel of `signals` for `options.value`, and the frequency range they
+/// cover on the plot's x axis. Each channel gets its own color, the same for the same channel
+/// whatever the value, so a magnitude and a phase plot match.
+fn series(signals: &[&FreqSignal], options: FreqPlotOptions) -> (Vec<Series>, Option<(f64, f64)>) {
     let mut series = Vec::new();
     let mut shown = (f64::INFINITY, f64::NEG_INFINITY);
     for (signal_index, signal) in signals.iter().enumerate() {
-        let freq_bins = signal.freq_bins();
-        let derived = match options.value {
-            FreqValue::Magnitude => signal.to_magnitude(),
-            FreqValue::MagnitudeDb => signal.to_magnitude_db(),
-            FreqValue::PhaseRadians | FreqValue::PhaseDegrees => signal.to_phase(),
-        };
-        let display_freqs = resample.then(|| log_spaced(&freq_bins.view(), options.freq_range));
         let num_channels = signal.num_channels();
         for channel_index in 0..num_channels {
             let label = crate::plot::legend::build_channel_label(
@@ -172,40 +160,227 @@ fn series(signals: &[&FreqSignal], options: FreqPlotOptions) -> Series {
                 channel_index,
                 num_channels,
             );
-            let values: Vec<f64> = derived
-                .channel(channel_index)
-                .iter()
-                .map(|&value| match options.value {
-                    FreqValue::MagnitudeDb => value.max(DB_FLOOR),
-                    FreqValue::PhaseDegrees => value.to_degrees(),
-                    _ => value,
-                })
-                .collect();
-            let points: Vec<PlotPoint> = match &display_freqs {
-                Some(display_freqs) => {
-                    let bin_width = freq_bins.get(1).map_or(1.0, |f| f - freq_bins[0]);
-                    display_freqs
-                        .iter()
-                        .map(|&f| {
-                            let position = (f - freq_bins[0]) / bin_width;
-                            PlotPoint::new(f.log10(), interpolate_monotone(&values, position))
-                        })
-                        .collect()
-                }
-                None => freq_bins
-                    .iter()
-                    .zip(&values)
-                    .filter(|&(&f, _)| in_range(f))
-                    .map(|(&f, &y)| PlotPoint::new(if options.log_freq { f.log10() } else { f }, y))
-                    .collect(),
-            };
-            if let (Some(first), Some(last)) = (points.first(), points.last()) {
-                shown = (shown.0.min(first.x), shown.1.max(last.x));
+            let curve = Curve::new(signal, channel_index, options);
+            if let Some((low, high)) = curve.x_range() {
+                shown = (shown.0.min(low), shown.1.max(high));
             }
-            series.push((label, points));
+            series.push(Series {
+                label,
+                color: color(series.len()),
+                curve,
+            });
         }
     }
     (series, (shown.0 < shown.1).then_some(shown))
+}
+
+/// The `index`th of a series of well distinguishable colors, as egui_plot picks them.
+fn color(index: usize) -> egui::Color32 {
+    let golden_ratio = (5f32.sqrt() - 1.0) / 2.0;
+    egui::epaint::Hsva::new(index as f32 * golden_ratio, 0.85, 0.5, 1.0).into()
+}
+
+/// A channel's values, ready to draw.
+enum Curve {
+    /// Drawn as they are: the bins on a linear axis, in pieces between the phase's wraps.
+    Points(Vec<Vec<PlotPoint>>),
+    /// Drawn at the resolution of the screen on a log axis: interpolated between the bins at
+    /// points evenly spaced on the axis, for the part that is in view. So the curves look the
+    /// same at the low end, where the bins lie far apart, as at the top, where many bins share
+    /// a pixel, and stay smooth however far you zoom in.
+    Log(LogCurve),
+}
+
+struct LogCurve {
+    first_bin: f64,
+    bin_width: f64,
+    /// Where there is data to draw, on the log axis.
+    log_range: (f64, f64),
+    values: LogValues,
+}
+
+enum LogValues {
+    /// Values per bin, e.g. the magnitude, interpolated without overshoot.
+    Real(Vec<f64>),
+    /// The complex values per bin, drawn as their phase wrapped to ±`half_turn` (180 for
+    /// degrees, π for radians). Complex values interpolate across the phase's wraps.
+    Phase {
+        re: Vec<f64>,
+        im: Vec<f64>,
+        half_turn: f64,
+    },
+}
+
+impl Curve {
+    fn new(signal: &FreqSignal, channel: usize, options: FreqPlotOptions) -> Self {
+        let freq_bins = signal.freq_bins();
+        let half_turn = match options.value {
+            FreqValue::PhaseDegrees => Some(180.0),
+            FreqValue::PhaseRadians => Some(std::f64::consts::PI),
+            FreqValue::Magnitude | FreqValue::MagnitudeDb => None,
+        };
+        let values: Vec<f64> = match options.value {
+            FreqValue::Magnitude => signal.to_magnitude().channel(channel).to_vec(),
+            FreqValue::MagnitudeDb => signal
+                .to_magnitude_db()
+                .channel(channel)
+                .iter()
+                .map(|value| value.max(DB_FLOOR))
+                .collect(),
+            FreqValue::PhaseRadians => signal.to_phase().channel(channel).to_vec(),
+            FreqValue::PhaseDegrees => signal
+                .to_phase()
+                .channel(channel)
+                .iter()
+                .map(|value| value.to_degrees())
+                .collect(),
+        };
+
+        if !options.log_freq {
+            let points: Vec<PlotPoint> = freq_bins
+                .iter()
+                .zip(&values)
+                .filter(|&(&f, _)| {
+                    options
+                        .freq_range
+                        .is_none_or(|(low, high)| (low..=high).contains(&f))
+                })
+                .map(|(&f, &y)| PlotPoint::new(f, y))
+                .collect();
+            return Self::Points(match half_turn {
+                Some(half_turn) => split_at_wraps(&points, half_turn),
+                None => vec![points],
+            });
+        }
+
+        let first_bin = freq_bins.first().copied().unwrap_or(0.0);
+        // 0 Hz has no place on a log axis
+        let lowest_bin = freq_bins.iter().copied().find(|&f| f > 0.0);
+        let highest_bin = freq_bins.last().copied();
+        let log_range = match (lowest_bin, highest_bin) {
+            (Some(lowest), Some(highest)) => {
+                let (low, high) = match options.freq_range {
+                    Some((low, high)) => (low.max(lowest), high.min(highest)),
+                    None => (lowest, highest),
+                };
+                (low.log10(), high.log10())
+            }
+            _ => (0.0, 0.0),
+        };
+        let channel_values = signal.channel(channel);
+        Self::Log(LogCurve {
+            first_bin,
+            bin_width: freq_bins.get(1).map_or(1.0, |f| f - first_bin),
+            log_range,
+            values: match half_turn {
+                Some(half_turn) => LogValues::Phase {
+                    re: channel_values.iter().map(|c| c.re).collect(),
+                    im: channel_values.iter().map(|c| c.im).collect(),
+                    half_turn,
+                },
+                None => LogValues::Real(values),
+            },
+        })
+    }
+
+    /// The frequency range it covers on the plot's x axis.
+    fn x_range(&self) -> Option<(f64, f64)> {
+        let (low, high) = match self {
+            Self::Points(pieces) => {
+                let mut points = pieces.iter().flatten();
+                let first = points.next()?.x;
+                (first, points.last().map_or(first, |p| p.x))
+            }
+            Self::Log(curve) => curve.log_range,
+        };
+        (low < high).then_some((low, high))
+    }
+
+    /// Adds the curve to the plot, for the plot's current view.
+    fn draw<'a>(
+        &'a self,
+        plot_ui: &mut egui_plot::PlotUi<'a>,
+        label: &'a str,
+        color: egui::Color32,
+    ) {
+        match self {
+            Self::Points(pieces) => {
+                for piece in pieces.iter().filter(|piece| piece.len() > 1) {
+                    plot_ui.line(Line::new(label, PlotPoints::Borrowed(piece)).color(color));
+                }
+            }
+            Self::Log(curve) => {
+                let positions = positions_in_view(plot_ui, curve.log_range);
+                for piece in curve.pieces(&positions) {
+                    if piece.len() > 1 {
+                        plot_ui.line(Line::new(label, PlotPoints::Owned(piece)).color(color));
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl LogCurve {
+    /// The curve at `positions` on the log axis, in pieces between the phase's wraps.
+    fn pieces(&self, positions: &[f64]) -> Vec<Vec<PlotPoint>> {
+        let bin = |x: f64| (10f64.powf(x) - self.first_bin) / self.bin_width;
+        match &self.values {
+            LogValues::Real(values) => vec![
+                positions
+                    .iter()
+                    .map(|&x| PlotPoint::new(x, interpolate_monotone(values, bin(x))))
+                    .collect(),
+            ],
+            LogValues::Phase { re, im, half_turn } => {
+                let points: Vec<PlotPoint> = positions
+                    .iter()
+                    .map(|&x| {
+                        let position = bin(x);
+                        let phase = interpolate_monotone(im, position)
+                            .atan2(interpolate_monotone(re, position));
+                        PlotPoint::new(x, phase / std::f64::consts::PI * half_turn)
+                    })
+                    .collect();
+                split_at_wraps(&points, *half_turn)
+            }
+        }
+    }
+}
+
+/// Where to draw a curve on a log axis: evenly spaced, [`POINTS_PER_SCREEN_POINT`] per screen
+/// point of the `visible` range, `width` screen points wide. Also half the visible width beyond
+/// each side, so the curve doesn't end at the old edges in the frame in which the view is
+/// panned or zoomed (the plot only knows the last frame's view). Only within `log_range`,
+/// where there is data.
+fn draw_positions(visible: Option<(f64, f64)>, width: f64, log_range: (f64, f64)) -> Vec<f64> {
+    let (low, high) = log_range;
+    if low >= high {
+        return Vec::new();
+    }
+    let (start, end, step) = match visible {
+        Some((left, right)) if left < right && left < high && low < right && width >= 1.0 => {
+            let margin = 0.5 * (right - left);
+            let step = (right - left) / (width * POINTS_PER_SCREEN_POINT);
+            (low.max(left - margin), high.min(right + margin), step)
+        }
+        // nothing to go by yet, e.g. in the first frame
+        _ => (low, high, (high - low) / 2000.0),
+    };
+    let num_points = ((end - start) / step).ceil() as usize + 1;
+    (0..num_points)
+        .map(|i| (start + i as f64 * step).min(end))
+        .collect()
+}
+
+/// [`draw_positions`] for the plot's current view.
+fn positions_in_view(plot_ui: &egui_plot::PlotUi, log_range: (f64, f64)) -> Vec<f64> {
+    let bounds = plot_ui.plot_bounds();
+    let visible = bounds
+        .is_valid_x()
+        .then(|| (bounds.min()[0], bounds.max()[0]));
+    let width = f64::from(plot_ui.transform().frame().width());
+    draw_positions(visible, width, log_range)
 }
 
 /// The signals as given and the smoothing chosen in the window.
@@ -270,27 +445,6 @@ impl SmoothingControl {
     }
 }
 
-/// Frequencies evenly spaced on a log axis, [`POINTS_PER_OCTAVE`] per octave, from the lowest
-/// bin above 0 Hz (or the range's start) to the highest bin (or the range's end).
-fn log_spaced(freq_bins: &ndarray::ArrayView1<f64>, range: Option<(f64, f64)>) -> Vec<f64> {
-    let lowest_bin = freq_bins.iter().copied().find(|&f| f > 0.0);
-    let highest_bin = freq_bins.last().copied();
-    let (Some(lowest_bin), Some(highest_bin)) = (lowest_bin, highest_bin) else {
-        return Vec::new();
-    };
-    let (low, high) = match range {
-        Some((low, high)) => (low.max(lowest_bin), high.min(highest_bin)),
-        None => (lowest_bin, highest_bin),
-    };
-    if low >= high {
-        return Vec::new();
-    }
-    let num_points = (POINTS_PER_OCTAVE * (high / low).log2()).ceil() as usize + 1;
-    (0..num_points)
-        .map(|i| (low * 2f64.powf(i as f64 / POINTS_PER_OCTAVE)).min(high))
-        .collect()
-}
-
 /// `values` at the fractional index `position`, by monotone cubic interpolation: a smooth curve
 /// through the values that never goes above or below its neighbors, so bins that lie far apart
 /// don't turn into lobes and notches that aren't in the data.
@@ -340,8 +494,8 @@ impl eframe::App for FreqSignalPlot {
                 value.format_y(y)
             });
             plot.show(ui, |plot_ui| {
-                for (label, points) in &self.series {
-                    plot_ui.line(Line::new(label.clone(), PlotPoints::Borrowed(points)));
+                for series in &self.series {
+                    series.curve.draw(plot_ui, &series.label, series.color);
                 }
             });
         });
@@ -399,10 +553,9 @@ fn frequency_axis<'a>(
 /// Magnitude and phase of the same signals in two plots, phase on top, like a measurement
 /// program shows a transfer function.
 pub(crate) struct MagnitudePhasePlot {
-    /// Label, color and points per channel.
-    magnitude: Vec<(String, egui::Color32, Vec<PlotPoint>)>,
-    /// Label, color and the pieces between the phase's wraps per channel.
-    phase: Vec<(String, egui::Color32, Vec<Vec<PlotPoint>>)>,
+    magnitude: Vec<Series>,
+    /// The same channels as `magnitude`, with the same labels and colors.
+    phase: Vec<Series>,
     options: FreqPlotOptions,
     x_bounds: Option<(f64, f64)>,
     smoothing: Option<SmoothingControl>,
@@ -428,87 +581,33 @@ impl MagnitudePhasePlot {
 
     /// Draws `signals` from now on. Returns the frequency range they cover.
     fn set_curves(&mut self, signals: &[&FreqSignal]) -> Option<(f64, f64)> {
-        let magnitude_options = FreqPlotOptions {
-            value: FreqValue::MagnitudeDb,
+        let with_value = |value| FreqPlotOptions {
+            value,
             ..self.options
         };
-        let (magnitude, x_bounds) = series(signals, magnitude_options);
-        let phase = phase_series(signals, self.options);
-        // the same color for a channel in both plots
-        let color = |index: usize| {
-            let golden_ratio = (5f32.sqrt() - 1.0) / 2.0;
-            egui::epaint::Hsva::new(index as f32 * golden_ratio, 0.85, 0.5, 1.0).into()
-        };
-        self.phase = phase
-            .into_iter()
-            .zip(&magnitude)
-            .enumerate()
-            .map(|(index, (pieces, (label, _)))| (label.clone(), color(index), pieces))
-            .collect();
-        self.magnitude = magnitude
-            .into_iter()
-            .enumerate()
-            .map(|(index, (label, points))| (label, color(index), points))
-            .collect();
+        let (magnitude, x_bounds) = series(signals, with_value(FreqValue::MagnitudeDb));
+        self.magnitude = magnitude;
+        self.phase = series(signals, with_value(FreqValue::PhaseDegrees)).0;
         x_bounds
     }
 }
 
-/// The phase in degrees of every channel, wrapped to ±180° and split into pieces at the wraps.
-/// On a log axis it is drawn at evenly spaced points like the magnitude, interpolated as
-/// complex values so the wraps don't get in the way.
-fn phase_series(signals: &[&FreqSignal], options: FreqPlotOptions) -> Vec<Vec<Vec<PlotPoint>>> {
-    let mut series = Vec::new();
-    for signal in signals {
-        let freq_bins = signal.freq_bins();
-        let display_freqs = options
-            .log_freq
-            .then(|| log_spaced(&freq_bins.view(), options.freq_range));
-        for channel in signal.channel_iter() {
-            let points: Vec<PlotPoint> = match &display_freqs {
-                Some(display_freqs) => {
-                    let re: Vec<f64> = channel.iter().map(|c| c.re).collect();
-                    let im: Vec<f64> = channel.iter().map(|c| c.im).collect();
-                    let bin_width = freq_bins.get(1).map_or(1.0, |f| f - freq_bins[0]);
-                    display_freqs
-                        .iter()
-                        .map(|&f| {
-                            let position = (f - freq_bins[0]) / bin_width;
-                            let phase = interpolate_monotone(&im, position)
-                                .atan2(interpolate_monotone(&re, position));
-                            PlotPoint::new(f.log10(), phase.to_degrees())
-                        })
-                        .collect()
-                }
-                None => freq_bins
-                    .iter()
-                    .zip(channel.iter())
-                    .filter(|&(&f, _)| {
-                        options
-                            .freq_range
-                            .is_none_or(|(low, high)| (low..=high).contains(&f))
-                    })
-                    .map(|(&f, c)| PlotPoint::new(f, c.arg().to_degrees()))
-                    .collect(),
-            };
-            series.push(split_at_wraps(&points));
-        }
-    }
-    series
-}
-
-/// Splits a wrapped phase in degrees into pieces that each run to the edge where the phase
-/// wraps and continue from the other edge, so it looks continuous instead of having a line
-/// across the plot at every wrap.
-fn split_at_wraps(points: &[PlotPoint]) -> Vec<Vec<PlotPoint>> {
+/// Splits a wrapped phase (±`half_turn`, 180 for degrees) into pieces that each run to the edge
+/// where the phase wraps and continue from the other edge, so it looks continuous instead of
+/// having a line across the plot at every wrap.
+fn split_at_wraps(points: &[PlotPoint], half_turn: f64) -> Vec<Vec<PlotPoint>> {
     let mut pieces = vec![Vec::new()];
     for (index, &point) in points.iter().enumerate() {
         if let Some(&last) = index.checked_sub(1).map(|i| &points[i]) {
             let step = point.y - last.y;
             // a jump of more than half a turn is a wrap: the phase went the short way round
-            if step.abs() > 180.0 {
-                let unwrapped = point.y - 360.0 * step.signum();
-                let edge = if unwrapped > last.y { 180.0 } else { -180.0 };
+            if step.abs() > half_turn {
+                let unwrapped = point.y - 2.0 * half_turn * step.signum();
+                let edge = if unwrapped > last.y {
+                    half_turn
+                } else {
+                    -half_turn
+                };
                 let x = last.x + (point.x - last.x) * (edge - last.y) / (unwrapped - last.y);
                 pieces.last_mut().unwrap().push(PlotPoint::new(x, edge));
                 pieces.push(vec![PlotPoint::new(x, -edge)]);
@@ -557,13 +656,9 @@ impl eframe::App for MagnitudePhasePlot {
             })
             .show(ui, |plot_ui| {
                 plot_ui.set_plot_bounds_y(-180.0..=180.0);
-                for (label, color, pieces) in &self.phase {
-                    if hidden.contains(&egui_plot::ItemId::new(label)) {
-                        continue;
-                    }
-                    for piece in pieces.iter().filter(|piece| piece.len() > 1) {
-                        let line = Line::new(label, PlotPoints::Borrowed(piece));
-                        plot_ui.line(line.color(*color));
+                for series in &self.phase {
+                    if !hidden.contains(&egui_plot::ItemId::new(&series.label)) {
+                        series.curve.draw(plot_ui, &series.label, series.color);
                     }
                 }
             });
@@ -579,9 +674,8 @@ impl eframe::App for MagnitudePhasePlot {
                 FreqValue::MagnitudeDb.format_y(y)
             })
             .show(ui, |plot_ui| {
-                for (label, color, points) in &self.magnitude {
-                    let line = Line::new(label, PlotPoints::Borrowed(points));
-                    plot_ui.line(line.color(*color));
+                for series in &self.magnitude {
+                    series.curve.draw(plot_ui, &series.label, series.color);
                 }
             });
         });
@@ -647,25 +741,95 @@ mod tests {
     }
 
     #[test]
-    fn log_axis_draws_magnitudes_evenly_spaced_within_the_range() {
+    fn log_axis_draws_within_the_range() {
         let signal = make_signal();
         let options = FreqPlotOptions {
             freq_range: Some((20.0, 20_000.0)),
             ..Default::default()
         };
         let plot = FreqSignalPlot::new(&[&signal], "test", options);
-        let points = &plot.series[0].1;
-        let steps: Vec<f64> = points.windows(2).map(|w| w[1].x - w[0].x).collect();
-        let step = 2f64.log10() / POINTS_PER_OCTAVE;
-        assert!(
-            steps[..steps.len() - 1]
-                .iter()
-                .all(|s| (s - step).abs() < 1e-9)
-        );
-        assert!((points[0].x - 20f64.log10()).abs() < 1e-9);
-        assert!((points.last().unwrap().x - 20_000f64.log10()).abs() < 1e-9);
-        let (low, high) = plot.x_bounds.unwrap();
+        let Curve::Log(curve) = &plot.series[0].curve else {
+            panic!("a log axis draws at the resolution of the screen");
+        };
+        let (low, high) = curve.log_range;
         assert!((low - 20f64.log10()).abs() < 1e-9 && (high - 20_000f64.log10()).abs() < 1e-9);
+        assert_eq!(plot.x_bounds, Some(curve.log_range));
+
+        // drawn through the bins: at a bin's frequency, the curve is the bin's value
+        let bin = 100;
+        let x = signal.freq_bins()[bin].log10();
+        let piece = &curve.pieces(&[x])[0];
+        let expected = signal.to_magnitude_db().channel(0)[bin];
+        assert!((piece[0].y - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn linear_axis_draws_the_bins() {
+        let signal = make_signal();
+        let options = FreqPlotOptions {
+            log_freq: false,
+            freq_range: Some((1000.0, 2000.0)),
+            ..Default::default()
+        };
+        let plot = FreqSignalPlot::new(&[&signal], "test", options);
+        let Curve::Points(pieces) = &plot.series[0].curve else {
+            panic!("a linear axis draws the bins");
+        };
+        let bins: Vec<f64> = signal
+            .freq_bins()
+            .iter()
+            .copied()
+            .filter(|f| (1000.0..=2000.0).contains(f))
+            .collect();
+        let xs: Vec<f64> = pieces[0].iter().map(|p| p.x).collect();
+        assert_eq!(xs, bins);
+    }
+
+    #[test]
+    fn positions_follow_the_view_at_screen_resolution() {
+        let range = (20f64.log10(), 20_000f64.log10());
+        // zoomed in to 200..400 Hz on 600 screen points
+        let visible = (200f64.log10(), 400f64.log10());
+        let positions = draw_positions(Some(visible), 600.0, range);
+        let step = positions[1] - positions[0];
+        assert!((step - (visible.1 - visible.0) / 600.0).abs() < 1e-12);
+        // half a view beyond each side
+        let margin = 0.5 * (visible.1 - visible.0);
+        assert!((positions[0] - (visible.0 - margin)).abs() < 1e-9);
+        assert!((positions.last().unwrap() - (visible.1 + margin)).abs() < 1e-9);
+
+        // zoomed out beyond the data: only where there is data, still one per screen point
+        let positions = draw_positions(Some((0.0, 6.0)), 600.0, range);
+        assert_eq!(positions[0], range.0);
+        assert_eq!(*positions.last().unwrap(), range.1);
+        assert!(positions.len() < 400);
+
+        // no view yet: the whole range
+        let positions = draw_positions(None, 0.0, range);
+        assert_eq!((positions[0], *positions.last().unwrap()), range);
+        assert!(draw_positions(Some(visible), 600.0, (1.0, 1.0)).is_empty());
+    }
+
+    #[test]
+    fn phase_in_radians_wraps_at_pi() {
+        // a delayed impulse: its phase turns steadily and wraps many times
+        let mut data = ndarray::Array2::zeros((1, 4096));
+        data[[0, 50]] = 1.0;
+        let signal = TimeSignal::new(data, 48_000.0).unwrap().into_freq();
+        let options = FreqPlotOptions {
+            value: FreqValue::PhaseRadians,
+            ..Default::default()
+        };
+        let plot = FreqSignalPlot::new(&[&signal], "test", options);
+        let Curve::Log(curve) = &plot.series[0].curve else {
+            panic!("log axis");
+        };
+        let positions = draw_positions(None, 0.0, curve.log_range);
+        let pieces = curve.pieces(&positions);
+        // 50 samples of delay turn the phase 25 times up to half the sample rate
+        assert!(pieces.len() >= 24, "{}", pieces.len());
+        let pi = std::f64::consts::PI;
+        assert!(pieces.iter().flatten().all(|p| p.y.abs() <= pi + 1e-9));
     }
 
     #[test]
@@ -690,7 +854,7 @@ mod tests {
                 PlotPoint::new(i as f64, wrapped)
             })
             .collect();
-        let pieces = split_at_wraps(&points);
+        let pieces = split_at_wraps(&points, 180.0);
         assert_eq!(pieces.len(), 1 + (7.0 * 199.0 + 180.0) as usize / 360);
         for pair in pieces.windows(2) {
             let (end, start) = (pair[0].last().unwrap(), pair[1][0]);
@@ -713,12 +877,11 @@ mod tests {
         let plot = MagnitudePhasePlot::new(&[&signal], "test", FreqPlotOptions::default());
         assert_eq!(plot.magnitude.len(), 2);
         assert_eq!(plot.phase.len(), 2);
-        for ((m_label, m_color, _), (p_label, p_color, _)) in plot.magnitude.iter().zip(&plot.phase)
-        {
-            assert_eq!(m_label, p_label);
-            assert_eq!(m_color, p_color);
+        for (magnitude, phase) in plot.magnitude.iter().zip(&plot.phase) {
+            assert_eq!(magnitude.label, phase.label);
+            assert_eq!(magnitude.color, phase.color);
         }
-        assert_ne!(plot.magnitude[0].1, plot.magnitude[1].1);
+        assert_ne!(plot.magnitude[0].color, plot.magnitude[1].color);
     }
 
     #[test]
