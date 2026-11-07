@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frequency plots on a log axis draw magnitudes at points evenly spaced on the axis, with an
   interpolation that doesn't overshoot, so the low end looks as smooth as the top. They start
   zoomed to the data instead of adding margins.
+- Frequency plots on a log axis draw their curves for the part in view, at the resolution of
+  the screen, so they stay smooth however far you zoom in. The phase is interpolated too, and
+  `show_freq_with_options` draws a wrapped phase without lines across the plot at its wraps.
 
 ## [0.1.0] - 2026-11-04
 
