@@ -98,6 +98,18 @@ impl Settings {
         if !self.inputs.iter().any(|c| c.enabled) {
             return Some("Choose at least one microphone.".into());
         }
+        // the curves and folders are named after them
+        for (channels, kind) in [(&self.outputs, "speaker"), (&self.inputs, "microphone")] {
+            if channels
+                .iter()
+                .any(|c| c.enabled && c.name.trim().is_empty())
+            {
+                return Some(format!("Give every {kind} a name."));
+            }
+            if let Some(name) = duplicate_name(channels) {
+                return Some(format!("Two {kind}s are called “{name}”."));
+            }
+        }
         let nyquist = f64::from(self.sample_rate) / 2.0;
         if !self.live
             && !(self.freq_low > 0.0 && self.freq_low < self.freq_high && self.freq_high <= nyquist)
@@ -144,6 +156,33 @@ impl Settings {
             periods: self.periods,
         }
     }
+}
+
+/// Whether two names are the same to a reader: whatever the case and the spaces around them.
+pub fn same_name(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
+}
+
+/// A name that two of the channels taking part share, if there is one.
+fn duplicate_name(channels: &[Channel]) -> Option<String> {
+    let enabled: Vec<&Channel> = channels.iter().filter(|c| c.enabled).collect();
+    enabled.iter().enumerate().find_map(|(index, channel)| {
+        enabled[index + 1..]
+            .iter()
+            .any(|other| same_name(&channel.name, &other.name))
+            .then(|| channel.name.trim().to_string())
+    })
+}
+
+/// Whether the `index`th channel takes part and another one that does has its name.
+pub fn is_duplicate(channels: &[Channel], index: usize) -> bool {
+    let Some(channel) = channels.get(index).filter(|c| c.enabled) else {
+        return false;
+    };
+    channels
+        .iter()
+        .enumerate()
+        .any(|(other, c)| other != index && c.enabled && same_name(&c.name, &channel.name))
 }
 
 /// The channels that take part: their number and name.
@@ -519,6 +558,33 @@ mod tests {
         // the latency of the simulated room
         let start_ms = outcome.responses[0].start as f64 / 48.0;
         assert!((115.0..121.0).contains(&start_ms), "{start_ms}");
+    }
+
+    #[test]
+    fn speakers_and_mics_need_names_of_their_own() {
+        let mut settings = Settings::default();
+        settings.sync_channels(2, 2);
+        for channel in settings.outputs.iter_mut().chain(&mut settings.inputs) {
+            channel.enabled = true;
+        }
+        assert_eq!(settings.problem(), None);
+
+        settings.outputs[1].name = " speaker 1 ".into();
+        assert_eq!(
+            settings.problem().as_deref(),
+            Some("Two speakers are called “Speaker 1”.")
+        );
+        assert!(is_duplicate(&settings.outputs, 0) && is_duplicate(&settings.outputs, 1));
+        // a speaker that doesn't take part may share its name
+        settings.outputs[1].enabled = false;
+        assert_eq!(settings.problem(), None);
+        assert!(!is_duplicate(&settings.outputs, 0));
+
+        settings.inputs[0].name = "  ".into();
+        assert_eq!(
+            settings.problem().as_deref(),
+            Some("Give every microphone a name.")
+        );
     }
 
     #[test]

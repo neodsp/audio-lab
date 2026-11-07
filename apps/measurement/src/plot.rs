@@ -25,10 +25,6 @@ const LINE_WIDTH: f32 = 1.5;
 const HIGHLIGHT_WIDTH: f32 = 3.0;
 /// How much of their color the other traces keep while some are highlighted.
 const DIMMED: f32 = 0.35;
-/// A hidden trace shown while the mouse is over it in the list: muted, so it's clear it
-/// is hidden.
-const PREVIEW: f32 = 0.5;
-const PREVIEW_WIDTH: f32 = 2.0;
 /// A path's vertex indices are 16 bit, so long curves are drawn in pieces.
 const POINTS_PER_PATH: usize = 2000;
 /// At most this many traces are listed under the mouse.
@@ -94,8 +90,7 @@ pub struct Trace {
     pub series: Series,
     /// Where a live measurement's coherence is below this, its curve isn't drawn.
     pub min_coherence: f64,
-    /// Hidden, but shown muted while the mouse is over it in the list. The view doesn't
-    /// fit to it.
+    /// Hidden, but shown while the mouse is over it in the list. The view doesn't fit to it.
     pub preview: bool,
 }
 
@@ -708,14 +703,10 @@ impl Scene {
                     stroke(window, &piece, color, LINE_WIDTH, &transform);
                 }
             }
+            // hidden ones under the mouse look like shown ones
             for trace in self.traces.iter().filter(highlighted) {
-                let (color, width) = if trace.preview {
-                    (trace.color.opacity(PREVIEW), PREVIEW_WIDTH)
-                } else {
-                    (trace.color, HIGHLIGHT_WIDTH)
-                };
                 for piece in self.trace_points(trace, &transform) {
-                    stroke(window, &piece, color, width, &transform);
+                    stroke(window, &piece, trace.color, HIGHLIGHT_WIDTH, &transform);
                 }
             }
             if let Some((start, current)) = self.zoom_box {

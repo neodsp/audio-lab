@@ -8,7 +8,7 @@ use gpui_kit::base::actions::{SelectDown, SelectUp};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
-use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::progress::Progress;
@@ -24,6 +24,7 @@ use gpui_kit::*;
 
 use crate::curves::{Curves, impulse_points};
 use crate::live::{self, Analysis, Live, LiveRequest, Status};
+use crate::measure::same_name;
 use crate::measure::{self, Job, Outcome, Response};
 use crate::panes::{Panes, Side, Target};
 use crate::plot::{FrequencyChanged, Plot, PlotKind, Series, Trace};
@@ -197,6 +198,13 @@ const LIVE_GROUP: u64 = 0;
 const LIVE_UPDATE: Duration = Duration::from_millis(100);
 
 /// A live measurement that runs, and its folder at the top of the list.
+/// A folder whose name is being edited in the list.
+struct Renaming {
+    group: u64,
+    field: Entity<InputState>,
+    _subscription: Subscription,
+}
+
 /// When, how and within which frequency range something was measured.
 #[derive(Clone)]
 struct Measured {
@@ -250,6 +258,7 @@ pub struct MeasurementApp {
     job: Option<Job>,
     _job_task: Option<Task<()>>,
     live: Option<LiveRun>,
+    renaming: Option<Renaming>,
     /// Counts the live runs.
     live_runs: u64,
     /// Below this coherence, live measurements and their snapshots aren't drawn.
@@ -363,6 +372,7 @@ impl MeasurementApp {
             job: None,
             _job_task: None,
             live: None,
+            renaming: None,
             live_runs: 0,
             min_coherence,
             coherence_slider,
@@ -463,10 +473,11 @@ impl MeasurementApp {
         self._ticker = None;
         match result {
             Ok(outcome) => {
+                // no name, or one a folder got while it measured: the next free number
                 let name = self.setup.read(cx).name();
-                let name = if name.is_empty() {
-                    let taken = self.group_names();
-                    next_name("", taken.iter().map(|n| n.as_ref()))
+                let taken = self.group_names();
+                let name = if name.is_empty() || taken.iter().any(|t| same_name(t, &name)) {
+                    next_name(&name, taken.iter().map(|n| n.as_ref()))
                 } else {
                     name
                 };
@@ -799,6 +810,11 @@ impl MeasurementApp {
                     .update(cx, |field, cx| field.set_value(text, window, cx));
             }
         }
+        // the setup checks new names against it
+        let taken = self.group_names();
+        self.setup.update(cx, |setup, cx| {
+            setup.renumber(taken.iter().map(|n| n.as_ref()), window, cx)
+        });
         self.refresh_plots(cx);
     }
 
@@ -833,6 +849,83 @@ impl MeasurementApp {
             });
         }
         self.refresh_plots(cx);
+    }
+
+    /// Edits the name of the folder `id` in the list. Enter or clicking elsewhere keeps the
+    /// new name, Escape the old one.
+    fn start_rename(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(group) = self.groups.iter().find(|group| group.id == id) else {
+            return;
+        };
+        let name = group.name.clone();
+        let field = cx.new(|cx| InputState::new(window, cx).default_value(name));
+        let subscription =
+            cx.subscribe_in(&field, window, |this, _, event: &InputEvent, window, cx| {
+                match event {
+                    // a name another folder has can't be kept: Enter does nothing, leaving
+                    // gives up
+                    InputEvent::PressEnter { .. } if !this.rename_clashes(cx) => {
+                        this.finish_rename(true, window, cx)
+                    }
+                    InputEvent::Blur => {
+                        let keep = !this.rename_clashes(cx);
+                        this.finish_rename(keep, window, cx);
+                    }
+                    // shows whether the name clashes
+                    InputEvent::Change => cx.notify(),
+                    _ => {}
+                }
+            });
+        // once the menu it may come from has closed and given focus back
+        let focus = field.clone();
+        cx.defer_in(window, move |_, window, cx| {
+            focus.update(cx, |field, cx| {
+                field.focus(window, cx);
+                field.select_all(window, cx);
+            });
+        });
+        self.renaming = Some(Renaming {
+            group: id,
+            field,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    /// Whether another folder has the name being typed.
+    fn rename_clashes(&self, cx: &App) -> bool {
+        let Some(renaming) = &self.renaming else {
+            return false;
+        };
+        let name = renaming.field.read(cx).value();
+        self.groups
+            .iter()
+            .any(|group| group.id != renaming.group && same_name(&group.name, &name))
+    }
+
+    /// Ends renaming, with the new name if `keep` and it isn't empty.
+    fn finish_rename(&mut self, keep: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(renaming) = self.renaming.take() else {
+            return;
+        };
+        let name = renaming.field.read(cx).value().trim().to_string();
+        if keep
+            && !name.is_empty()
+            && let Some(group) = self.groups.iter_mut().find(|g| g.id == renaming.group)
+        {
+            group.name = name.clone().into();
+            // the plots name each curve after its folder
+            for m in &mut group.measurements {
+                m.follow_response(&name);
+            }
+            // a number may have come free or been taken
+            let taken = self.group_names();
+            self.setup.update(cx, |setup, cx| {
+                setup.renumber(taken.iter().map(|n| n.as_ref()), window, cx)
+            });
+            self.refresh_plots(cx);
+        }
+        cx.notify();
     }
 
     /// Moves the measurement `id` into the folder `to`, or into a new one. It keeps when and
@@ -1038,7 +1131,7 @@ impl MeasurementApp {
         let highlight = self.highlight.clone();
         let groups: Vec<&mut Group> = self.all_groups_mut().collect();
         for group in groups.into_iter().rev() {
-            // hidden ones under the mouse in the list are shown muted, without fitting to them
+            // hidden ones under the mouse in the list are shown too, without fitting to them
             let shown = |m: &&mut Measurement| m.visible || highlight.contains(&m.id);
             for m in group.measurements.iter_mut().filter(shown) {
                 let preview = !m.visible;
@@ -1421,6 +1514,7 @@ impl MeasurementApp {
 
     fn render_group_row(&self, group: &Group, cx: &mut Context<Self>) -> impl IntoElement {
         let id = group.id;
+        let app = cx.entity();
         let all = group.measurements.iter().all(|m| m.visible);
         let some = group.measurements.iter().any(|m| m.visible);
         let row_group = SharedString::from(format!("group-row-{id}"));
@@ -1466,20 +1560,47 @@ impl MeasurementApp {
                 .small()
                 .text_color(palette::text_muted(cx))
             })
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_sm()
-                    .text_color(if some {
-                        palette::text(cx)
-                    } else {
-                        palette::text_placeholder(cx)
-                    })
-                    .child(group.name.clone()),
+            .map(
+                |this| match self.renaming.as_ref().filter(|r| r.group == id) {
+                    Some(renaming) => this.child(
+                        div()
+                            .id(("rename", id))
+                            .flex_1()
+                            .min_w_0()
+                            // typing and clicking in the field don't open or close the folder
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .capture_key_down(cx.listener(
+                                |this, event: &KeyDownEvent, window, cx| {
+                                    if event.keystroke.key == "escape" {
+                                        cx.stop_propagation();
+                                        this.finish_rename(false, window, cx);
+                                    }
+                                },
+                            ))
+                            .child(
+                                Input::new(&renaming.field)
+                                    .xsmall()
+                                    .when(self.rename_clashes(cx), |this| {
+                                        this.border_color(palette::error(cx))
+                                    }),
+                            ),
+                    ),
+                    None => this.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_sm()
+                            .text_color(if some {
+                                palette::text(cx)
+                            } else {
+                                palette::text_placeholder(cx)
+                            })
+                            .child(group.name.clone()),
+                    ),
+                },
             )
             .child(
                 div()
@@ -1548,6 +1669,36 @@ impl MeasurementApp {
                     // some shown: a dash over the box; clicking it still shows all
                     .when(some && !all, |this| this.child(partly_checked_mark(cx))),
             )
+            .context_menu(move |menu, _, _| {
+                let app = app.clone();
+                if id == LIVE_GROUP {
+                    return menu.item(
+                        PopupMenuItem::new("Stop live")
+                            .icon(IconName::Square)
+                            .on_click(move |_, _, cx| {
+                                app.update(cx, |this, cx| this.stop_live(cx))
+                            }),
+                    );
+                }
+                let rename = app.clone();
+                menu.item(
+                    PopupMenuItem::new("Rename")
+                        .icon(gpui_kit::assets::IconName::Pencil)
+                        .on_click(move |_, window, cx| {
+                            rename.update(cx, |this, cx| this.start_rename(id, window, cx))
+                        }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new("Delete…")
+                        .icon(IconName::Delete)
+                        .on_click(move |_, window, cx| {
+                            app.update(cx, |this, cx| {
+                                this.confirm_delete(Action::DeleteGroup(id), window, cx)
+                            })
+                        }),
+                )
+            })
     }
 
     /// A measurement in the list; `live` ones change all the time and can't be deleted.

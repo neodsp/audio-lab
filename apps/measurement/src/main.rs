@@ -43,6 +43,7 @@ gpui_kit::assets::icon_assets!(
         Crosshair,
         FolderInput,
         FolderPlus,
+        Pencil,
         CalendarClock
     ]
 );

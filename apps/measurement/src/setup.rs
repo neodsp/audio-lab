@@ -17,7 +17,7 @@ use gpui_kit::*;
 
 use crate::devices::{self, DeviceList};
 use crate::live::{LiveRequest, period_len};
-use crate::measure::{self, Channel, Request, Settings};
+use crate::measure::{self, Channel, Request, Settings, is_duplicate, same_name};
 use crate::theme::palette;
 
 /// Width of the labels in front of the controls.
@@ -65,6 +65,8 @@ pub struct Setup {
     /// What the user writes about the next measurement, while setting it up and while it
     /// runs. It goes with the measurement.
     notes: Entity<TextareaState>,
+    /// The names of the folders there are: a new one needs another.
+    taken: Vec<String>,
     /// The name last filled in for the user, to tell whether they typed their own since.
     suggested_name: String,
     output_device: ChoiceState<Option<String>>,
@@ -230,6 +232,7 @@ impl Setup {
 
         let mut setup = Self {
             suggested_name: settings.name.clone(),
+            taken: Vec::new(),
             settings,
             devices: DeviceList::Scanning,
             error: None,
@@ -288,7 +291,8 @@ impl Setup {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let name = next_name(&self.settings.name, taken);
+        self.taken = taken.into_iter().map(str::to_string).collect();
+        let name = next_name(&self.settings.name, self.taken.iter().map(String::as_str));
         self.suggest_name(name, window, cx);
     }
 
@@ -300,11 +304,35 @@ impl Setup {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.taken = taken.into_iter().map(str::to_string).collect();
         if self.settings.name != self.suggested_name {
+            // a name the user typed stays, but may now be taken
+            cx.notify();
             return;
         }
-        let name = next_name(&self.settings.name, taken);
+        let name = next_name(&self.settings.name, self.taken.iter().map(String::as_str));
         self.suggest_name(name, window, cx);
+    }
+
+    /// Whether a folder already has the name the next measurement would get. An empty name
+    /// gets a free one.
+    fn name_taken(&self) -> bool {
+        !self.settings.live
+            && self
+                .taken
+                .iter()
+                .any(|taken| same_name(taken, &self.settings.name))
+    }
+
+    /// Why the measurement can't start, if it can't.
+    fn problem(&self) -> Option<String> {
+        if self.name_taken() {
+            return Some(format!(
+                "There is a folder called “{}” already.",
+                self.settings.name.trim()
+            ));
+        }
+        self.settings.problem()
     }
 
     fn suggest_name(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -415,7 +443,7 @@ impl Setup {
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
-        if self.settings.problem().is_none() {
+        if self.problem().is_none() {
             self.error = None;
             cx.emit(if self.settings.live {
                 SetupEvent::StartLive(self.settings.live_request())
@@ -589,7 +617,12 @@ impl Setup {
                             )
                             .child(
                                 div().flex_1().child(
-                                    Input::new(&row.name).small().disabled(!channel.enabled),
+                                    Input::new(&row.name)
+                                        .small()
+                                        .disabled(!channel.enabled)
+                                        .when(is_duplicate(channels, index), |this| {
+                                            this.border_color(palette::error(cx))
+                                        }),
                                 ),
                             )
                     }),
@@ -619,7 +652,7 @@ impl Setup {
 
 impl Render for Setup {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let problem = self.settings.problem();
+        let problem = self.problem();
         let request = self.settings.request();
         v_flex()
             .size_full()
@@ -653,7 +686,15 @@ impl Render for Setup {
                                 .gap_2()
                                 .child(self.render_mode(cx))
                                 .when(!self.settings.live, |this| {
-                                    this.child(row(cx, "Name", Input::new(&self.name).small()))
+                                    this.child(row(
+                                        cx,
+                                        "Name",
+                                        Input::new(&self.name)
+                                            .small()
+                                            .when(self.name_taken(), |this| {
+                                                this.border_color(palette::error(cx))
+                                            }),
+                                    ))
                                 })
                                 .child(row(cx, "Notes", Textarea::new(&self.notes).h(px(64.0))))
                                 .child(section(cx, "Devices"))
@@ -738,6 +779,8 @@ fn sync_rows(
             if let Some(channel) = channels.get_mut(index) {
                 channel.name = input.read(cx).value().to_string();
             }
+            // names that clash are marked
+            cx.notify();
         });
         rows.push(ChannelRow {
             name,
@@ -829,7 +872,7 @@ pub fn next_name<'a>(name: &str, taken: impl IntoIterator<Item = &'a str>) -> St
     let highest = taken
         .into_iter()
         .filter_map(split_number)
-        .filter(|(s, _)| *s == stem)
+        .filter(|(s, _)| same_name(s, stem))
         .map(|(_, number)| number)
         .max()
         .unwrap_or(0);
