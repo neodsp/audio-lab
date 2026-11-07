@@ -357,7 +357,7 @@ impl Setup {
                 h_flex()
                     .gap_2()
                     .text_sm()
-                    .text_color(palette::text_muted())
+                    .text_color(palette::text_muted(cx))
                     .child(Spinner::new().small())
                     .child("Looking for devices…"),
             ),
@@ -365,7 +365,7 @@ impl Setup {
                 .child(
                     div()
                         .text_sm()
-                        .text_color(palette::error())
+                        .text_color(palette::error(cx))
                         .child(format!("No devices: {error}")),
                 )
                 .child(
@@ -376,12 +376,14 @@ impl Setup {
                 ),
             DeviceList::Ready(_) => body
                 .child(row(
+                    cx,
                     "Output",
                     Select::new(&self.output_device)
                         .small()
                         .menu_width(px(360.0)),
                 ))
                 .child(row(
+                    cx,
                     "Input",
                     Select::new(&self.input_device)
                         .small()
@@ -447,13 +449,18 @@ impl Setup {
             )
     }
 
-    fn render_sweep(&self) -> impl IntoElement {
+    fn render_sweep(&self, cx: &App) -> impl IntoElement {
         let level = self.settings.level_db;
         v_flex()
             .gap_2()
-            .child(row("Sample rate", Select::new(&self.sample_rate).small()))
-            .child(row("Length", Select::new(&self.sweep_len).small()))
             .child(row(
+                cx,
+                "Sample rate",
+                Select::new(&self.sample_rate).small(),
+            ))
+            .child(row(cx, "Length", Select::new(&self.sweep_len).small()))
+            .child(row(
+                cx,
                 "Level",
                 h_flex()
                     .gap_3()
@@ -462,15 +469,16 @@ impl Setup {
                         div()
                             .w(px(64.0))
                             .text_sm()
-                            .text_color(palette::text_muted())
+                            .text_color(palette::text_muted(cx))
                             .child(format!("{level:.0} dBFS")),
                     ),
             ))
-            .child(row("From", number(&self.freq_low, "Hz")))
-            .child(row("To", number(&self.freq_high, "Hz")))
-            .child(row("Tail", number(&self.tail, "ms")))
-            .child(row("IR window", number(&self.ir_length, "ms")))
+            .child(row(cx, "From", number(cx, &self.freq_low, "Hz")))
+            .child(row(cx, "To", number(cx, &self.freq_high, "Hz")))
+            .child(row(cx, "Tail", number(cx, &self.tail, "ms")))
+            .child(row(cx, "IR window", number(cx, &self.ir_length, "ms")))
             .child(hint(
+                cx,
                 "The tail is recorded after each sweep: longer than the latency plus the reverb.",
             ))
     }
@@ -489,7 +497,7 @@ impl Render for Setup {
                     .px_2()
                     .gap_1()
                     .border_b_1()
-                    .border_color(palette::border_variant())
+                    .border_color(palette::border(cx))
                     .child(
                         Button::new("back")
                             .ghost()
@@ -510,15 +518,15 @@ impl Render for Setup {
                             v_flex()
                                 .p_3()
                                 .gap_2()
-                                .child(row("Name", Input::new(&self.name).small()))
-                                .child(section("Devices"))
+                                .child(row(cx, "Name", Input::new(&self.name).small()))
+                                .child(section(cx, "Devices"))
                                 .child(self.render_devices(cx))
-                                .child(section("Speakers"))
+                                .child(section(cx, "Speakers"))
                                 .child(self.render_channels(true, cx))
-                                .child(section("Microphones"))
+                                .child(section(cx, "Microphones"))
                                 .child(self.render_channels(false, cx))
-                                .child(section("Sweep"))
-                                .child(self.render_sweep()),
+                                .child(section(cx, "Sweep"))
+                                .child(self.render_sweep(cx)),
                         ),
                 ),
             )
@@ -528,7 +536,7 @@ impl Render for Setup {
                     .p_3()
                     .gap_2()
                     .border_t_1()
-                    .border_color(palette::border_variant())
+                    .border_color(palette::border(cx))
                     .child(
                         Button::new("start")
                             .primary()
@@ -540,15 +548,18 @@ impl Render for Setup {
                             .on_click(cx.listener(|this, _, _, cx| this.start(cx))),
                     )
                     .map(|this| match problem {
-                        Some(problem) => this.child(hint(problem)),
-                        None if !self.settings.simulated => this.child(hint(format!(
-                            "Takes about {:.0} s. Keep it quiet.",
-                            request.duration().as_secs_f64()
-                        ))),
+                        Some(problem) => this.child(hint(cx, problem)),
+                        None if !self.settings.simulated => this.child(hint(
+                            cx,
+                            format!(
+                                "Takes about {:.0} s. Keep it quiet.",
+                                request.duration().as_secs_f64()
+                            ),
+                        )),
                         None => this,
                     })
                     .when_some(self.error.clone(), |this, error| {
-                        this.child(div().text_sm().text_color(palette::error()).child(error))
+                        this.child(div().text_sm().text_color(palette::error(cx)).child(error))
                     }),
             )
     }
@@ -599,18 +610,18 @@ fn sweep_lengths(sample_rate: u32) -> Vec<Choice<u32>> {
         .collect()
 }
 
-fn section(title: &'static str) -> impl IntoElement {
+fn section(cx: &App, title: &'static str) -> impl IntoElement {
     div()
         .pt_3()
         .pb_1()
         .text_xs()
         .font_medium()
-        .text_color(palette::text_muted())
+        .text_color(palette::text_muted(cx))
         .child(title)
 }
 
 /// A label and its control.
-fn row(label: &'static str, control: impl IntoElement) -> impl IntoElement {
+fn row(cx: &App, label: &'static str, control: impl IntoElement) -> impl IntoElement {
     h_flex()
         .gap_2()
         .child(
@@ -618,25 +629,25 @@ fn row(label: &'static str, control: impl IntoElement) -> impl IntoElement {
                 .w(px(LABEL_WIDTH))
                 .flex_shrink_0()
                 .text_sm()
-                .text_color(palette::text_muted())
+                .text_color(palette::text_muted(cx))
                 .child(label),
         )
         .child(div().flex_1().min_w_0().child(control))
 }
 
-fn number(input: &Entity<InputState>, unit: &'static str) -> impl IntoElement {
+fn number(cx: &App, input: &Entity<InputState>, unit: &'static str) -> impl IntoElement {
     Input::new(input).small().suffix(
         div()
             .text_xs()
-            .text_color(palette::text_placeholder())
+            .text_color(palette::text_placeholder(cx))
             .child(unit),
     )
 }
 
-fn hint(text: impl Into<SharedString>) -> impl IntoElement {
+fn hint(cx: &App, text: impl Into<SharedString>) -> impl IntoElement {
     div()
         .text_xs()
-        .text_color(palette::text_placeholder())
+        .text_color(palette::text_placeholder(cx))
         .child(text.into())
 }
 

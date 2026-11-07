@@ -374,7 +374,7 @@ impl Render for Plot {
                 PlotKind::Impulse => "impulse-plot",
             })
             .size_full()
-            .bg(palette::editor())
+            .bg(palette::editor(cx))
             .cursor_crosshair()
             .on_scroll(cx.listener(Self::on_scroll))
             .on_mouse_down(
@@ -507,9 +507,9 @@ impl Scene {
         for mark in &x_marks {
             let x = px(transform.x(mark.value) as f32);
             let color = if mark.strong {
-                palette::grid_strong()
+                palette::grid_strong(cx)
             } else {
-                palette::grid()
+                palette::grid(cx)
             };
             window.paint_quad(fill(
                 Bounds::new(point(x, area.origin.y), size(px(1.0), area.size.height)),
@@ -519,9 +519,9 @@ impl Scene {
         for mark in &y_marks {
             let y = px(transform.y(mark.value) as f32);
             let color = if mark.strong {
-                palette::grid_strong()
+                palette::grid_strong(cx)
             } else {
-                palette::grid()
+                palette::grid(cx)
             };
             window.paint_quad(fill(
                 Bounds::new(point(area.origin.x, y), size(area.size.width, px(1.0))),
@@ -530,7 +530,7 @@ impl Scene {
         }
 
         // labels
-        let label_color = palette::text_muted();
+        let label_color = palette::text_muted(cx);
         let mut right_of_last = f32::NEG_INFINITY;
         for mark in &x_marks {
             let Some(label) = &mark.label else { continue };
@@ -588,9 +588,9 @@ impl Scene {
                     rect.size.height = area.size.height;
                 }
                 window.paint_quad(
-                    fill(rect, palette::accent().opacity(0.12))
+                    fill(rect, palette::accent(cx).opacity(0.12))
                         .border_widths(px(1.0))
-                        .border_color(palette::accent().opacity(0.6)),
+                        .border_color(palette::accent(cx).opacity(0.6)),
                 );
             }
         });
@@ -599,7 +599,7 @@ impl Scene {
         window.paint_quad(
             fill(area, transparent_black())
                 .border_widths(px(1.0))
-                .border_color(palette::border()),
+                .border_color(palette::border(cx)),
         );
 
         if let Some(at) = self.hover.filter(|at| area.contains(at)) {
@@ -720,7 +720,7 @@ impl Scene {
         cx: &mut App,
     ) {
         let (x, y) = transform.to_plot(at);
-        let crosshair = palette::text_muted().opacity(0.35);
+        let crosshair = palette::text_muted(cx).opacity(0.35);
         window.paint_quad(fill(
             Bounds::new(point(at.x, area.origin.y), size(px(1.0), area.size.height)),
             crosshair,
@@ -749,7 +749,7 @@ impl Scene {
                     )
                     .corner_radii(radius)
                     .border_widths(px(1.5))
-                    .border_color(palette::editor()),
+                    .border_color(palette::editor(cx)),
                 );
             }
         }
@@ -764,15 +764,15 @@ impl Scene {
         } else {
             self.kind.format_x(x, true)
         };
-        let title = self.shape(&title, palette::text(), window);
+        let title = self.shape(&title, palette::text(cx), window);
         let rows: Vec<(Hsla, ShapedLine, ShapedLine)> = values
             .iter()
             .take(MAX_READOUT)
             .map(|(trace, value)| {
                 (
                     trace.color,
-                    self.shape(&trace.name, palette::text_muted(), window),
-                    self.shape(&self.kind.format_value(*value), palette::text(), window),
+                    self.shape(&trace.name, palette::text_muted(cx), window),
+                    self.shape(&self.kind.format_value(*value), palette::text(cx), window),
                 )
             })
             .collect();
@@ -806,10 +806,10 @@ impl Scene {
         }
         let rect = Bounds::new(origin, size(width, height));
         window.paint_quad(
-            fill(rect, palette::elevated())
+            fill(rect, palette::elevated(cx))
                 .corner_radii(px(6.0))
                 .border_widths(px(1.0))
-                .border_color(palette::border()),
+                .border_color(palette::border(cx)),
         );
         let mut y = origin.y + padding - px(2.0);
         let left = origin.x + padding;
@@ -858,7 +858,7 @@ impl Scene {
             y += row_height;
             self.shape(
                 &format!("and {more} more"),
-                palette::text_placeholder(),
+                palette::text_placeholder(cx),
                 window,
             )
             .paint(

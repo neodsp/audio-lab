@@ -9,10 +9,13 @@ use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPick
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::select::{
+    SearchableVec, Select, SelectEvent, SelectItem as _, SelectState,
+};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderScale, SliderState};
 use gpui_kit::component::{
-    Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, TitleBar, WindowExt as _,
-    h_flex, h_resizable, resizable_panel, v_flex,
+    Disableable as _, Icon, IconName, IndexPath, Sizable as _, StyledExt as _, TitleBar,
+    WindowExt as _, h_flex, h_resizable, resizable_panel, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -21,7 +24,7 @@ use crate::curves::{Curves, impulse_points};
 use crate::measure::{self, Job, Outcome, Response};
 use crate::plot::{Plot, PlotKind, Series, Trace};
 use crate::setup::{Setup, SetupEvent};
-use crate::theme::{palette, trace_color};
+use crate::theme::{self, ThemeChoice, palette, trace_color};
 
 actions!(
     measurement,
@@ -108,6 +111,7 @@ pub struct MeasurementApp {
     /// 1/N octave.
     smoothing: f64,
     smoothing_slider: Entity<SliderState>,
+    theme_select: Entity<SelectState<SearchableVec<ThemeChoice>>>,
     setup: Entity<Setup>,
     magnitude: Entity<Plot>,
     phase: Entity<Plot>,
@@ -132,8 +136,30 @@ impl MeasurementApp {
                 .scale(SliderScale::Logarithmic)
                 .default_value(smoothing as f32)
         });
+        let themes = theme::choices(cx);
+        let current = themes
+            .iter()
+            .position(|choice| *choice.value() == theme::current(cx));
+        let theme_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(themes),
+                current.map(IndexPath::new),
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
         let subscriptions =
             vec![
+                cx.subscribe(&theme_select, |_, _, event: &SelectEvent<_>, cx| {
+                    if let SelectEvent::Confirm(Some(name)) = event {
+                        theme::select(name, cx);
+                    }
+                }),
+                // closed without choosing: back to the theme from before the preview
+                cx.subscribe(&theme_select, |_, _, _: &DismissEvent, cx| {
+                    theme::end_preview(cx)
+                }),
                 cx.subscribe_in(&setup, window, |this, _, event: &SetupEvent, window, cx| {
                     match event {
                         SetupEvent::Start(request) => this.start(request.clone(), window, cx),
@@ -164,6 +190,7 @@ impl MeasurementApp {
             smoothing_enabled: true,
             smoothing,
             smoothing_slider,
+            theme_select,
             setup,
             magnitude: cx.new(|_| Plot::new(PlotKind::Magnitude)),
             phase: cx.new(|_| Plot::new(PlotKind::Phase)),
@@ -435,13 +462,13 @@ impl MeasurementApp {
                         .child(
                             Icon::new(gpui_kit::assets::IconName::AudioWaveform)
                                 .small()
-                                .text_color(palette::accent()),
+                                .text_color(palette::accent(cx)),
                         )
                         .child(div().text_sm().child("audio-lab"))
                         .child(
                             div()
                                 .text_sm()
-                                .text_color(palette::text_muted())
+                                .text_color(palette::text_muted(cx))
                                 .child("Measurements"),
                         ),
                 )
@@ -459,7 +486,7 @@ impl MeasurementApp {
 
     fn render_side_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         if let Some(job) = &self.job {
-            return self.render_progress(job).into_any_element();
+            return self.render_progress(job, cx).into_any_element();
         }
         match self.side_bar {
             SideBar::Setup => self.setup.clone().into_any_element(),
@@ -467,24 +494,24 @@ impl MeasurementApp {
         }
     }
 
-    fn render_progress(&self, job: &Job) -> impl IntoElement {
+    fn render_progress(&self, job: &Job, cx: &App) -> impl IntoElement {
         let remaining = job.remaining().as_secs();
-        v_flex().size_full().child(panel_header("Measuring")).child(
-            v_flex()
-                .p_3()
-                .gap_3()
-                .child(Progress::new("measure-progress").value(job.progress() * 100.0))
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(palette::text_muted())
-                        .child(if remaining > 0 {
+        v_flex()
+            .size_full()
+            .child(panel_header("Measuring", cx))
+            .child(
+                v_flex()
+                    .p_3()
+                    .gap_3()
+                    .child(Progress::new("measure-progress").value(job.progress() * 100.0))
+                    .child(div().text_sm().text_color(palette::text_muted(cx)).child(
+                        if remaining > 0 {
                             format!("About {remaining} s left. Keep it quiet.")
                         } else {
                             "Analyzing…".to_string()
-                        }),
-                ),
-        )
+                        },
+                    )),
+            )
     }
 
     fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -508,12 +535,12 @@ impl MeasurementApp {
                     .pr_2()
                     .justify_between()
                     .border_b_1()
-                    .border_color(palette::border_variant())
+                    .border_color(palette::border(cx))
                     .child(
                         div()
                             .text_xs()
                             .font_medium()
-                            .text_color(palette::text_muted())
+                            .text_color(palette::text_muted(cx))
                             .child("MEASUREMENTS"),
                     )
                     .child(
@@ -544,7 +571,7 @@ impl MeasurementApp {
                                         .child(
                                             div()
                                                 .text_sm()
-                                                .text_color(palette::text_placeholder())
+                                                .text_color(palette::text_placeholder(cx))
                                                 .child("No measurements yet."),
                                         )
                                         .child(
@@ -572,8 +599,8 @@ impl MeasurementApp {
             .gap_1()
             .rounded(px(4.0))
             .border_1()
-            .border_color(palette::warning().opacity(0.4))
-            .bg(palette::warning().opacity(0.08))
+            .border_color(palette::warning(cx).opacity(0.4))
+            .bg(palette::warning(cx).opacity(0.08))
             .children(self.warnings.iter().map(|warning| {
                 h_flex()
                     .gap_2()
@@ -581,13 +608,13 @@ impl MeasurementApp {
                     .child(
                         Icon::new(IconName::TriangleAlert)
                             .xsmall()
-                            .text_color(palette::warning()),
+                            .text_color(palette::warning(cx)),
                     )
                     .child(
                         div()
                             .flex_1()
                             .text_xs()
-                            .text_color(palette::text())
+                            .text_color(palette::text(cx))
                             .child(warning.clone()),
                     )
             }))
@@ -619,7 +646,7 @@ impl MeasurementApp {
             .gap_1p5()
             .w_full()
             .cursor_pointer()
-            .hover(|style| style.bg(palette::hover()))
+            .hover(|style| style.bg(palette::hover(cx)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 if let Some(group) = this.groups.iter_mut().find(|g| g.id == id) {
                     group.expanded = !group.expanded;
@@ -633,7 +660,7 @@ impl MeasurementApp {
                     IconName::ChevronRight
                 })
                 .xsmall()
-                .text_color(palette::text_muted()),
+                .text_color(palette::text_muted(cx)),
             )
             .child(
                 Icon::new(if group.expanded {
@@ -642,7 +669,7 @@ impl MeasurementApp {
                     IconName::Folder
                 })
                 .small()
-                .text_color(palette::text_muted()),
+                .text_color(palette::text_muted(cx)),
             )
             .child(
                 div()
@@ -653,16 +680,16 @@ impl MeasurementApp {
                     .text_ellipsis()
                     .text_sm()
                     .text_color(if some {
-                        palette::text()
+                        palette::text(cx)
                     } else {
-                        palette::text_placeholder()
+                        palette::text_placeholder(cx)
                     })
                     .child(group.name.clone()),
             )
             .child(
                 div()
                     .text_xs()
-                    .text_color(palette::text_placeholder())
+                    .text_color(palette::text_placeholder(cx))
                     .child(format!("{}", group.measurements.len())),
             )
             .child(
@@ -712,7 +739,7 @@ impl MeasurementApp {
             .gap_2()
             .w_full()
             .cursor_pointer()
-            .hover(|style| style.bg(palette::hover()))
+            .hover(|style| style.bg(palette::hover(cx)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 if let Some(m) = this.measurement_mut(id) {
                     m.visible = !m.visible;
@@ -734,9 +761,9 @@ impl MeasurementApp {
                     .text_ellipsis()
                     .text_sm()
                     .text_color(if m.visible {
-                        palette::text()
+                        palette::text(cx)
                     } else {
-                        palette::text_placeholder()
+                        palette::text_placeholder(cx)
                     })
                     .child(m.name.clone()),
             )
@@ -779,9 +806,9 @@ impl MeasurementApp {
         h_flex()
             .h(px(34.0))
             .flex_shrink_0()
-            .bg(palette::panel())
+            .bg(palette::tab_bar(cx))
             .border_b_1()
-            .border_color(palette::border_variant())
+            .border_color(palette::border(cx))
             .children(Tab::ALL.into_iter().map(|tab| {
                 let active = tab == self.tab;
                 h_flex()
@@ -789,19 +816,19 @@ impl MeasurementApp {
                     .h_full()
                     .px_4()
                     .border_r_1()
-                    .border_color(palette::border_variant())
+                    .border_color(palette::border(cx))
                     .text_sm()
                     .cursor_pointer()
                     .map(|this| {
                         if active {
                             // the active tab is part of the plot below it
-                            this.bg(palette::editor())
-                                .text_color(palette::text())
+                            this.bg(palette::tab_active(cx))
+                                .text_color(palette::text(cx))
                                 .mb(px(-1.0))
                                 .h(px(35.0))
                         } else {
-                            this.text_color(palette::text_muted())
-                                .hover(|style| style.bg(palette::hover()))
+                            this.text_color(palette::text_muted(cx))
+                                .hover(|style| style.bg(palette::hover(cx)))
                         }
                     })
                     .on_click(cx.listener(move |this, _, _, cx| this.set_tab(tab, cx)))
@@ -816,9 +843,9 @@ impl MeasurementApp {
             .flex_shrink_0()
             .px_3()
             .gap_3()
-            .bg(palette::editor())
+            .bg(palette::editor(cx))
             .border_b_1()
-            .border_color(palette::border_variant())
+            .border_color(palette::border(cx))
             .when(frequency, |this| {
                 this.child(
                     Checkbox::new("smoothing")
@@ -839,9 +866,9 @@ impl MeasurementApp {
                     div()
                         .text_sm()
                         .text_color(if self.smoothing_enabled {
-                            palette::text_muted()
+                            palette::text_muted(cx)
                         } else {
-                            palette::text_placeholder()
+                            palette::text_placeholder(cx)
                         })
                         .child(format!("1/{:.0} octave", self.smoothing)),
                 )
@@ -850,7 +877,7 @@ impl MeasurementApp {
             .child(
                 div()
                     .text_xs()
-                    .text_color(palette::text_placeholder())
+                    .text_color(palette::text_placeholder(cx))
                     .child("Scroll to zoom · drag to pan · right-drag to zoom in · double-click to fit"),
             )
     }
@@ -867,16 +894,16 @@ impl MeasurementApp {
                 .items_center()
                 .justify_center()
                 .gap_3()
-                .bg(palette::editor())
+                .bg(palette::editor(cx))
                 .child(
                     Icon::new(gpui_kit::assets::IconName::AudioWaveform)
                         .size(px(48.0))
-                        .text_color(palette::border()),
+                        .text_color(palette::border(cx)),
                 )
                 .child(
                     div()
                         .text_sm()
-                        .text_color(palette::text_placeholder())
+                        .text_color(palette::text_placeholder(cx))
                         .child(message),
                 )
                 .when(self.groups.is_empty() && self.job.is_none(), |this| {
@@ -897,7 +924,7 @@ impl MeasurementApp {
         }
     }
 
-    fn render_status_bar(&self) -> impl IntoElement {
+    fn render_status_bar(&self, cx: &App) -> impl IntoElement {
         let total = self.num_measurements();
         let shown = self.num_visible();
         h_flex()
@@ -906,11 +933,11 @@ impl MeasurementApp {
             .px_3()
             .gap_3()
             .justify_between()
-            .bg(palette::chrome())
+            .bg(palette::status_bar(cx))
             .border_t_1()
-            .border_color(palette::border())
+            .border_color(palette::border(cx))
             .text_xs()
-            .text_color(palette::text_muted())
+            .text_color(palette::text_muted(cx))
             .child(match &self.job {
                 Some(job) => h_flex()
                     .gap_2()
@@ -931,19 +958,38 @@ impl MeasurementApp {
                     )
                 }),
             })
-            .when(!self.warnings.is_empty(), |this| {
-                this.child(
-                    h_flex()
-                        .gap_1()
-                        .text_color(palette::warning())
-                        .child(Icon::new(IconName::TriangleAlert).xsmall())
-                        .child(format!(
-                            "{} warning{}",
-                            self.warnings.len(),
-                            if self.warnings.len() == 1 { "" } else { "s" }
-                        )),
-                )
-            })
+            .child(
+                h_flex()
+                    .gap_3()
+                    .when(!self.warnings.is_empty(), |this| {
+                        this.child(
+                            h_flex()
+                                .gap_1()
+                                .text_color(palette::warning(cx))
+                                .child(Icon::new(IconName::TriangleAlert).xsmall())
+                                .child(format!(
+                                    "{} warning{}",
+                                    self.warnings.len(),
+                                    if self.warnings.len() == 1 { "" } else { "s" }
+                                )),
+                        )
+                    })
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(Icon::new(IconName::Palette).xsmall())
+                            .child(
+                                div().w(px(170.0)).child(
+                                    Select::new(&self.theme_select)
+                                        .xsmall()
+                                        .appearance(false)
+                                        .search_placeholder("Search themes")
+                                        .menu_width(px(240.0))
+                                        .menu_max_h(px(420.0)),
+                                ),
+                            ),
+                    ),
+            )
     }
 }
 
@@ -970,8 +1016,8 @@ impl Render for MeasurementApp {
             .on_action(cx.listener(|this, _: &ShowPhase, _, cx| this.set_tab(Tab::Phase, cx)))
             .on_action(cx.listener(|this, _: &ShowImpulse, _, cx| this.set_tab(Tab::Impulse, cx)))
             .size_full()
-            .bg(palette::editor())
-            .text_color(palette::text())
+            .bg(palette::editor(cx))
+            .text_color(palette::text(cx))
             .child(self.render_title_bar(cx))
             .child(
                 div().flex_1().min_h_0().child(
@@ -983,9 +1029,9 @@ impl Render for MeasurementApp {
                                 .child(
                                     div()
                                         .size_full()
-                                        .bg(palette::panel())
+                                        .bg(palette::panel(cx))
                                         .border_r_1()
-                                        .border_color(palette::border_variant())
+                                        .border_color(palette::border(cx))
                                         .child(self.render_side_bar(cx)),
                                 ),
                         )
@@ -1000,20 +1046,20 @@ impl Render for MeasurementApp {
                         ),
                 ),
             )
-            .child(self.render_status_bar())
+            .child(self.render_status_bar(cx))
     }
 }
 
-fn panel_header(title: &'static str) -> impl IntoElement {
+fn panel_header(title: &'static str, cx: &App) -> impl IntoElement {
     h_flex()
         .h(px(36.0))
         .flex_shrink_0()
         .px_3()
         .border_b_1()
-        .border_color(palette::border_variant())
+        .border_color(palette::border(cx))
         .text_xs()
         .font_medium()
-        .text_color(palette::text_muted())
+        .text_color(palette::text_muted(cx))
         .child(title.to_uppercase())
 }
 

@@ -1,193 +1,240 @@
-//! A dark theme in the colors of Zed's One Dark, for the components and for what the app
-//! draws itself.
+//! The look: one of gpui-kit's themes, for the components and for what the app draws itself.
+//! The chosen theme is remembered in the user's config directory.
 
-use gpui_kit::component::{Theme, ThemeRegistry};
-use gpui_kit::{App, Hsla, SharedString, hsla, rgb, rgba};
+use std::path::PathBuf;
 
-const THEME_NAME: &str = "Measurement Dark";
+use gpui_kit::component::select::SelectItem;
+use gpui_kit::component::{ActiveTheme as _, Theme, ThemeRegistry};
+use gpui_kit::{
+    App, Global, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, rgb,
+};
 
-/// The colors the app draws with directly.
+const DEFAULT_THEME: &str = "Default Dark";
+
+/// gpui-kit's themes besides the default light and dark one, see `themes/README.md`.
+const THEMES: [&str; 21] = [
+    include_str!("../themes/adventure.json"),
+    include_str!("../themes/alduin.json"),
+    include_str!("../themes/asciinema.json"),
+    include_str!("../themes/aurora.json"),
+    include_str!("../themes/ayu.json"),
+    include_str!("../themes/catppuccin.json"),
+    include_str!("../themes/everforest.json"),
+    include_str!("../themes/fahrenheit.json"),
+    include_str!("../themes/flexoki.json"),
+    include_str!("../themes/gruvbox.json"),
+    include_str!("../themes/harper.json"),
+    include_str!("../themes/hybrid.json"),
+    include_str!("../themes/jellybeans.json"),
+    include_str!("../themes/kibble.json"),
+    include_str!("../themes/macos-classic.json"),
+    include_str!("../themes/mellifluous.json"),
+    include_str!("../themes/molokai.json"),
+    include_str!("../themes/solarized.json"),
+    include_str!("../themes/spaceduck.json"),
+    include_str!("../themes/tokyonight.json"),
+    include_str!("../themes/twilight.json"),
+];
+
+/// The colors the app draws with directly, taken from the theme, so they match the components.
 pub mod palette {
     use super::*;
 
-    /// Behind the plots, like Zed's editor.
-    pub fn editor() -> Hsla {
-        rgb(0x282c33).into()
+    /// Behind the plots.
+    pub fn editor(cx: &App) -> Hsla {
+        cx.theme().background
     }
-    /// Side bar and tab bar.
-    pub fn panel() -> Hsla {
-        rgb(0x2f343e).into()
+    /// The side bar.
+    pub fn panel(cx: &App) -> Hsla {
+        cx.theme().sidebar
     }
-    /// Title bar and status bar.
-    pub fn chrome() -> Hsla {
-        rgb(0x3b414d).into()
+    pub fn tab_bar(cx: &App) -> Hsla {
+        cx.theme().tab_bar
+    }
+    pub fn tab_active(cx: &App) -> Hsla {
+        cx.theme().tab_active
+    }
+    pub fn status_bar(cx: &App) -> Hsla {
+        cx.theme().status_bar
     }
     /// Popups and the readout under the mouse.
-    pub fn elevated() -> Hsla {
-        rgb(0x2f343e).into()
+    pub fn elevated(cx: &App) -> Hsla {
+        cx.theme().popover
     }
-    pub fn hover() -> Hsla {
-        rgb(0x363c46).into()
+    pub fn hover(cx: &App) -> Hsla {
+        cx.theme().accent
     }
-    pub fn border() -> Hsla {
-        rgb(0x464b57).into()
+    pub fn border(cx: &App) -> Hsla {
+        cx.theme().border
     }
-    pub fn border_variant() -> Hsla {
-        rgb(0x363c46).into()
+    pub fn text(cx: &App) -> Hsla {
+        cx.theme().foreground
     }
-    pub fn text() -> Hsla {
-        rgb(0xdce0e5).into()
+    pub fn text_muted(cx: &App) -> Hsla {
+        cx.theme().muted_foreground
     }
-    pub fn text_muted() -> Hsla {
-        rgb(0xa9afbc).into()
+    pub fn text_placeholder(cx: &App) -> Hsla {
+        cx.theme().muted_foreground.opacity(0.65)
     }
-    pub fn text_placeholder() -> Hsla {
-        rgb(0x878a98).into()
+    /// Marks the user's own drawing, such as the box of a box zoom.
+    pub fn accent(cx: &App) -> Hsla {
+        cx.theme().primary
     }
-    pub fn accent() -> Hsla {
-        rgb(0x74ade8).into()
+    pub fn warning(cx: &App) -> Hsla {
+        cx.theme().warning
     }
-    pub fn warning() -> Hsla {
-        rgb(0xdec184).into()
+    pub fn error(cx: &App) -> Hsla {
+        cx.theme().danger
     }
-    pub fn error() -> Hsla {
-        rgb(0xd07277).into()
+    pub fn grid(cx: &App) -> Hsla {
+        cx.theme().chart_grid.opacity(0.45)
     }
-    pub fn grid() -> Hsla {
-        rgba(0xc8ccd40d).into()
-    }
-    pub fn grid_strong() -> Hsla {
-        rgba(0xc8ccd424).into()
+    pub fn grid_strong(cx: &App) -> Hsla {
+        cx.theme().chart_grid
     }
 }
 
-/// The `index`th of a series of well distinguishable curve colors: Zed's player colors, then
-/// hues around the color wheel.
+/// The `index`th of a series of well distinguishable curve colors: medium shades that read on
+/// light and dark themes, then hues around the color wheel.
 pub fn trace_color(index: usize) -> Hsla {
-    const PLAYERS: [u32; 8] = [
-        0x74ade8, 0xbf956a, 0xb477cf, 0x6eb4bf, 0xd07277, 0xdec184, 0xa1c181, 0xbe5046,
+    const COLORS: [u32; 8] = [
+        0x3b82f6, // blue
+        0xf59e0b, // amber
+        0x8b5cf6, // violet
+        0x10b981, // emerald
+        0xf43f5e, // rose
+        0x06b6d4, // cyan
+        0xf97316, // orange
+        0x84cc16, // lime
     ];
-    match PLAYERS.get(index) {
+    match COLORS.get(index) {
         Some(&color) => rgb(color).into(),
         None => {
             let golden_ratio = (5f32.sqrt() - 1.0) / 2.0;
-            hsla((index as f32 * golden_ratio).fract(), 0.6, 0.66, 1.0)
+            gpui_kit::hsla((index as f32 * golden_ratio).fract(), 0.75, 0.55, 1.0)
         }
     }
 }
 
-/// Installs the theme for the components.
+/// Loads the themes and applies the one chosen last time, or the default dark one.
 pub fn init(cx: &mut App) {
     let registry = ThemeRegistry::global_mut(cx);
-    registry
-        .load_themes_from_str(THEME)
-        .expect("the theme is valid");
-    let config = registry
-        .themes()
-        .get(&SharedString::from(THEME_NAME))
-        .cloned()
-        .expect("the theme was just loaded");
-    Theme::update(cx, |theme| {
-        theme.apply_config(&config);
-        theme.shadow = false;
-    });
+    for theme in THEMES {
+        registry
+            .load_themes_from_str(theme)
+            .expect("the bundled themes are valid");
+    }
+    let saved = settings_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|name| SharedString::from(name.trim().to_string()));
+    let applied = saved.is_some_and(|name| apply(&name, cx));
+    if !applied {
+        apply(DEFAULT_THEME, cx);
+    }
 }
 
-const THEME: &str = r##"{
-  "name": "Measurement",
-  "author": "audio-lab",
-  "themes": [
-    {
-      "name": "Measurement Dark",
-      "mode": "dark",
-      "font.size": 14,
-      "radius": 4,
-      "radius.lg": 6,
-      "shadow": false,
-      "colors": {
-        "accent.background": "#363c46",
-        "accent.foreground": "#dce0e5",
-        "accordion.background": "#2f343e",
-        "background": "#2f343e",
-        "base.blue": "#74ade8",
-        "base.blue.light": "#a3c8f0",
-        "base.cyan": "#6eb4bf",
-        "base.cyan.light": "#9ccdd5",
-        "base.green": "#a1c181",
-        "base.green.light": "#bfd5a8",
-        "base.magenta": "#b477cf",
-        "base.magenta.light": "#cba2de",
-        "base.red": "#d07277",
-        "base.red.light": "#e09fa2",
-        "base.yellow": "#dec184",
-        "base.yellow.light": "#e9d4a9",
-        "border": "#363c46",
-        "caret": "#74ade8",
-        "danger.background": "#d07277",
-        "danger.foreground": "#d07277",
-        "drag_border": "#74ade8",
-        "drop_target.background": "#74ade833",
-        "foreground": "#dce0e5",
-        "group_box.background": "#2e343e",
-        "group_box.foreground": "#dce0e5",
-        "info.background": "#6eb4bf",
-        "info.foreground": "#6eb4bf",
-        "input.border": "#464b57",
-        "link.active.foreground": "#a3c8f0",
-        "link.foreground": "#74ade8",
-        "link.hover.foreground": "#a3c8f0",
-        "list.active.background": "#293b5b",
-        "list.active.border": "#47679e",
-        "list.background": "#2f343e",
-        "list.even.background": "#2f343e",
-        "list.head.background": "#2f343e",
-        "list.hover.background": "#363c46",
-        "muted.background": "#2e343e",
-        "muted.foreground": "#a9afbc",
-        "overlay": "#00000040",
-        "popover.background": "#2f343e",
-        "popover.foreground": "#dce0e5",
-        "primary.active.background": "#5d9ee3",
-        "primary.background": "#74ade8",
-        "primary.foreground": "#282c33",
-        "primary.hover.background": "#8cbcec",
-        "progress_bar.background": "#74ade8",
-        "ring": "#47679e",
-        "scrollbar.background": "#00000000",
-        "scrollbar.thumb.background": "#c8ccd44c",
-        "scrollbar.thumb.hover.background": "#c8ccd480",
-        "secondary.active.background": "#454a56",
-        "secondary.background": "#2e343e",
-        "secondary.foreground": "#dce0e5",
-        "secondary.hover.background": "#363c46",
-        "selection.background": "#74ade83d",
-        "sidebar.accent.background": "#363c46",
-        "sidebar.accent.foreground": "#dce0e5",
-        "sidebar.background": "#2f343e",
-        "sidebar.border": "#363c46",
-        "sidebar.foreground": "#dce0e5",
-        "sidebar.primary.background": "#74ade8",
-        "sidebar.primary.foreground": "#282c33",
-        "skeleton.background": "#2e343e",
-        "slider.bar.background": "#74ade8",
-        "slider.thumb.background": "#dce0e5",
-        "status_bar.background": "#3b414d",
-        "status_bar.border": "#464b57",
-        "success.background": "#a1c181",
-        "success.foreground": "#a1c181",
-        "switch.background": "#454a56",
-        "tab.active.background": "#282c33",
-        "tab.active.foreground": "#dce0e5",
-        "tab.background": "#00000000",
-        "tab.foreground": "#a9afbc",
-        "tab_bar.background": "#2f343e",
-        "tab_bar.segmented.background": "#2e343e",
-        "title_bar.background": "#3b414d",
-        "title_bar.border": "#464b57",
-        "warning.background": "#dec184",
-        "warning.foreground": "#dec184",
-        "window.border": "#464b57"
-      }
+/// A theme in the theme selector. Hovering it previews it.
+#[derive(Clone)]
+pub struct ThemeChoice(SharedString);
+
+impl SelectItem for ThemeChoice {
+    type Value = SharedString;
+
+    fn title(&self) -> SharedString {
+        self.0.clone()
     }
-  ]
-}"##;
+
+    fn value(&self) -> &SharedString {
+        &self.0
+    }
+
+    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let name = self.0.clone();
+        div()
+            .id(SharedString::from(format!("theme-{name}")))
+            .w_full()
+            .child(name.clone())
+            .on_hover(move |hovered, _, cx| {
+                if *hovered {
+                    preview(&name, cx);
+                }
+            })
+    }
+}
+
+/// All themes: the default ones first, then the others by name.
+pub fn choices(cx: &App) -> Vec<ThemeChoice> {
+    let mut names: Vec<SharedString> = ThemeRegistry::global(cx).themes().keys().cloned().collect();
+    names.sort_by_key(|name| (!name.starts_with("Default "), name.to_lowercase()));
+    names.into_iter().map(ThemeChoice).collect()
+}
+
+/// The name of the theme in use.
+pub fn current(cx: &App) -> SharedString {
+    cx.theme().theme_name().clone()
+}
+
+/// The theme in use before the preview started, while one is shown.
+#[derive(Default)]
+struct Preview {
+    before: Option<SharedString>,
+}
+
+impl Global for Preview {}
+
+/// Shows the theme `name` until [`select`] keeps it or [`end_preview`] goes back.
+fn preview(name: &SharedString, cx: &mut App) {
+    if current(cx) == *name {
+        return;
+    }
+    let before = current(cx);
+    let preview = cx.default_global::<Preview>();
+    preview.before.get_or_insert(before);
+    apply(name, cx);
+}
+
+/// Goes back to the theme from before the preview, unless one was selected meanwhile.
+pub fn end_preview(cx: &mut App) {
+    if let Some(before) = cx.default_global::<Preview>().before.take() {
+        apply(&before, cx);
+    }
+}
+
+/// Switches to the theme `name` and remembers it for the next start.
+pub fn select(name: &str, cx: &mut App) {
+    cx.default_global::<Preview>().before = None;
+    if apply(name, cx)
+        && let Some(path) = settings_path()
+    {
+        // not being able to remember it is no reason to bother anyone
+        let _ = std::fs::create_dir_all(path.parent().expect("the path has a directory"));
+        let _ = std::fs::write(path, name);
+    }
+}
+
+/// Switches to the theme `name`, if there is one.
+fn apply(name: &str, cx: &mut App) -> bool {
+    let Some(config) = ThemeRegistry::global(cx)
+        .themes()
+        .get(&SharedString::from(name.to_string()))
+        .cloned()
+    else {
+        return false;
+    };
+    Theme::update(cx, |theme| theme.apply_config(&config));
+    true
+}
+
+/// Where the chosen theme is stored: the platform's config directory.
+fn settings_path() -> Option<PathBuf> {
+    let env = |name| std::env::var_os(name).map(PathBuf::from);
+    let base = if cfg!(target_os = "windows") {
+        env("APPDATA")
+    } else if cfg!(target_os = "macos") {
+        env("HOME").map(|home| home.join("Library/Application Support"))
+    } else {
+        env("XDG_CONFIG_HOME").or_else(|| env("HOME").map(|home| home.join(".config")))
+    }?;
+    Some(base.join("audio-lab").join("measurement-theme"))
+}
