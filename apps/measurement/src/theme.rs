@@ -87,6 +87,10 @@ pub mod palette {
     pub fn drop_target(cx: &App) -> Hsla {
         cx.theme().primary.opacity(0.18)
     }
+    /// The line between tabs where a dragged tab would go in.
+    pub fn drop_line(cx: &App) -> Hsla {
+        cx.theme().drag_border
+    }
     pub fn warning(cx: &App) -> Hsla {
         cx.theme().warning
     }

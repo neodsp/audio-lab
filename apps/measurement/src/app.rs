@@ -407,13 +407,6 @@ impl MeasurementApp {
         self.groups.iter().map(|g| g.measurements.len()).sum()
     }
 
-    /// Whether hidden measurements are shown because the mouse is over them in the list.
-    fn previewing(&self) -> bool {
-        self.all_groups()
-            .flat_map(|g| &g.measurements)
-            .any(|m| !m.visible && self.highlight.contains(&m.id))
-    }
-
     fn num_visible(&self) -> usize {
         self.all_groups()
             .flat_map(|g| &g.measurements)
@@ -1202,35 +1195,22 @@ impl MeasurementApp {
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         TitleBar::new().child(
-            h_flex()
-                .w_full()
-                .pr_2()
-                .justify_between()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Icon::new(gpui_kit::assets::IconName::AudioWaveform)
-                                .small()
-                                .text_color(palette::accent(cx)),
-                        )
-                        .child(div().text_sm().child("audio-lab"))
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(palette::text_muted(cx))
-                                .child("Measurements"),
-                        ),
-                )
-                .child(
-                    Button::new("title-new")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Plus)
-                        .label("New measurement")
-                        .disabled(self.job.is_some())
-                        .on_click(cx.listener(|this, _, _, cx| this.new_measurement(cx))),
-                ),
+            h_flex().w_full().pr_2().justify_between().child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Icon::new(gpui_kit::assets::IconName::AudioWaveform)
+                            .small()
+                            .text_color(palette::accent(cx)),
+                    )
+                    .child(div().text_sm().child("audio-lab"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(palette::text_muted(cx))
+                            .child("Measurements"),
+                    ),
+            ),
         )
     }
 
@@ -1692,45 +1672,26 @@ impl MeasurementApp {
                     .text_color(palette::text_placeholder(cx))
                     .child(format!("{}", group.measurements.len())),
             )
-            .child(info_button(
-                ("group-info", id),
-                Info {
-                    title: group.name.clone(),
-                    // live tells since when and how it measures; a folder what its
-                    // measurements have in common
-                    when: match &self.live {
-                        Some(run) if id == LIVE_GROUP => when(run.how.at, true),
-                        _ => span(group.measurements.iter().map(|m| m.measured)),
+            .child(trailing(
+                info_button(
+                    ("group-info", id),
+                    Info {
+                        title: group.name.clone(),
+                        // live tells since when and how it measures; a folder what its
+                        // measurements have in common
+                        when: match &self.live {
+                            Some(run) if id == LIVE_GROUP => when(run.how.at, true),
+                            _ => span(group.measurements.iter().map(|m| m.measured)),
+                        },
+                        lines: match &self.live {
+                            Some(run) if id == LIVE_GROUP => run.how.about.to_vec(),
+                            _ => common_about(group.measurements.iter().map(|m| &m.about)),
+                        },
+                        notes: group.notes.field.clone(),
+                        note_text: group.notes.text(cx),
                     },
-                    lines: match &self.live {
-                        Some(run) if id == LIVE_GROUP => run.how.about.to_vec(),
-                        _ => common_about(group.measurements.iter().map(|m| &m.about)),
-                    },
-                    notes: group.notes.field.clone(),
-                    note_text: group.notes.text(cx),
-                },
-                cx,
-            ))
-            // the live folder goes with Stop
-            .when(id != LIVE_GROUP, |this| {
-                this.child(
-                    div()
-                        .invisible()
-                        .group_hover(row_group.clone(), |style| style.visible())
-                        .child(
-                            Button::new(("delete-group", id))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Delete)
-                                .tooltip("Delete the folder")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.confirm_delete(Action::DeleteGroup(id), window, cx);
-                                })),
-                        ),
-                )
-            })
-            .child(
+                    cx,
+                ),
                 div()
                     .relative()
                     .child(
@@ -1752,7 +1713,7 @@ impl MeasurementApp {
                     )
                     // some shown: a dash over the box; clicking it still shows all
                     .when(some && !all, |this| this.child(partly_checked_mark(cx))),
-            )
+            ))
             .context_menu(move |menu, _, _| {
                 let app = app.clone();
                 if id == LIVE_GROUP {
@@ -1843,18 +1804,18 @@ impl MeasurementApp {
                     })
                     .child(m.name.clone()),
             )
-            .child(info_button(
-                ("measurement-info", id),
-                Info {
-                    title: m.full_name.clone(),
-                    when: when(m.measured, live),
-                    lines: m.about.iter().chain(&details).cloned().collect(),
-                    notes: m.notes.field.clone(),
-                    note_text: m.notes.text(cx),
-                },
-                cx,
-            ))
-            .child(
+            .child(trailing(
+                info_button(
+                    ("measurement-info", id),
+                    Info {
+                        title: m.full_name.clone(),
+                        when: when(m.measured, live),
+                        lines: m.about.iter().chain(&details).cloned().collect(),
+                        notes: m.notes.field.clone(),
+                        note_text: m.notes.text(cx),
+                    },
+                    cx,
+                ),
                 Checkbox::new(("visible", id))
                     .small()
                     .checked(m.visible)
@@ -1865,7 +1826,7 @@ impl MeasurementApp {
                         }
                         this.refresh_plots(cx);
                     })),
-            )
+            ))
             .context_menu(move |mut menu, window, cx| {
                 let solo = app.clone();
                 let delete = app.clone();
@@ -1944,8 +1905,11 @@ impl MeasurementApp {
             .border_color(palette::border(cx))
             .children(pane.tabs.iter().map(|&tab| {
                 let active = tab == pane.active;
+                let group = SharedString::from(format!("tab-{ix}-{}", tab.title()));
                 h_flex()
                     .id(tab.title())
+                    .group(group.clone())
+                    .relative()
                     .h_full()
                     .px_4()
                     .border_r_1()
@@ -1969,7 +1933,6 @@ impl MeasurementApp {
                         let title = dragged.0.title();
                         cx.new(|_| TabGhost(title))
                     })
-                    .drag_over::<DraggedTab>(|style, _, _, cx| style.bg(palette::drop_target(cx)))
                     .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
                         let target = Target::Tabs {
                             pane: ix,
@@ -1978,14 +1941,17 @@ impl MeasurementApp {
                         this.drop_tab(dragged.0, target, cx)
                     }))
                     .child(tab.title())
+                    .child(drop_line(group, cx))
             }))
             // the free space after the tabs: drops there go last
             .child(
                 div()
                     .id(("tab-bar-end", ix))
+                    .group(SharedString::from(format!("tab-bar-end-{ix}")))
+                    .relative()
                     .flex_1()
                     .h_full()
-                    .drag_over::<DraggedTab>(|style, _, _, cx| style.bg(palette::drop_target(cx)))
+                    .child(drop_line(format!("tab-bar-end-{ix}").into(), cx))
                     .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
                         let target = Target::Tabs {
                             pane: ix,
@@ -1993,20 +1959,6 @@ impl MeasurementApp {
                         };
                         this.drop_tab(dragged.0, target, cx)
                     })),
-            )
-            .child(
-                div().px_2().child(
-                    Button::new(("fit-to-data", ix))
-                        .ghost()
-                        .xsmall()
-                        .icon(gpui_kit::assets::IconName::Scan)
-                        .label("Fit to data")
-                        .tooltip("Zoom to the shown curves. Double-click the plot to go back.")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let tab = this.panes.panes[ix].active;
-                            this.plot(tab).update(cx, |plot, cx| plot.fit_to_data(cx));
-                        })),
-                ),
             )
     }
 
@@ -2083,9 +2035,9 @@ impl MeasurementApp {
                         })),
                 )
                 .child(
-                    div()
-                        .w(px(160.0))
-                        .child(Slider::new(&self.smoothing_slider).disabled(!self.smoothing_enabled)),
+                    div().w(px(160.0)).child(
+                        Slider::new(&self.smoothing_slider).disabled(!self.smoothing_enabled),
+                    ),
                 )
                 .child(
                     div()
@@ -2113,7 +2065,11 @@ impl MeasurementApp {
                             .build(window, cx)
                         }),
                 )
-                .child(div().w(px(100.0)).child(Slider::new(&self.coherence_slider)))
+                .child(
+                    div()
+                        .w(px(100.0))
+                        .child(Slider::new(&self.coherence_slider)),
+                )
                 .child(
                     div()
                         .text_sm()
@@ -2121,26 +2077,14 @@ impl MeasurementApp {
                         .child(format!("{:.2}", self.min_coherence)),
                 )
             })
-            .child(div().flex_1())
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(palette::text_placeholder(cx))
-                    .child(
-                        "Scroll to move · Ctrl+scroll to zoom (+Shift: horizontal, +Alt: vertical) · \
-                         double-click to fit",
-                    ),
-            )
     }
 
-    /// The plot of `tab`, shown in the `pane`th pane.
+    /// The plot of `tab`, shown in the `pane`th pane. With all measurements hidden it is
+    /// empty; only with none at all is there a hint to measure instead.
     fn render_plot(&self, tab: Tab, pane: usize, cx: &mut Context<Self>) -> AnyElement {
-        if self.num_visible() == 0 && !self.previewing() {
-            let message = if self.groups.is_empty() {
-                "No measurements yet."
-            } else {
-                "Tick a measurement in the side bar to show it."
-            };
+        let nothing_loaded =
+            self.live.is_none() && self.all_groups().all(|g| g.measurements.is_empty());
+        if nothing_loaded {
             return v_flex()
                 .size_full()
                 .items_center()
@@ -2156,9 +2100,9 @@ impl MeasurementApp {
                     div()
                         .text_sm()
                         .text_color(palette::text_placeholder(cx))
-                        .child(message),
+                        .child("No measurements yet."),
                 )
-                .when(self.groups.is_empty() && self.job.is_none(), |this| {
+                .when(self.job.is_none(), |this| {
                     this.child(
                         Button::new(("empty-new", pane))
                             .small()
@@ -2432,6 +2376,26 @@ fn when(measured: DateTime<Local>, live: bool) -> String {
     } else {
         measured.format("%A, %-d %B %Y, %H:%M:%S").to_string()
     }
+}
+
+/// The line at the left edge of a tab, or of the free space after the last one, shown while
+/// a tab dragged over it would go in there. It covers the border between the tabs, so
+/// nothing moves.
+fn drop_line(group: SharedString, cx: &App) -> impl IntoElement {
+    let color = palette::drop_line(cx);
+    div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(px(-1.0))
+        .w(px(2.0))
+        .group_drag_over::<DraggedTab>(group, move |style| style.bg(color))
+}
+
+/// The info button and the checkbox at the end of a list row, spaced the same in every row
+/// so they line up.
+fn trailing(info: impl IntoElement, checkbox: impl IntoElement) -> impl IntoElement {
+    h_flex().flex_shrink_0().gap_2().child(info).child(checkbox)
 }
 
 /// A button that opens the info card: when it was measured, how, and notes to edit. Its

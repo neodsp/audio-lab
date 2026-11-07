@@ -3,12 +3,17 @@
 //! Like in Figma or Excalidraw, scrolling (two fingers on a touchpad) moves the view and
 //! Ctrl+scroll or a pinch zooms around the mouse; Ctrl+Alt+scroll zooms only the time or
 //! frequency, Ctrl+Shift+scroll only the value. Drag to move the view, right-drag to zoom into a
-//! box, double-click to go back to the default view. The view never follows the data by
-//! itself: [`Plot::fit_to_data`] zooms to the curves on request.
+//! box, double-click to go back to the default view. A right-click opens a menu of views:
+//! presets, fitting the data, or bounds to type. The view never follows the data by itself.
 
 use std::rc::Rc;
 
-use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::dialog::{DialogAction, DialogClose, DialogFooter};
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::curves::{Curves, draw_positions, split_at_wraps};
@@ -166,6 +171,8 @@ pub struct Plot {
     bounds: Bounds<Pixels>,
     hover: Option<Point<Pixels>>,
     drag: Option<Drag>,
+    /// The view menu, open after a right-click, where it opened, and what closes it.
+    menu: Option<(Entity<PopupMenu>, Point<Pixels>, Subscription)>,
 }
 
 impl Plot {
@@ -179,6 +186,7 @@ impl Plot {
             bounds: Bounds::default(),
             hover: None,
             drag: None,
+            menu: None,
         }
     }
 
@@ -195,17 +203,164 @@ impl Plot {
     }
 
     /// Zooms to the shown curves.
-    pub fn fit_to_data(&mut self, cx: &mut Context<Self>) {
+    fn fit_to_data(&mut self, cx: &mut Context<Self>) {
         let before = self.view.x;
         self.view = self.fitted_view();
         self.user_changed(before, cx);
     }
 
     /// Goes back to the default view.
-    pub fn reset_view(&mut self, cx: &mut Context<Self>) {
+    fn reset_view(&mut self, cx: &mut Context<Self>) {
+        self.set_view(default_view(self.kind), cx);
+    }
+
+    fn set_view(&mut self, view: View, cx: &mut Context<Self>) {
         let before = self.view.x;
-        self.view = default_view(self.kind);
+        self.view = view;
         self.user_changed(before, cx);
+    }
+
+    /// The menu a right-click opens: views to jump to.
+    fn open_menu(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let plot = cx.entity().downgrade();
+        let kind = self.kind;
+        let item = |label: &str, f: fn(&mut Plot, &mut Window, &mut Context<Plot>)| {
+            let plot = plot.clone();
+            PopupMenuItem::new(label.to_string()).on_click(move |_, window, cx| {
+                plot.update(cx, |plot, cx| f(plot, window, cx)).ok();
+            })
+        };
+        let menu = PopupMenu::build(window, cx, move |mut menu, _, _| {
+            if kind.is_frequency() {
+                menu = menu
+                    .item(item("Full range (20 Hz – 20 kHz)", |plot, _, cx| {
+                        plot.reset_view(cx)
+                    }))
+                    .item(item("Sub range (20 – 200 Hz)", |plot, _, cx| {
+                        let view = View {
+                            x: SUB_RANGE,
+                            ..default_view(plot.kind)
+                        };
+                        plot.set_view(view, cx)
+                    }));
+            } else {
+                menu = menu.item(item("Default (0 – 500 ms)", |plot, _, cx| {
+                    plot.reset_view(cx)
+                }));
+            }
+            menu.item(item("Fit to data", |plot, _, cx| plot.fit_to_data(cx)))
+                .separator()
+                .item(item("Custom range…", |plot, window, cx| {
+                    plot.open_custom_range(window, cx)
+                }))
+        });
+        menu.focus_handle(cx).focus(window, cx);
+        let subscription = cx.subscribe(&menu, |plot, _, _: &DismissEvent, cx| {
+            plot.menu = None;
+            cx.notify();
+        });
+        self.menu = Some((menu, at, subscription));
+        cx.notify();
+    }
+
+    /// A dialog to type the bounds of the view into.
+    fn open_custom_range(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let kind = self.kind;
+        let (x, y) = (self.view.x, self.view.y);
+        let field = |value: f64, window: &mut Window, cx: &mut Context<Self>| {
+            let text = format_bound(value);
+            cx.new(|cx| InputState::new(window, cx).default_value(text))
+        };
+        let (x_low, x_high) = if kind.is_frequency() {
+            (10f64.powf(x.0), 10f64.powf(x.1))
+        } else {
+            x
+        };
+        let x_fields = (field(x_low, window, cx), field(x_high, window, cx));
+        let y_fields = (!kind.y_fixed()).then(|| (field(y.0, window, cx), field(y.1, window, cx)));
+        let (x_name, x_unit, y_name, y_unit) = match kind {
+            PlotKind::Magnitude => ("Frequency", "Hz", "Level", "dB"),
+            PlotKind::Phase => ("Frequency", "Hz", "Phase", "°"),
+            PlotKind::Impulse => ("Time", "ms", "Amplitude", ""),
+        };
+        let plot = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let row = |name: &'static str,
+                       unit: &'static str,
+                       (low, high): &(Entity<InputState>, Entity<InputState>),
+                       cx: &App| {
+                let number = |input: &Entity<InputState>| {
+                    Input::new(input).small().suffix(
+                        div()
+                            .text_xs()
+                            .text_color(palette::text_placeholder(cx))
+                            .child(unit),
+                    )
+                };
+                h_flex()
+                    .gap_2()
+                    .child(div().w(px(80.0)).text_sm().child(name))
+                    .child(div().flex_1().child(number(low)))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(palette::text_muted(cx))
+                            .child("to"),
+                    )
+                    .child(div().flex_1().child(number(high)))
+            };
+            let x_fields = x_fields.clone();
+            let y_fields = y_fields.clone();
+            let plot = plot.clone();
+            dialog
+                .title("Custom range")
+                .w(px(420.0))
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(row(x_name, x_unit, &x_fields, cx))
+                        .children(
+                            y_fields
+                                .as_ref()
+                                .map(|fields| row(y_name, y_unit, fields, cx)),
+                        ),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(DialogClose::new().trigger(|button| button.label("Cancel")))
+                        .child(
+                            DialogAction::new()
+                                .child(Button::new("apply").primary().label("Apply")),
+                        ),
+                )
+                .on_ok(move |_, _, cx| {
+                    let read =
+                        |input: &Entity<InputState>, cx: &App| parse_bound(&input.read(cx).value());
+                    let bounds = |(low, high): &(Entity<InputState>, Entity<InputState>),
+                                  cx: &App| {
+                        Some((read(low, cx)?, read(high, cx)?)).filter(|(low, high)| low < high)
+                    };
+                    let Some(mut x) = bounds(&x_fields, &*cx) else {
+                        return false;
+                    };
+                    if kind.is_frequency() {
+                        if x.0 <= 0.0 {
+                            return false;
+                        }
+                        x = (x.0.log10(), x.1.log10());
+                    }
+                    let y = match &y_fields {
+                        Some(fields) => match bounds(fields, &*cx) {
+                            Some(y) => y,
+                            None => return false,
+                        },
+                        None => default_view(kind).y,
+                    };
+                    plot.update(cx, |plot, cx| plot.set_view(View { x, y }, cx))
+                        .ok();
+                    true
+                })
+        });
     }
 
     /// Draws the traces of the measurements `ids` on top and thicker, and the others fainter.
@@ -414,12 +569,16 @@ impl Plot {
         self.user_changed(before, cx);
     }
 
-    fn on_mouse_up(&mut self, cx: &mut Context<Self>) {
+    /// `inside` when the mouse was let go over the plot.
+    fn on_mouse_up(&mut self, inside: bool, window: &mut Window, cx: &mut Context<Self>) {
         let before = self.view.x;
         if let Some(Drag::Zoom { start, current }) = self.drag.take() {
             let width = (current.x - start.x).abs().as_f32();
             let height = (current.y - start.y).abs().as_f32();
-            if width > 6.0 && (height > 6.0 || self.kind.y_fixed()) {
+            // a right-click without dragging opens the menu
+            if inside && width <= 3.0 && height <= 3.0 {
+                self.open_menu(current, window, cx);
+            } else if width > 6.0 && (height > 6.0 || self.kind.y_fixed()) {
                 let (x0, y0) = self.to_plot(start);
                 let (x1, y1) = self.to_plot(current);
                 self.view.x = (x0.min(x1), x0.max(x1));
@@ -473,19 +632,19 @@ impl Render for Plot {
             .on_mouse_move(cx.listener(|this, event, _, cx| this.on_mouse_move(event, cx)))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.on_mouse_up(cx)),
+                cx.listener(|this, _, window, cx| this.on_mouse_up(true, window, cx)),
             )
             .on_mouse_up(
                 MouseButton::Right,
-                cx.listener(|this, _, _, cx| this.on_mouse_up(cx)),
+                cx.listener(|this, _, window, cx| this.on_mouse_up(true, window, cx)),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.on_mouse_up(cx)),
+                cx.listener(|this, _, window, cx| this.on_mouse_up(false, window, cx)),
             )
             .on_mouse_up_out(
                 MouseButton::Right,
-                cx.listener(|this, _, _, cx| this.on_mouse_up(cx)),
+                cx.listener(|this, _, window, cx| this.on_mouse_up(false, window, cx)),
             )
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 if !hovered {
@@ -502,6 +661,17 @@ impl Render for Plot {
                 )
                 .size_full(),
             )
+            .when_some(self.menu.as_ref(), |this, (menu, at, _)| {
+                this.child(
+                    deferred(
+                        anchored()
+                            .position(*at)
+                            .snap_to_window_with_margin(px(8.0))
+                            .child(menu.clone()),
+                    )
+                    .with_priority(1),
+                )
+            })
     }
 }
 
@@ -997,6 +1167,27 @@ impl Scene {
 /// The audible range, 20 Hz to 20 kHz, in log10 Hz.
 const AUDIO_RANGE: (f64, f64) = (1.301_029_995_663_981_2, 4.301_029_995_663_981);
 
+/// The frequencies of subwoofers, 20 to 200 Hz, in log10 Hz.
+const SUB_RANGE: (f64, f64) = (1.301_029_995_663_981_2, 2.301_029_995_663_981);
+
+/// A bound for the custom range dialog: round, without needless decimals.
+fn format_bound(value: f64) -> String {
+    let rounded = format!("{value:.3}");
+    rounded
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
+}
+
+/// A typed bound: a number, with a dot or a comma.
+fn parse_bound(text: &str) -> Option<f64> {
+    text.trim()
+        .replace(',', ".")
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite())
+}
+
 /// What a plot shows until zoomed or moved, and again after a double-click.
 fn default_view(kind: PlotKind) -> View {
     match kind {
@@ -1009,7 +1200,7 @@ fn default_view(kind: PlotKind) -> View {
             y: (-180.0, 180.0),
         },
         PlotKind::Impulse => View {
-            x: (0.0, 100.0),
+            x: (0.0, 500.0),
             y: (-1.0, 1.0),
         },
     }
@@ -1198,9 +1389,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_default_frequencies_are_the_audible_range() {
+    fn the_preset_frequencies_are_right() {
         assert!((AUDIO_RANGE.0 - 20f64.log10()).abs() < 1e-12);
         assert!((AUDIO_RANGE.1 - 20_000f64.log10()).abs() < 1e-12);
+        assert!((SUB_RANGE.0 - 20f64.log10()).abs() < 1e-12);
+        assert!((SUB_RANGE.1 - 200f64.log10()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn bounds_read_and_write_plainly() {
+        assert_eq!(format_bound(20.0), "20");
+        assert_eq!(format_bound(19.999_999_9), "20");
+        assert_eq!(format_bound(-12.5), "-12.5");
+        assert_eq!(parse_bound(" 1,5 "), Some(1.5));
+        assert_eq!(parse_bound("abc"), None);
     }
 
     // `gpui_kit::*` brings GPUI's test macro, which needs an app
