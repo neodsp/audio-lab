@@ -2389,6 +2389,9 @@ fn drop_line(group: SharedString, cx: &App) -> impl IntoElement {
         .bottom_0()
         .left(px(-1.0))
         .w(px(2.0))
+        // gpui only applies drag-over styles to elements with a hitbox, and a group hover
+        // style is a cheap way to get one; it doesn't catch the mouse
+        .group_hover(group.clone(), |style| style)
         .group_drag_over::<DraggedTab>(group, move |style| style.bg(color))
 }
 
