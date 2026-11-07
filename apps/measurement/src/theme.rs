@@ -83,6 +83,10 @@ pub mod palette {
     pub fn accent(cx: &App) -> Hsla {
         cx.theme().primary
     }
+    /// Where a dragged tab would land.
+    pub fn drop_target(cx: &App) -> Hsla {
+        cx.theme().primary.opacity(0.18)
+    }
     pub fn warning(cx: &App) -> Hsla {
         cx.theme().warning
     }

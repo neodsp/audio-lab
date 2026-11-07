@@ -23,6 +23,7 @@ mod app;
 mod curves;
 mod devices;
 mod measure;
+mod panes;
 mod plot;
 mod setup;
 mod theme;

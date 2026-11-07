@@ -13,16 +13,17 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::{Select, SelectEvent, SelectItem as _, SelectState};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderScale, SliderState};
 use gpui_kit::component::{
-    Disableable as _, Icon, IconName, IndexPath, Sizable as _, StyledExt as _, TitleBar,
-    WindowExt as _, h_flex, h_resizable, resizable_panel, v_flex,
+    ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _, StyledExt as _,
+    TitleBar, WindowExt as _, h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::curves::{Curves, impulse_points};
 use crate::measure::{self, Job, Outcome, Response};
-use crate::plot::{Plot, PlotKind, Series, Trace};
-use crate::setup::{Setup, SetupEvent};
+use crate::panes::{Panes, Side, Target};
+use crate::plot::{FrequencyChanged, Plot, PlotKind, Series, Trace};
+use crate::setup::{Setup, SetupEvent, next_name};
 use crate::theme::{self, ShownThemes, ThemeList, palette, trace_color};
 
 actions!(
@@ -45,7 +46,7 @@ enum SideBar {
     Setup,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Tab {
     Magnitude,
     Phase,
@@ -62,6 +63,36 @@ impl Tab {
             Tab::Impulse => "Impulse response",
         }
     }
+}
+
+/// A tab being dragged.
+struct DraggedTab(Tab);
+
+/// What follows the mouse while a tab is dragged.
+struct TabGhost(&'static str);
+
+impl Render for TabGhost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_4()
+            .py_1p5()
+            .text_sm()
+            .bg(palette::tab_active(cx))
+            .text_color(palette::text(cx))
+            .border_1()
+            .border_color(palette::border(cx))
+            .rounded_sm()
+            .shadow_md()
+            .opacity(0.9)
+            .child(self.0)
+    }
+}
+
+/// Where a tab dragged over the plot of a pane would go.
+#[derive(Clone, Copy)]
+struct ContentDrop {
+    pane: usize,
+    target: Target<Tab>,
 }
 
 /// Measurements taken together: one per speaker and mic.
@@ -105,7 +136,13 @@ pub struct MeasurementApp {
     next_group_id: u64,
     next_measurement_id: u64,
     side_bar: SideBar,
-    tab: Tab,
+    panes: Panes<Tab>,
+    /// Where a tab dragged over a plot would go, to show it there.
+    content_drop: Option<ContentDrop>,
+    /// Counts the splits, so each starts with panes of equal size.
+    splits: u32,
+    /// The measurements under the mouse in the list, highlighted in the plots.
+    highlight: Rc<[u64]>,
     smoothing_enabled: bool,
     /// 1/N octave.
     smoothing: f64,
@@ -144,8 +181,19 @@ impl MeasurementApp {
         let theme_select = cx.new(|cx| {
             SelectState::new(theme_list, current.map(IndexPath::new), window, cx).searchable(true)
         });
+        let magnitude = cx.new(|_| Plot::new(PlotKind::Magnitude));
+        let phase = cx.new(|_| Plot::new(PlotKind::Phase));
         let subscriptions =
             vec![
+                // magnitude and phase always show the same frequencies
+                cx.subscribe(&magnitude, |this, _, FrequencyChanged(x), cx| {
+                    this.phase
+                        .update(cx, |phase, cx| phase.link_frequency(*x, cx))
+                }),
+                cx.subscribe(&phase, |this, _, FrequencyChanged(x), cx| {
+                    this.magnitude
+                        .update(cx, |magnitude, cx| magnitude.link_frequency(*x, cx))
+                }),
                 cx.subscribe(&theme_select, |_, _, event: &SelectEvent<_>, cx| {
                     if let SelectEvent::Confirm(Some(name)) = event {
                         theme::select(name, cx);
@@ -181,15 +229,18 @@ impl MeasurementApp {
             next_group_id: 1,
             next_measurement_id: 1,
             side_bar: SideBar::Measurements,
-            tab: Tab::Magnitude,
+            panes: Panes::new(Tab::ALL.to_vec()),
+            content_drop: None,
+            splits: 0,
+            highlight: Rc::new([]),
             smoothing_enabled: true,
             smoothing,
             smoothing_slider,
             theme_select,
             shown_themes,
             setup,
-            magnitude: cx.new(|_| Plot::new(PlotKind::Magnitude)),
-            phase: cx.new(|_| Plot::new(PlotKind::Phase)),
+            magnitude,
+            phase,
             impulse: cx.new(|_| Plot::new(PlotKind::Impulse)),
             job: None,
             _job_task: None,
@@ -215,7 +266,6 @@ impl MeasurementApp {
             .count()
     }
 
-    /// Runs `request` in the background, and a timer for the progress bar.
     /// Previews the theme under the theme select's keyboard cursor. Meant for an arrow key on
     /// its way to the select, so it waits until the select has moved the cursor.
     fn theme_cursor_preview(&self) -> impl Fn(&mut App) + 'static {
@@ -233,6 +283,7 @@ impl MeasurementApp {
         }
     }
 
+    /// Runs `request` in the background, and a timer for the progress bar.
     fn start(&mut self, request: measure::Request, window: &mut Window, cx: &mut Context<Self>) {
         if self.job.is_some() {
             return;
@@ -272,9 +323,10 @@ impl MeasurementApp {
             Ok(outcome) => {
                 self.add_group(outcome, &job, window, cx);
                 self.side_bar = SideBar::Measurements;
-                let next_id = self.next_group_id;
-                self.setup
-                    .update(cx, |setup, cx| setup.count_up(next_id, window, cx));
+                let taken = self.group_names();
+                self.setup.update(cx, |setup, cx| {
+                    setup.count_up(taken.iter().map(|n| n.as_ref()), window, cx)
+                });
             }
             Err(error) => self
                 .setup
@@ -292,7 +344,8 @@ impl MeasurementApp {
     ) {
         let name = self.setup.read(cx).name();
         let name = if name.is_empty() {
-            format!("Measurement {}", self.next_group_id)
+            let taken = self.group_names();
+            next_name("", taken.iter().map(|n| n.as_ref()))
         } else {
             name
         };
@@ -346,7 +399,11 @@ impl MeasurementApp {
             .find(|m| m.id == id)
     }
 
-    fn apply(&mut self, action: Action, cx: &mut Context<Self>) {
+    fn group_names(&self) -> Vec<SharedString> {
+        self.groups.iter().map(|group| group.name.clone()).collect()
+    }
+
+    fn apply(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             Action::DeleteGroup(id) => self.groups.retain(|group| group.id != id),
             Action::Delete(id) => {
@@ -360,6 +417,13 @@ impl MeasurementApp {
                     m.visible = m.id == id;
                 }
             }
+        }
+        if matches!(action, Action::DeleteGroup(_) | Action::Delete(_)) {
+            // the deleted numbers are free again
+            let taken = self.group_names();
+            self.setup.update(cx, |setup, cx| {
+                setup.renumber(taken.iter().map(|n| n.as_ref()), window, cx)
+            });
         }
         self.refresh_plots(cx);
     }
@@ -405,16 +469,85 @@ impl MeasurementApp {
                 .confirm()
                 .ok_text("Delete")
                 .ok_variant(ButtonVariant::Danger)
-                .on_ok(move |_, _, cx| {
-                    app.update(cx, |this, cx| this.apply(action, cx));
+                .on_ok(move |_, window, cx| {
+                    app.update(cx, |this, cx| this.apply(action, window, cx));
                     true
                 })
         });
     }
 
+    /// Highlights the measurements `ids` in the plots while the mouse is over their row,
+    /// and stops when it leaves, unless it went on to another row meanwhile.
+    fn hover_measurements(&mut self, ids: Rc<[u64]>, hovered: bool, cx: &mut Context<Self>) {
+        let highlight: Rc<[u64]> = if hovered {
+            ids
+        } else if self.highlight == ids {
+            Rc::new([])
+        } else {
+            return;
+        };
+        self.highlight = highlight.clone();
+        for plot in [&self.magnitude, &self.phase, &self.impulse] {
+            plot.update(cx, |plot, cx| plot.set_highlight(highlight.clone(), cx));
+        }
+    }
+
+    /// Shows `tab` in its pane.
     fn set_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
-        self.tab = tab;
+        self.panes.activate(tab);
         self.refresh_plots(cx);
+    }
+
+    /// Moves a dragged tab to `target`.
+    fn drop_tab(&mut self, tab: Tab, target: Target<Tab>, cx: &mut Context<Self>) {
+        self.content_drop = None;
+        if self.panes.drop_tab(tab, target) {
+            if matches!(target, Target::Split { .. }) {
+                self.splits += 1;
+            }
+            self.refresh_plots(cx);
+        }
+        cx.notify();
+    }
+
+    /// Follows a tab dragged over the plot of the `pane`th pane, to show where it would go.
+    fn drag_over_content(
+        &mut self,
+        pane: usize,
+        event: &DragMoveEvent<DraggedTab>,
+        cx: &mut Context<Self>,
+    ) {
+        let bounds = event.bounds;
+        let position = event.event.position;
+        let drop = if bounds.contains(&position) {
+            let offset = position - bounds.origin;
+            let side = Side::near(offset.x / bounds.size.width, offset.y / bounds.size.height);
+            let tab = event.drag(cx).0;
+            self.panes
+                .content_target(tab, pane, side)
+                .map(|target| ContentDrop { pane, target })
+        } else if self.content_drop.is_some_and(|drop| drop.pane == pane) {
+            None
+        } else {
+            // over another pane, which keeps track of itself
+            return;
+        };
+        let changed = match (self.content_drop, drop) {
+            (Some(a), Some(b)) => a.pane != b.pane || a.target != b.target,
+            (a, b) => a.is_some() != b.is_some(),
+        };
+        if changed {
+            self.content_drop = drop;
+            cx.notify();
+        }
+    }
+
+    /// Drops a tab onto the plot of the `pane`th pane.
+    fn drop_on_content(&mut self, pane: usize, tab: Tab, cx: &mut Context<Self>) {
+        match self.content_drop.take() {
+            Some(drop) if drop.pane == pane => self.drop_tab(tab, drop.target, cx),
+            _ => cx.notify(),
+        }
     }
 
     fn new_measurement(&mut self, cx: &mut Context<Self>) {
@@ -422,11 +555,19 @@ impl MeasurementApp {
         cx.notify();
     }
 
-    /// Hands the visible measurements to the plot of the current tab, computing the curves
-    /// for the current smoothing where needed.
+    /// Hands the visible measurements to the plots on show, computing the curves for the
+    /// current smoothing where needed.
     fn refresh_plots(&mut self, cx: &mut Context<Self>) {
+        let tabs: Vec<Tab> = self.panes.visible().collect();
+        for tab in tabs {
+            self.refresh_plot(tab, cx);
+        }
+        cx.notify();
+    }
+
+    fn refresh_plot(&mut self, tab: Tab, cx: &mut Context<Self>) {
         let smoothing = self.smoothing();
-        let frequency = self.tab != Tab::Impulse;
+        let frequency = tab != Tab::Impulse;
         let mut range = (f64::INFINITY, 0.0f64);
         let mut traces = Vec::new();
         for group in &mut self.groups {
@@ -445,6 +586,7 @@ impl MeasurementApp {
                     Series::Points(m.impulse.clone())
                 };
                 traces.push(Trace {
+                    id: m.id,
                     name: m.full_name.clone(),
                     color: m.color,
                     series,
@@ -454,13 +596,16 @@ impl MeasurementApp {
         if !range.0.is_finite() {
             range = (20.0, 20_000.0);
         }
-        let plot = match self.tab {
+        self.plot(tab)
+            .update(cx, |plot, cx| plot.set_traces(traces, range, cx));
+    }
+
+    fn plot(&self, tab: Tab) -> &Entity<Plot> {
+        match tab {
             Tab::Magnitude => &self.magnitude,
             Tab::Phase => &self.phase,
             Tab::Impulse => &self.impulse,
-        };
-        plot.update(cx, |plot, cx| plot.set_traces(traces, range, cx));
-        cx.notify();
+        }
     }
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -650,8 +795,12 @@ impl MeasurementApp {
         let all = group.measurements.iter().all(|m| m.visible);
         let some = group.measurements.iter().any(|m| m.visible);
         let row_group = SharedString::from(format!("group-row-{id}"));
+        let ids: Rc<[u64]> = group.measurements.iter().map(|m| m.id).collect();
         h_flex()
             .id(("group", id))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                this.hover_measurements(ids.clone(), *hovered, cx)
+            }))
             .group(row_group.clone())
             .h(px(26.0))
             .pl_2()
@@ -722,21 +871,27 @@ impl MeasurementApp {
                     ),
             )
             .child(
-                Checkbox::new(("group-visible", id))
-                    .small()
-                    .checked(all)
-                    .when(some && !all, |this| this.tooltip("Some are shown"))
-                    .when(!(some && !all), |this| this.tooltip("Show or hide all"))
-                    .on_change(cx.listener(move |this, checked: &bool, _, cx| {
-                        cx.stop_propagation();
-                        if let Some(group) = this.groups.iter_mut().find(|g| g.id == id) {
-                            group
-                                .measurements
-                                .iter_mut()
-                                .for_each(|m| m.visible = *checked);
-                        }
-                        this.refresh_plots(cx);
-                    })),
+                div()
+                    .relative()
+                    .child(
+                        Checkbox::new(("group-visible", id))
+                            .small()
+                            .checked(all)
+                            .when(some && !all, |this| this.tooltip("Some are shown"))
+                            .when(!(some && !all), |this| this.tooltip("Show or hide all"))
+                            .on_change(cx.listener(move |this, checked: &bool, _, cx| {
+                                cx.stop_propagation();
+                                if let Some(group) = this.groups.iter_mut().find(|g| g.id == id) {
+                                    group
+                                        .measurements
+                                        .iter_mut()
+                                        .for_each(|m| m.visible = *checked);
+                                }
+                                this.refresh_plots(cx);
+                            })),
+                    )
+                    // some shown: a dash over the box; clicking it still shows all
+                    .when(some && !all, |this| this.child(partly_checked_mark(cx))),
             )
     }
 
@@ -744,8 +899,12 @@ impl MeasurementApp {
         let id = m.id;
         let details = details(&m.response);
         let app = cx.entity();
+        let ids: Rc<[u64]> = Rc::new([id]);
         h_flex()
             .id(("measurement", id))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                this.hover_measurements(ids.clone(), *hovered, cx)
+            }))
             .h(px(26.0))
             .pl(px(34.0))
             .pr_1()
@@ -800,8 +959,8 @@ impl MeasurementApp {
                 }
                 menu.separator()
                     .item(
-                        PopupMenuItem::new("Show only this").on_click(move |_, _, cx| {
-                            solo.update(cx, |this, cx| this.apply(Action::Solo(id), cx));
+                        PopupMenuItem::new("Show only this").on_click(move |_, window, cx| {
+                            solo.update(cx, |this, cx| this.apply(Action::Solo(id), window, cx));
                         }),
                     )
                     .separator()
@@ -815,15 +974,18 @@ impl MeasurementApp {
             })
     }
 
-    fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The tabs of the `ix`th pane. They can be dragged to reorder them, to the other pane,
+    /// or onto a plot to split the view.
+    fn render_tab_bar(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let pane = &self.panes.panes[ix];
         h_flex()
             .h(px(34.0))
             .flex_shrink_0()
             .bg(palette::tab_bar(cx))
             .border_b_1()
             .border_color(palette::border(cx))
-            .children(Tab::ALL.into_iter().map(|tab| {
-                let active = tab == self.tab;
+            .children(pane.tabs.iter().map(|&tab| {
+                let active = tab == pane.active;
                 h_flex()
                     .id(tab.title())
                     .h_full()
@@ -845,12 +1007,84 @@ impl MeasurementApp {
                         }
                     })
                     .on_click(cx.listener(move |this, _, _, cx| this.set_tab(tab, cx)))
+                    .on_drag(DraggedTab(tab), |dragged, _, _, cx| {
+                        let title = dragged.0.title();
+                        cx.new(|_| TabGhost(title))
+                    })
+                    .drag_over::<DraggedTab>(|style, _, _, cx| style.bg(palette::drop_target(cx)))
+                    .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
+                        let target = Target::Tabs {
+                            pane: ix,
+                            before: Some(tab),
+                        };
+                        this.drop_tab(dragged.0, target, cx)
+                    }))
                     .child(tab.title())
             }))
+            // the free space after the tabs: drops there go last
+            .child(
+                div()
+                    .id(("tab-bar-end", ix))
+                    .flex_1()
+                    .h_full()
+                    .drag_over::<DraggedTab>(|style, _, _, cx| style.bg(palette::drop_target(cx)))
+                    .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
+                        let target = Target::Tabs {
+                            pane: ix,
+                            before: None,
+                        };
+                        this.drop_tab(dragged.0, target, cx)
+                    })),
+            )
+    }
+
+    /// The panes: one, or two split side by side or one above the other.
+    fn render_panes(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.panes.is_split() {
+            return self.render_pane(0, cx).into_any_element();
+        }
+        let id = SharedString::from(format!("panes-{}", self.splits));
+        let group = if self.panes.stacked {
+            v_resizable(id)
+        } else {
+            h_resizable(id)
+        };
+        (0..self.panes.panes.len())
+            .fold(group, |group, ix| {
+                group.child(resizable_panel().child(self.render_pane(ix, cx)))
+            })
+            .into_any_element()
+    }
+
+    /// The `ix`th pane: its tabs and the plot of the active one.
+    fn render_pane(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let tab = self.panes.panes[ix].active;
+        let drop = self
+            .content_drop
+            .filter(|drop| drop.pane == ix && cx.has_active_drag());
+        v_flex()
+            .size_full()
+            .child(self.render_tab_bar(ix, cx))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .on_drag_move(
+                        cx.listener(move |this, event, _, cx| {
+                            this.drag_over_content(ix, event, cx)
+                        }),
+                    )
+                    .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
+                        this.drop_on_content(ix, dragged.0, cx)
+                    }))
+                    .child(self.render_plot(tab, ix, cx))
+                    .when_some(drop, |this, drop| this.child(drop_overlay(drop.target, cx))),
+            )
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let frequency = self.tab != Tab::Impulse;
+        let frequency = self.panes.visible().any(|tab| tab != Tab::Impulse);
         h_flex()
             .h(px(36.0))
             .flex_shrink_0()
@@ -898,7 +1132,8 @@ impl MeasurementApp {
             )
     }
 
-    fn render_plot(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The plot of `tab`, shown in the `pane`th pane.
+    fn render_plot(&self, tab: Tab, pane: usize, cx: &mut Context<Self>) -> AnyElement {
         if self.num_visible() == 0 {
             let message = if self.groups.is_empty() {
                 "No measurements yet."
@@ -924,7 +1159,7 @@ impl MeasurementApp {
                 )
                 .when(self.groups.is_empty() && self.job.is_none(), |this| {
                     this.child(
-                        Button::new("empty-new")
+                        Button::new(("empty-new", pane))
                             .small()
                             .icon(IconName::Plus)
                             .label("New measurement")
@@ -933,11 +1168,7 @@ impl MeasurementApp {
                 })
                 .into_any_element();
         }
-        match self.tab {
-            Tab::Magnitude => self.magnitude.clone().into_any_element(),
-            Tab::Phase => self.phase.clone().into_any_element(),
-            Tab::Impulse => self.impulse.clone().into_any_element(),
-        }
+        self.plot(tab).clone().into_any_element()
     }
 
     fn render_status_bar(&self, cx: &App) -> impl IntoElement {
@@ -1067,15 +1298,59 @@ impl Render for MeasurementApp {
                             resizable_panel().child(
                                 v_flex()
                                     .size_full()
-                                    .child(self.render_tab_bar(cx))
                                     .child(self.render_toolbar(cx))
-                                    .child(div().flex_1().min_h_0().child(self.render_plot(cx))),
+                                    .child(div().flex_1().min_h_0().child(self.render_panes(cx))),
                             ),
                         ),
                 ),
             )
             .child(self.render_status_bar(cx))
     }
+}
+
+/// Covers a small checkbox with a filled box and a dash, for "some of them": GPUI Kit's
+/// checkbox has no state for that. It catches no mouse, so the checkbox below still works.
+fn partly_checked_mark(cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        // as big as the box of a small checkbox
+        .size(rems(0.875))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(theme.radius.min(px(4.0)))
+        .border_1()
+        .border_color(theme.primary)
+        .bg(theme.primary)
+        .child(
+            Icon::new(gpui_kit::assets::IconName::Minus)
+                .size(rems(0.625))
+                .text_color(theme.primary_foreground),
+        )
+}
+
+/// Marks where a tab dragged over a plot would go: the half of the pane a split would take,
+/// or the whole pane.
+fn drop_overlay(target: Target<Tab>, cx: &App) -> impl IntoElement {
+    let half = relative(0.5);
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .map(|this| match target {
+            Target::Split { side: Side::Left } => this.w(half),
+            Target::Split { side: Side::Right } => this.left(half).w(half),
+            Target::Split { side: Side::Top } => this.h(half),
+            Target::Split { side: Side::Bottom } => this.top(half).h(half),
+            Target::Tabs { .. } => this,
+        })
+        .bg(palette::drop_target(cx))
+        .border_2()
+        .border_color(palette::accent(cx))
 }
 
 fn panel_header(title: &'static str, cx: &App) -> impl IntoElement {

@@ -21,6 +21,10 @@ const TOP: f32 = 10.0;
 const RIGHT: f32 = 14.0;
 const LABEL_SIZE: f32 = 11.0;
 const LINE_WIDTH: f32 = 1.5;
+/// The width of a highlighted trace.
+const HIGHLIGHT_WIDTH: f32 = 3.0;
+/// How much of their color the other traces keep while some are highlighted.
+const DIMMED: f32 = 0.35;
 /// A path's vertex indices are 16 bit, so long curves are drawn in pieces.
 const POINTS_PER_PATH: usize = 2000;
 /// At most this many traces are listed under the mouse.
@@ -79,6 +83,8 @@ pub enum Series {
 
 #[derive(Clone)]
 pub struct Trace {
+    /// The measurement it shows.
+    pub id: u64,
     pub name: SharedString,
     pub color: Hsla,
     pub series: Series,
@@ -133,9 +139,15 @@ enum Drag {
     },
 }
 
+/// The user moved or zoomed a frequency plot: the frequencies it shows now, in log10 Hz.
+/// Magnitude and phase pass it on to each other, so they always show the same frequencies.
+pub struct FrequencyChanged(pub (f64, f64));
+
 pub struct Plot {
     kind: PlotKind,
     traces: Vec<Trace>,
+    /// The measurements to draw on top and thicker, as the mouse is over them in the list.
+    highlight: Rc<[u64]>,
     /// The frequency range to show when fitting a frequency plot.
     home_x: (f64, f64),
     view: View,
@@ -152,6 +164,7 @@ impl Plot {
         let mut plot = Self {
             kind,
             traces: Vec::new(),
+            highlight: Rc::new([]),
             home_x: (20f64.log10(), 20_000f64.log10()),
             view: View {
                 x: (0.0, 1.0),
@@ -177,6 +190,38 @@ impl Plot {
         self.home_x = (freq_range.0.log10(), freq_range.1.log10());
         if self.auto {
             self.view = self.home();
+        }
+        cx.notify();
+    }
+
+    /// Draws the traces of the measurements `ids` on top and thicker, and the others fainter.
+    pub fn set_highlight(&mut self, ids: Rc<[u64]>, cx: &mut Context<Self>) {
+        if self.highlight != ids {
+            self.highlight = ids;
+            cx.notify();
+        }
+    }
+
+    /// Shows the frequencies `x` (log10 Hz) another plot was moved to.
+    pub fn link_frequency(&mut self, x: (f64, f64), cx: &mut Context<Self>) {
+        if self.view.x == x {
+            return;
+        }
+        self.view.x = x;
+        if x != self.home_x {
+            self.auto = false;
+        } else if self.kind.y_fixed() {
+            // back to all frequencies, and the values never move: fitted again
+            self.auto = true;
+        }
+        cx.notify();
+    }
+
+    /// Redraws after the user moved or zoomed, telling a change of the frequencies to the
+    /// other frequency plot. `before` is the x range from before.
+    fn user_changed(&mut self, before: (f64, f64), cx: &mut Context<Self>) {
+        if self.kind.is_frequency() && self.view.x != before {
+            cx.emit(FrequencyChanged(self.view.x));
         }
         cx.notify();
     }
@@ -248,9 +293,10 @@ impl Plot {
     }
 
     fn fit(&mut self, cx: &mut Context<Self>) {
+        let before = self.view.x;
         self.auto = true;
         self.view = self.home();
-        cx.notify();
+        self.user_changed(before, cx);
     }
 
     fn zoom(&mut self, at: Point<Pixels>, factor_x: f64, factor_y: f64) {
@@ -275,6 +321,7 @@ impl Plot {
     /// it zooms around the mouse, with Ctrl+Shift only horizontally, with Ctrl+Alt only
     /// vertically. Shift turns a mouse wheel's vertical scrolling into horizontal moving.
     fn on_scroll(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let before = self.view.x;
         let delta = event.delta.pixel_delta(window.line_height());
         let (mut dx, mut dy) = (delta.x.as_f32() as f64, delta.y.as_f32() as f64);
         let modifiers = event.modifiers;
@@ -293,14 +340,15 @@ impl Plot {
             }
             self.pan_by_pixels(dx, dy);
         }
-        cx.notify();
+        self.user_changed(before, cx);
     }
 
     /// Zooms with a touchpad pinch.
     fn on_pinch(&mut self, event: &PinchEvent, cx: &mut Context<Self>) {
+        let before = self.view.x;
         let factor = 1.0 / (1.0 + f64::from(event.delta)).max(0.1);
         self.zoom(event.position, factor, factor);
-        cx.notify();
+        self.user_changed(before, cx);
     }
 
     /// Moves what is shown along with content dragged by `dx`, `dy` pixels.
@@ -341,6 +389,7 @@ impl Plot {
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         self.hover = Some(event.position);
+        let before = self.view.x;
         let transform = Transform::new(self.area(), self.view);
         match &mut self.drag {
             Some(Drag::Pan { last }) => {
@@ -356,10 +405,11 @@ impl Plot {
             Some(Drag::Zoom { current, .. }) => *current = event.position,
             None => {}
         }
-        cx.notify();
+        self.user_changed(before, cx);
     }
 
     fn on_mouse_up(&mut self, cx: &mut Context<Self>) {
+        let before = self.view.x;
         if let Some(Drag::Zoom { start, current }) = self.drag.take() {
             let width = (current.x - start.x).abs().as_f32();
             let height = (current.y - start.y).abs().as_f32();
@@ -373,15 +423,18 @@ impl Plot {
                 self.auto = false;
             }
         }
-        cx.notify();
+        self.user_changed(before, cx);
     }
 }
+
+impl EventEmitter<FrequencyChanged> for Plot {}
 
 impl Render for Plot {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let scene = Scene {
             kind: self.kind,
             traces: self.traces.clone(),
+            highlight: self.highlight.clone(),
             view: self.view,
             hover: self
                 .hover
@@ -509,6 +562,7 @@ impl Transform {
 struct Scene {
     kind: PlotKind,
     traces: Vec<Trace>,
+    highlight: Rc<[u64]>,
     view: View,
     hover: Option<Point<Pixels>>,
     zoom_box: Option<(Point<Pixels>, Point<Pixels>)>,
@@ -600,9 +654,23 @@ impl Scene {
         }
         // curves, clipped to the plot area
         window.with_content_mask(Some(ContentMask { bounds: area }), |window| {
-            for trace in &self.traces {
+            // the highlighted ones last, so on top
+            let highlighted = |trace: &&Trace| self.highlight.contains(&trace.id);
+            let others = self.traces.iter().filter(|t| !highlighted(t));
+            let any = self.traces.iter().any(|t| highlighted(&t));
+            for trace in others {
+                let color = if any {
+                    trace.color.opacity(DIMMED)
+                } else {
+                    trace.color
+                };
                 for piece in self.trace_points(trace, &transform) {
-                    stroke(window, &piece, trace.color, &transform);
+                    stroke(window, &piece, color, LINE_WIDTH, &transform);
+                }
+            }
+            for trace in self.traces.iter().filter(highlighted) {
+                for piece in self.trace_points(trace, &transform) {
+                    stroke(window, &piece, trace.color, HIGHLIGHT_WIDTH, &transform);
                 }
             }
             if let Some((start, current)) = self.zoom_box {
@@ -902,14 +970,20 @@ impl Scene {
 }
 
 /// Strokes the polyline through `points` (plot units).
-fn stroke(window: &mut Window, points: &[(f64, f64)], color: Hsla, transform: &Transform) {
+fn stroke(
+    window: &mut Window,
+    points: &[(f64, f64)],
+    color: Hsla,
+    width: f32,
+    transform: &Transform,
+) {
     if points.len() < 2 {
         return;
     }
     let mut start = 0;
     while start + 1 < points.len() {
         let end = (start + POINTS_PER_PATH).min(points.len());
-        let mut path = PathBuilder::stroke(px(LINE_WIDTH));
+        let mut path = PathBuilder::stroke(px(width));
         path.move_to(transform.to_screen(points[start]));
         for &p in &points[start + 1..end] {
             path.line_to(transform.to_screen(p));

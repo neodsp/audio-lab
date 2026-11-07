@@ -58,6 +58,8 @@ pub struct Setup {
     /// Why the last measurement failed.
     error: Option<String>,
     name: Entity<InputState>,
+    /// The name last filled in for the user, to tell whether they typed their own since.
+    suggested_name: String,
     output_device: ChoiceState<Option<String>>,
     input_device: ChoiceState<Option<String>>,
     outputs: Vec<ChannelRow>,
@@ -201,6 +203,7 @@ impl Setup {
         );
 
         let mut setup = Self {
+            suggested_name: settings.name.clone(),
             settings,
             devices: DeviceList::Scanning,
             error: None,
@@ -234,11 +237,39 @@ impl Setup {
         cx.notify();
     }
 
-    /// After a measurement: the next one gets the next number.
-    pub fn count_up(&mut self, next_id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        let name = next_name(&self.settings.name, next_id);
-        self.name
-            .update(cx, |input, cx| input.set_value(name.clone(), window, cx));
+    /// After a measurement: fills in the next free number for the next one. `taken` are the
+    /// names of the measurements there are.
+    pub fn count_up<'a>(
+        &mut self,
+        taken: impl IntoIterator<Item = &'a str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = next_name(&self.settings.name, taken);
+        self.suggest_name(name, window, cx);
+    }
+
+    /// After deleting measurements: their numbers are free again, so the suggested name may
+    /// go back down, to 1 once all are gone. A name the user typed stays.
+    pub fn renumber<'a>(
+        &mut self,
+        taken: impl IntoIterator<Item = &'a str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.name != self.suggested_name {
+            return;
+        }
+        let name = next_name(&self.settings.name, taken);
+        self.suggest_name(name, window, cx);
+    }
+
+    fn suggest_name(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        if name != self.settings.name {
+            self.name
+                .update(cx, |input, cx| input.set_value(name.clone(), window, cx));
+        }
+        self.suggested_name = name.clone();
         self.settings.name = name;
         cx.notify();
     }
@@ -651,15 +682,28 @@ fn hint(cx: &App, text: impl Into<SharedString>) -> impl IntoElement {
         .child(text.into())
 }
 
-/// `Measurement 3` becomes `Measurement 4`; a name without a number becomes `Measurement n`.
-pub fn next_name(name: &str, next_id: u64) -> String {
-    let trimmed = name.trim();
-    match trimmed.rsplit_once(' ') {
-        Some((stem, number)) if number.parse::<u64>().is_ok() => {
-            format!("{stem} {}", number.parse::<u64>().unwrap() + 1)
-        }
-        _ => format!("Measurement {next_id}"),
-    }
+/// The name for the next measurement: the stem of `name` (`Living room` of `Living room 3`,
+/// `Measurement` for a name without a number) with the number after the highest one `taken`
+/// has with that stem, or 1.
+pub fn next_name<'a>(name: &str, taken: impl IntoIterator<Item = &'a str>) -> String {
+    let stem = match split_number(name) {
+        Some((stem, _)) => stem,
+        None => "Measurement",
+    };
+    let highest = taken
+        .into_iter()
+        .filter_map(split_number)
+        .filter(|(s, _)| *s == stem)
+        .map(|(_, number)| number)
+        .max()
+        .unwrap_or(0);
+    format!("{stem} {}", highest + 1)
+}
+
+/// `Living room 3` as `("Living room", 3)`.
+fn split_number(name: &str) -> Option<(&str, u64)> {
+    let (stem, number) = name.trim().rsplit_once(' ')?;
+    Some((stem.trim_end(), number.parse().ok()?))
 }
 
 #[cfg(test)]
@@ -670,9 +714,33 @@ mod tests {
 
     #[test]
     fn names_count_up() {
-        assert_eq!(next_name("Measurement 3", 4), "Measurement 4");
-        assert_eq!(next_name("Living room 9", 2), "Living room 10");
-        assert_eq!(next_name("Living room", 2), "Measurement 2");
+        assert_eq!(
+            next_name("Measurement 3", ["Measurement 3"]),
+            "Measurement 4"
+        );
+        assert_eq!(
+            next_name("Living room 9", ["Living room 9", "Measurement 12"]),
+            "Living room 10"
+        );
+        assert_eq!(
+            next_name("Living room", ["Living room", "Measurement 1"]),
+            "Measurement 2"
+        );
+        // the highest one counts, not the last one
+        assert_eq!(
+            next_name("Measurement 2", ["Measurement 5", "Measurement 2"]),
+            "Measurement 6"
+        );
+    }
+
+    #[test]
+    fn numbers_start_over_when_all_are_gone() {
+        assert_eq!(next_name("Measurement 4", []), "Measurement 1");
+        assert_eq!(
+            next_name("Measurement 4", ["Measurement 1"]),
+            "Measurement 2"
+        );
+        assert_eq!(next_name("Kitchen 7", ["Measurement 3"]), "Kitchen 1");
     }
 
     #[test]
