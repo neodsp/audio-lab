@@ -23,6 +23,11 @@ pub enum FractionalOctaveSmoothingMode {
     Magnitude,
     /// Smooth only the magnitude response and return a zero-phase spectrum.
     MagnitudeZeroPhase,
+    /// Smooth the real and imaginary parts, which smooths the phase too. Remove the delay
+    /// first: a delay turns the phase quickly, and smoothing then cancels it out. Where the
+    /// phase varies within the smoothing width, the magnitude reads lower than with the other
+    /// modes.
+    Complex,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -98,8 +103,35 @@ pub fn smooth_fractional_octave(
     let window = generate_window(config.window_fn, window_len).to_vec();
     let window_sum = window.iter().sum::<f64>();
     let linear_positions = (1..=num_bins).map(|idx| idx as f64).collect::<Vec<_>>();
-    let mut smoothed_magnitude = Array2::zeros((signal.num_channels(), num_bins));
+    // smooths on a log-frequency axis
+    let smooth = |values: &[f64]| {
+        let warped = interpolate_uniform_catmull_rom(values, &n_log);
+        let smoothed = smooth_clamped(&warped, &window, window_sum);
+        interpolate_samples_catmull_rom(&n_log, &smoothed, &linear_positions)
+    };
+    let stats = FractionalOctaveSmoothingStats {
+        window_len,
+        actual_num_fractions: 1.0 / (window_len as f64 * delta_n),
+    };
 
+    let mut output = signal.clone();
+    if config.mode == FractionalOctaveSmoothingMode::Complex {
+        for mut channel in output.channel_iter_mut() {
+            let re = smooth(&channel.iter().map(|c| c.re).collect::<Vec<_>>());
+            let im = smooth(&channel.iter().map(|c| c.im).collect::<Vec<_>>());
+            for ((out, re), im) in channel.iter_mut().zip(re).zip(im) {
+                *out = Complex64::new(re, im);
+            }
+            // DC and Nyquist of a real signal are real
+            channel[0].im = 0.0;
+            if signal.num_time_steps().is_multiple_of(2) && num_bins > 1 {
+                channel[num_bins - 1].im = 0.0;
+            }
+        }
+        return Ok((output, stats));
+    }
+
+    let mut smoothed_magnitude = Array2::zeros((signal.num_channels(), num_bins));
     for (mut output_channel, input_channel) in smoothed_magnitude
         .outer_iter_mut()
         .zip(signal.channel_iter())
@@ -108,16 +140,11 @@ pub fn smooth_fractional_octave(
             .iter()
             .map(|value| value.norm())
             .collect::<Vec<_>>();
-        let warped = interpolate_uniform_catmull_rom(&magnitudes, &n_log);
-        let smoothed = smooth_clamped(&warped, &window, window_sum);
-        let unwarped = interpolate_samples_catmull_rom(&n_log, &smoothed, &linear_positions);
-
-        for (out, value) in output_channel.iter_mut().zip(unwarped) {
+        for (out, value) in output_channel.iter_mut().zip(smooth(&magnitudes)) {
             *out = value.max(0.0);
         }
     }
 
-    let mut output = signal.clone();
     for (mut output_channel, (input_channel, smoothed_channel)) in output
         .channel_iter_mut()
         .zip(signal.channel_iter().zip(smoothed_magnitude.outer_iter()))
@@ -137,19 +164,14 @@ pub fn smooth_fractional_octave(
                     }
                 }
                 FractionalOctaveSmoothingMode::MagnitudeZeroPhase => Complex64::new(magnitude, 0.0),
+                FractionalOctaveSmoothingMode::Complex => unreachable!("handled above"),
             };
         }
 
         force_real_fft_endpoints(&mut output_channel, signal.num_time_steps());
     }
 
-    Ok((
-        output,
-        FractionalOctaveSmoothingStats {
-            window_len,
-            actual_num_fractions: 1.0 / (window_len as f64 * delta_n),
-        },
-    ))
+    Ok((output, stats))
 }
 
 fn logarithmic_positions(num_bins: usize) -> Vec<f64> {
@@ -418,6 +440,37 @@ mod tests {
         for value in smoothed.channel(0) {
             assert_abs_diff_eq!(value.im, 0.0, epsilon = 1e-12);
             assert!(value.re >= 0.0);
+        }
+    }
+
+    #[test]
+    fn complex_mode_keeps_a_smooth_phase_and_averages_a_noisy_one() {
+        let num_bins = 257;
+        let phase = |index: usize| -(index as f64 / num_bins as f64) * 1.5;
+        let smooth_phase = Array2::from_shape_fn((1, num_bins), |(_, index)| {
+            Complex64::from_polar(1.0, phase(index))
+        });
+        let signal = FreqSignal::new(smooth_phase, 48_000.0, Some(512)).unwrap();
+        let config = FractionalOctaveSmoothingConfig::new(3.0)
+            .with_mode(FractionalOctaveSmoothingMode::Complex);
+        let (smoothed, _) = smooth_fractional_octave(&signal, &config).unwrap();
+        for index in 1..num_bins - 1 {
+            let value = smoothed.channel(0)[index];
+            assert_abs_diff_eq!(value.arg(), phase(index), epsilon = 0.02);
+            assert_abs_diff_eq!(value.norm(), 1.0, epsilon = 0.02);
+        }
+        assert_eq!(smoothed.channel(0)[0].im, 0.0);
+        assert_eq!(smoothed.channel(0)[num_bins - 1].im, 0.0);
+
+        // alternating sign: the parts cancel, unlike the magnitude
+        let alternating = Array2::from_shape_fn((1, num_bins), |(_, index)| {
+            Complex64::new(if index % 2 == 0 { 1.0 } else { -1.0 }, 0.0)
+        });
+        let signal = FreqSignal::new(alternating, 48_000.0, Some(512)).unwrap();
+        let (smoothed, _) = smooth_fractional_octave(&signal, &config).unwrap();
+        // low bins, where the log axis is finer than the bins and each one counts
+        for index in 20..40 {
+            assert!(smoothed.channel(0)[index].norm() < 0.1, "bin {index}");
         }
     }
 

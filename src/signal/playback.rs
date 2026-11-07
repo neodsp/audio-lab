@@ -1,6 +1,7 @@
 //! Play signals on an audio device, and play while recording for measurements.
 
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use audio_host::{
@@ -42,6 +43,12 @@ pub struct DeviceConfig {
     /// Input latency that the cpal backend adds to duplex streams to absorb timing differences
     /// between input and output. Lower values can cause dropouts.
     pub duplex_latency_ms: u32,
+    /// How long [`play_and_record`] runs the stream silently before the measurement starts.
+    /// Devices often drop out while they start up; dropouts during this time are ignored.
+    pub settle: Duration,
+    /// How often [`play_and_record`] tries the measurement before it gives up on dropouts.
+    /// At least one attempt is made.
+    pub attempts: u32,
 }
 
 impl Default for DeviceConfig {
@@ -52,6 +59,8 @@ impl Default for DeviceConfig {
             output_device: None,
             num_frames: host.num_frames,
             duplex_latency_ms: host.duplex_latency_ms,
+            settle: Duration::from_millis(500),
+            attempts: 3,
         }
     }
 }
@@ -95,7 +104,11 @@ fn whole_sample_rate(sample_rate: f64) -> Result<u32, PlaybackError> {
 ///
 /// See [`Sequence`] for the timeline and how to measure several speakers. The stream runs at the
 /// steps' sample rate; if the device can't, the backend's error is returned instead of
-/// resampling. Any dropout fails the measurement, since the recording would have gaps.
+/// resampling.
+///
+/// A dropout during the measurement would leave a gap in the recording, so the measurement is
+/// repeated, up to [`DeviceConfig::attempts`] times, before [`PlaybackError::Dropouts`] is
+/// returned. Dropouts while the stream starts up ([`DeviceConfig::settle`]) are ignored.
 ///
 /// ```no_run
 /// use audio_lab::dsp::{DeconvolutionConfig, deconvolve};
@@ -116,30 +129,68 @@ pub fn play_and_record(
     config: &SequenceConfig,
     device: &DeviceConfig,
 ) -> Result<Vec<TimeSignal>, PlaybackError> {
-    let sequence = Sequence::new(steps, config)?;
+    // validated before opening a device
+    let sequence = Sequence::new(steps.clone(), config)?;
     let stream_config = device.stream_config(
         sequence.sample_rate(),
         sequence.num_input_channels(),
         sequence.num_output_channels(),
     )?;
+
+    let mut sequence = Some(sequence);
+    let mut attempt = 1;
+    loop {
+        let next = match sequence.take() {
+            Some(sequence) => sequence,
+            None => Sequence::new(steps.clone(), config)?,
+        };
+        match record_once(next, stream_config.clone(), device) {
+            Err(PlaybackError::Dropouts(_)) if attempt < device.attempts => attempt += 1,
+            result => return result.map(Sequence::into_recordings),
+        }
+    }
+}
+
+/// One attempt of [`play_and_record`]: settles the stream, runs `sequence` and fails on
+/// dropouts after the settling.
+fn record_once(
+    sequence: Sequence,
+    stream_config: Config,
+    device: &DeviceConfig,
+) -> Result<Sequence, PlaybackError> {
     let duration = Duration::from_secs_f64(sequence.total_frames() as f64 / sequence.sample_rate());
     let mut host = device.open()?;
 
-    // the callback owns the sequence and hands it back once it is done
+    // the callback outputs silence until `start` is set, then owns the sequence and hands it
+    // back once it is done
+    let start = Arc::new(AtomicBool::new(false));
+    let start_in_callback = start.clone();
     let (done_tx, done_rx) = mpsc::sync_channel(1);
     let mut running = Some(sequence);
     host.start(stream_config, move |input, mut output| {
-        let Some(sequence) = running.as_mut() else {
-            for channel in 0..output.num_channels() {
-                output.channel_iter_mut(channel).for_each(|s| *s = 0.0);
+        let sequence = match running.as_mut() {
+            Some(sequence) if start_in_callback.load(Ordering::Acquire) => sequence,
+            _ => {
+                for channel in 0..output.num_channels() {
+                    output.channel_iter_mut(channel).for_each(|s| *s = 0.0);
+                }
+                return;
             }
-            return;
         };
         sequence.process(&input, &mut output);
         if sequence.is_done() {
             let _ = done_tx.try_send(running.take());
         }
     })?;
+
+    // dropouts while the device starts up don't touch the recording. Counted before the
+    // measurement starts, so a dropout right at the start counts rather than being missed.
+    let settled = Instant::now() + device.settle;
+    while Instant::now() < settled && host.status().error.is_none() {
+        std::thread::sleep(Duration::from_millis(10).min(settled - Instant::now()));
+    }
+    let xruns_before = host.status().xruns;
+    start.store(true, Ordering::Release);
 
     // a generous deadline: the device may start late, but a stuck stream must not hang forever
     let deadline = Instant::now() + duration * 2 + Duration::from_secs(5);
@@ -163,10 +214,11 @@ pub fn play_and_record(
     host.stop()?;
 
     let sequence = result?;
-    if status.xruns > 0 {
-        return Err(PlaybackError::Dropouts(status.xruns));
+    let xruns = status.xruns.saturating_sub(xruns_before);
+    if xruns > 0 {
+        return Err(PlaybackError::Dropouts(xruns));
     }
-    Ok(sequence.into_recordings())
+    Ok(sequence)
 }
 
 #[derive(Debug, Clone, PartialEq)]
