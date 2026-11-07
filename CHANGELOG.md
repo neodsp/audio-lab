@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Examples `measure_impulse_response` (sweeps, several speakers and mics) and `live_noise`
   (live transfer function with pink noise and an adjustable delay). The README's impulse
   response example now records a real measurement.
+- Example `measurement_app`: a measurement app with a side bar of all measurements, grouped
+  by run, a setup panel for devices, speakers, mics and the sweep, and tabs for magnitude,
+  phase and impulse responses. A simulated device lets you try it without hardware.
 - `FractionalOctaveSmoothingMode::Complex`: smooths the real and imaginary parts, so the phase
   is smoothed too.
 - `signal::audio_blocks`: re-export of `audio-blocks`, whose block types `Sequence` processes.
