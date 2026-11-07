@@ -1994,6 +1994,20 @@ impl MeasurementApp {
                         this.drop_tab(dragged.0, target, cx)
                     })),
             )
+            .child(
+                div().px_2().child(
+                    Button::new(("fit-to-data", ix))
+                        .ghost()
+                        .xsmall()
+                        .icon(gpui_kit::assets::IconName::Scan)
+                        .label("Fit to data")
+                        .tooltip("Zoom to the shown curves. Double-click the plot to go back.")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let tab = this.panes.panes[ix].active;
+                            this.plot(tab).update(cx, |plot, cx| plot.fit_to_data(cx));
+                        })),
+                ),
+            )
     }
 
     /// The panes: one, or two split side by side or one above the other.

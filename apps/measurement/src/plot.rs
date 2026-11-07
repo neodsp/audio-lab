@@ -1,9 +1,10 @@
 //! The plots of the tabs: magnitude and phase over log frequency, impulse responses over time.
 //!
 //! Like in Figma or Excalidraw, scrolling (two fingers on a touchpad) moves the view and
-//! Ctrl+scroll or a pinch zooms around the mouse; Ctrl+Shift+scroll zooms only the time or
-//! frequency, Ctrl+Alt+scroll only the value. Drag to move the view, right-drag to zoom into a
-//! box, double-click to fit the data again. Until zoomed or moved, a plot follows its data.
+//! Ctrl+scroll or a pinch zooms around the mouse; Ctrl+Alt+scroll zooms only the time or
+//! frequency, Ctrl+Shift+scroll only the value. Drag to move the view, right-drag to zoom into a
+//! box, double-click to go back to the default view. The view never follows the data by
+//! itself: [`Plot::fit_to_data`] zooms to the curves on request.
 
 use std::rc::Rc;
 
@@ -93,7 +94,7 @@ pub struct Trace {
     pub series: Series,
     /// Where a live measurement's coherence is below this, its curve isn't drawn.
     pub min_coherence: f64,
-    /// Hidden, but shown while the mouse is over it in the list. The view doesn't fit to it.
+    /// Hidden, but shown while the mouse is over it in the list. Fitting ignores it.
     pub preview: bool,
 }
 
@@ -158,12 +159,9 @@ pub struct Plot {
     traces: Vec<Trace>,
     /// The measurements to draw on top and thicker, as the mouse is over them in the list.
     highlight: Rc<[u64]>,
-    /// The frequency range to show when fitting a frequency plot.
-    home_x: (f64, f64),
+    /// The frequency range of the data, in log10 Hz, for fitting a frequency plot to it.
+    data_x: (f64, f64),
     view: View,
-    /// Whether the view still makes room for data that comes, until the user zooms or pans.
-    /// See [`Plot::set_traces`].
-    auto: bool,
     /// Where the plot was painted last, in window coordinates.
     bounds: Bounds<Pixels>,
     hover: Option<Point<Pixels>>,
@@ -172,53 +170,42 @@ pub struct Plot {
 
 impl Plot {
     pub fn new(kind: PlotKind) -> Self {
-        let mut plot = Self {
+        Self {
             kind,
             traces: Vec::new(),
             highlight: Rc::new([]),
-            home_x: (20f64.log10(), 20_000f64.log10()),
-            view: View {
-                x: (0.0, 1.0),
-                y: (0.0, 1.0),
-            },
-            auto: true,
+            data_x: AUDIO_RANGE,
+            view: default_view(kind),
             bounds: Bounds::default(),
             hover: None,
             drag: None,
-        };
-        plot.view = plot.home();
-        plot
+        }
     }
 
-    /// Shows `traces`; a frequency plot shows `freq_range` (Hz) when it fits the data.
-    ///
-    /// The view moves as little as it can, so it doesn't jump whenever a curve is shown or
-    /// hidden: hiding curves leaves it as it is, and curves that weren't shown before (newly
-    /// measured, shown again, or live) only widen it as far as they need, unless the user
-    /// zoomed or moved it. Changing data of the same curves, as live data does many times a
-    /// second, leaves it too. Only a plot that showed nothing fits to what comes.
+    /// Shows `traces`, whose data spans `freq_range` (Hz). The view stays where it is.
     pub fn set_traces(
         &mut self,
         traces: Vec<Trace>,
         freq_range: (f64, f64),
         cx: &mut Context<Self>,
     ) {
-        let shown = |traces: &[Trace]| -> Vec<u64> {
-            traces.iter().filter(|t| !t.preview).map(|t| t.id).collect()
-        };
-        let before = shown(&self.traces);
         self.traces = traces;
-        self.home_x = (freq_range.0.log10(), freq_range.1.log10());
-        let now = shown(&self.traces);
-        self.view = follow(
-            self.view,
-            self.home(),
-            self.auto,
-            self.kind.y_fixed(),
-            &before,
-            &now,
-        );
+        self.data_x = (freq_range.0.log10(), freq_range.1.log10());
         cx.notify();
+    }
+
+    /// Zooms to the shown curves.
+    pub fn fit_to_data(&mut self, cx: &mut Context<Self>) {
+        let before = self.view.x;
+        self.view = self.fitted_view();
+        self.user_changed(before, cx);
+    }
+
+    /// Goes back to the default view.
+    pub fn reset_view(&mut self, cx: &mut Context<Self>) {
+        let before = self.view.x;
+        self.view = default_view(self.kind);
+        self.user_changed(before, cx);
     }
 
     /// Draws the traces of the measurements `ids` on top and thicker, and the others fainter.
@@ -235,12 +222,6 @@ impl Plot {
             return;
         }
         self.view.x = x;
-        if x != self.home_x {
-            self.auto = false;
-        } else if self.kind.y_fixed() {
-            // back to all frequencies, and the values never move: fitted again
-            self.auto = true;
-        }
         cx.notify();
     }
 
@@ -262,8 +243,8 @@ impl Plot {
             .filter(move |trace| only_previews || !trace.preview)
     }
 
-    /// The view that fits the data.
-    fn home(&self) -> View {
+    /// The view that fits the data, or the default one without data.
+    fn fitted_view(&self) -> View {
         match self.kind {
             PlotKind::Magnitude => {
                 let (low, high) = self
@@ -285,13 +266,13 @@ impl Plot {
                         (high / 5.0).ceil() * 5.0 + 5.0,
                     )
                 } else {
-                    (-60.0, 10.0)
+                    default_view(self.kind).y
                 };
-                View { x: self.home_x, y }
+                View { x: self.data_x, y }
             }
             PlotKind::Phase => View {
-                x: self.home_x,
-                y: (-180.0, 180.0),
+                x: self.data_x,
+                y: default_view(self.kind).y,
             },
             PlotKind::Impulse => {
                 let (mut first, mut last, mut peak) = (f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
@@ -311,10 +292,7 @@ impl Plot {
                         y: (-peak, peak),
                     }
                 } else {
-                    View {
-                        x: (0.0, 100.0),
-                        y: (-1.0, 1.0),
-                    }
+                    default_view(self.kind)
                 }
             }
         }
@@ -327,13 +305,6 @@ impl Plot {
     /// The plot position at the window position `at`.
     fn to_plot(&self, at: Point<Pixels>) -> (f64, f64) {
         Transform::new(self.area(), self.view).to_plot(at)
-    }
-
-    fn fit(&mut self, cx: &mut Context<Self>) {
-        let before = self.view.x;
-        self.auto = true;
-        self.view = self.home();
-        self.user_changed(before, cx);
     }
 
     fn zoom(&mut self, at: Point<Pixels>, factor_x: f64, factor_y: f64) {
@@ -351,12 +322,12 @@ impl Plot {
         if !self.kind.y_fixed() {
             self.view.y = scale(self.view.y, y, factor_y);
         }
-        self.auto = false;
     }
 
     /// Like Figma or Excalidraw: scrolling (two fingers on a touchpad) moves the view, with Ctrl
-    /// it zooms around the mouse, with Ctrl+Shift only horizontally, with Ctrl+Alt only
-    /// vertically. Shift turns a mouse wheel's vertical scrolling into horizontal moving.
+    /// it zooms around the mouse, with Ctrl+Alt only horizontally (the keys sit side by side),
+    /// with Ctrl+Shift only vertically (the keys sit on top of each other). Shift turns a mouse
+    /// wheel's vertical scrolling into horizontal moving.
     fn on_scroll(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
         let before = self.view.x;
         let delta = event.delta.pixel_delta(window.line_height());
@@ -366,8 +337,8 @@ impl Plot {
             let amount = if dy != 0.0 { dy } else { dx };
             let factor = (-amount * 0.002).exp();
             let (fx, fy) = match (modifiers.shift, modifiers.alt) {
-                (true, false) => (factor, 1.0),
-                (false, true) => (1.0, factor),
+                (false, true) => (factor, 1.0),
+                (true, false) => (1.0, factor),
                 _ => (factor, factor),
             };
             self.zoom(event.position, fx, fy);
@@ -400,14 +371,13 @@ impl Plot {
             let shift_y = dy / height * (self.view.y.1 - self.view.y.0);
             self.view.y = (self.view.y.0 + shift_y, self.view.y.1 + shift_y);
         }
-        self.auto = false;
     }
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
         match event.button {
             MouseButton::Left if event.click_count >= 2 => {
                 self.drag = None;
-                self.fit(cx);
+                self.reset_view(cx);
             }
             MouseButton::Left => {
                 self.drag = Some(Drag::Pan {
@@ -437,7 +407,6 @@ impl Plot {
                 if !self.kind.y_fixed() {
                     self.view.y = (self.view.y.0 - (y1 - y0), self.view.y.1 - (y1 - y0));
                 }
-                self.auto = false;
             }
             Some(Drag::Zoom { current, .. }) => *current = event.position,
             None => {}
@@ -457,7 +426,6 @@ impl Plot {
                 if !self.kind.y_fixed() {
                     self.view.y = (y0.min(y1), y0.max(y1));
                 }
-                self.auto = false;
             }
         }
         self.user_changed(before, cx);
@@ -1026,23 +994,23 @@ impl Scene {
     }
 }
 
-/// Where the view goes when the curves shown change from `before` to `now` (ids), given the
-/// view that fits them all, `home`; see [`Plot::set_traces`]. `auto` while the user hasn't
-/// zoomed or moved it; `y_fixed` for a plot whose values always show the same range.
-fn follow(view: View, home: View, auto: bool, y_fixed: bool, before: &[u64], now: &[u64]) -> View {
-    if before.is_empty() {
-        return if now.is_empty() { view } else { home };
-    }
-    if !auto || now.iter().all(|id| before.contains(id)) {
-        return view;
-    }
-    let widen = |(a, b): (f64, f64), (c, d): (f64, f64)| (a.min(c), b.max(d));
-    View {
-        x: widen(view.x, home.x),
-        y: if y_fixed {
-            view.y
-        } else {
-            widen(view.y, home.y)
+/// The audible range, 20 Hz to 20 kHz, in log10 Hz.
+const AUDIO_RANGE: (f64, f64) = (1.301_029_995_663_981_2, 4.301_029_995_663_981);
+
+/// What a plot shows until zoomed or moved, and again after a double-click.
+fn default_view(kind: PlotKind) -> View {
+    match kind {
+        PlotKind::Magnitude => View {
+            x: AUDIO_RANGE,
+            y: (-60.0, 12.0),
+        },
+        PlotKind::Phase => View {
+            x: AUDIO_RANGE,
+            y: (-180.0, 180.0),
+        },
+        PlotKind::Impulse => View {
+            x: (0.0, 100.0),
+            y: (-1.0, 1.0),
         },
     }
 }
@@ -1230,37 +1198,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_view_moves_as_little_as_it_can() {
-        let view = View {
-            x: (2.0, 3.0),
-            y: (-30.0, 0.0),
-        };
-        let home = View {
-            x: (1.3, 4.3),
-            y: (-40.0, 10.0),
-        };
-        // hiding a curve, or new data for the same ones: stays
-        assert_eq!(follow(view, home, true, false, &[1, 2], &[1]), view);
-        assert_eq!(follow(view, home, true, false, &[1], &[1]), view);
-        // a curve that wasn't shown: widens to make room for it, never shrinks
-        let wide = View {
-            x: (1.3, 4.3),
-            y: (-40.0, 10.0),
-        };
-        assert_eq!(follow(view, home, true, false, &[1], &[1, 2]), wide);
-        let small_home = View {
-            x: (2.2, 2.8),
-            y: (-20.0, -10.0),
-        };
-        assert_eq!(follow(view, small_home, true, false, &[1], &[1, 2]), view);
-        // zoomed or moved by the user: stays
-        assert_eq!(follow(view, home, false, false, &[1], &[1, 2]), view);
-        // the phase always shows the full turn
-        assert_eq!(follow(view, home, true, true, &[1], &[1, 2]).y, view.y);
-        // nothing shown before: fits; nothing now: stays
-        assert_eq!(follow(view, home, false, false, &[], &[3]), home);
-        assert_eq!(follow(view, home, true, false, &[], &[]), view);
+    fn the_default_frequencies_are_the_audible_range() {
+        assert!((AUDIO_RANGE.0 - 20f64.log10()).abs() < 1e-12);
+        assert!((AUDIO_RANGE.1 - 20_000f64.log10()).abs() < 1e-12);
     }
+
     // `gpui_kit::*` brings GPUI's test macro, which needs an app
     use core::prelude::v1::test;
 
