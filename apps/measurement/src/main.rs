@@ -22,6 +22,7 @@
 mod app;
 mod curves;
 mod devices;
+mod live;
 mod measure;
 mod panes;
 mod plot;
@@ -33,7 +34,17 @@ use std::borrow::Cow;
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 
-gpui_kit::assets::icon_assets!(ExtraIcons, [AudioWaveform]);
+gpui_kit::assets::icon_assets!(
+    ExtraIcons,
+    [
+        AudioWaveform,
+        Camera,
+        Radio,
+        Crosshair,
+        StickyNote,
+        CalendarClock
+    ]
+);
 
 /// The component icons and the few extra ones the app uses.
 struct Assets;

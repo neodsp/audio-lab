@@ -9,7 +9,10 @@ use audio_lab::signal::measure::{SequenceConfig, Step};
 use audio_lab::signal::ndarray::{Array2, Axis};
 use audio_lab::signal::playback::{DeviceConfig, play_and_record};
 use audio_lab::signal::{FreqSignal, SweepConfig, SweepType, TimeSignal, generate_sweep};
+use chrono::{DateTime, Local};
 use num::complex::Complex64;
+
+use crate::live::LiveRequest;
 
 /// Silence before the first sweep.
 const WARMUP: Duration = Duration::from_millis(300);
@@ -25,6 +28,8 @@ pub struct Channel {
 
 /// Everything the setup panel lets you choose.
 pub struct Settings {
+    /// Measure live with noise instead of with sweeps.
+    pub live: bool,
     /// Name of the next measurement.
     pub name: String,
     /// Measure a simulated room instead of a device, to try the app without hardware.
@@ -47,11 +52,14 @@ pub struct Settings {
     pub tail_ms: f64,
     /// How much of each impulse response is kept, after its start.
     pub ir_length_ms: f64,
+    /// Noise periods averaged per live update.
+    pub periods: usize,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            live: false,
             name: "Measurement 1".into(),
             simulated: false,
             output_device: None,
@@ -65,6 +73,7 @@ impl Default for Settings {
             freq_high: 20_000.0,
             tail_ms: 1500.0,
             ir_length_ms: 500.0,
+            periods: 4,
         }
     }
 }
@@ -90,7 +99,9 @@ impl Settings {
             return Some("Choose at least one microphone.".into());
         }
         let nyquist = f64::from(self.sample_rate) / 2.0;
-        if !(self.freq_low > 0.0 && self.freq_low < self.freq_high && self.freq_high <= nyquist) {
+        if !self.live
+            && !(self.freq_low > 0.0 && self.freq_low < self.freq_high && self.freq_high <= nyquist)
+        {
             return Some(format!(
                 "The frequency range must lie between 0 and {nyquist:.0} Hz."
             ));
@@ -98,22 +109,19 @@ impl Settings {
         None
     }
 
-    /// What to measure, for the background thread.
+    /// `None` for the simulated device.
+    fn device(&self) -> Option<DeviceConfig> {
+        (!self.simulated).then(|| DeviceConfig {
+            input_device: self.input_device.clone(),
+            output_device: self.output_device.clone(),
+            ..Default::default()
+        })
+    }
+
+    /// What to measure with sweeps, for the background thread.
     pub fn request(&self) -> Request {
-        let enabled = |channels: &[Channel]| {
-            channels
-                .iter()
-                .enumerate()
-                .filter(|(_, channel)| channel.enabled)
-                .map(|(index, channel)| (index as u16, channel.name.clone()))
-                .collect()
-        };
         Request {
-            device: (!self.simulated).then(|| DeviceConfig {
-                input_device: self.input_device.clone(),
-                output_device: self.output_device.clone(),
-                ..Default::default()
-            }),
+            device: self.device(),
             speakers: enabled(&self.outputs),
             mics: enabled(&self.inputs),
             sample_rate: f64::from(self.sample_rate),
@@ -124,6 +132,28 @@ impl Settings {
             ir_length: self.ir_length_ms / 1000.0,
         }
     }
+
+    /// What to measure live.
+    pub fn live_request(&self) -> LiveRequest {
+        LiveRequest {
+            device: self.device(),
+            speakers: enabled(&self.outputs),
+            mics: enabled(&self.inputs),
+            sample_rate: f64::from(self.sample_rate),
+            level_db: self.level_db,
+            periods: self.periods,
+        }
+    }
+}
+
+/// The channels that take part: their number and name.
+fn enabled(channels: &[Channel]) -> Vec<(u16, String)> {
+    channels
+        .iter()
+        .enumerate()
+        .filter(|(_, channel)| channel.enabled)
+        .map(|(index, channel)| (index as u16, channel.name.clone()))
+        .collect()
 }
 
 fn resize(channels: &mut Vec<Channel>, len: u16, prefix: &str) {
@@ -164,9 +194,44 @@ impl Request {
         let sweep = Duration::from_secs_f64(self.sweep_len as f64 / self.sample_rate);
         device.settle + WARMUP + (sweep + self.tail) * self.speakers.len() as u32
     }
+
+    /// How it measures, a line each, for the info of the measurement.
+    pub fn describe(&self) -> Vec<String> {
+        vec![
+            format!(
+                "Sweep of {:.1} s, {:.0}–{:.0} Hz, {:.0} dBFS",
+                self.sweep_len as f64 / self.sample_rate,
+                self.range.start,
+                self.range.end,
+                self.level_db
+            ),
+            format!(
+                "Tail {:.0} ms, IR window {:.0} ms",
+                self.tail.as_secs_f64() * 1000.0,
+                self.ir_length * 1000.0
+            ),
+            describe_device(self.device.as_ref(), self.sample_rate),
+        ]
+    }
 }
 
-/// The response from one speaker to one mic.
+/// The devices and the sample rate, for the info of a measurement.
+pub fn describe_device(device: Option<&DeviceConfig>, sample_rate: f64) -> String {
+    let rate = format!("{:.0} Hz", sample_rate);
+    let Some(device) = device else {
+        return format!("Simulated device, {rate}");
+    };
+    let name = |name: &Option<String>| name.clone().unwrap_or_else(|| "system default".into());
+    format!(
+        "{} → {}, {rate}",
+        name(&device.output_device),
+        name(&device.input_device)
+    )
+}
+
+/// The response from one speaker to one mic, from a sweep or live noise. With noise on several
+/// speakers at once, `speaker` names all of them.
+#[derive(Clone)]
 pub struct Response {
     pub speaker: String,
     pub mic: String,
@@ -176,6 +241,9 @@ pub struct Response {
     pub start: usize,
     /// The frequency response, with the phase relative to the impulse response's peak.
     pub frequency_response: FreqSignal,
+    /// How far each frequency can be trusted, from 0 to 1 (in the real part), for a live
+    /// measurement: where it is low, room noise or distortion dominate. `None` for a sweep.
+    pub coherence: Option<FreqSignal>,
     /// Peak level of the recording in dBFS.
     pub peak_db: f64,
 }
@@ -190,6 +258,8 @@ pub struct Outcome {
 /// runs as a background task of the app.
 pub struct Job {
     started: Instant,
+    /// When it started, by the clock.
+    pub started_at: DateTime<Local>,
     expected: Duration,
     pub request: Request,
 }
@@ -198,6 +268,7 @@ impl Job {
     pub fn new(request: Request) -> Self {
         Self {
             started: Instant::now(),
+            started_at: Local::now(),
             expected: request.duration(),
             request,
         }
@@ -284,6 +355,7 @@ pub fn run(request: &Request) -> Result<Outcome, String> {
                 speaker: speaker.clone(),
                 mic: mic.clone(),
                 frequency_response: response_from_peak(&impulse_response),
+                coherence: None,
                 impulse_response,
                 start: starts[0],
                 peak_db: 20.0 * peak.log10(),
@@ -364,7 +436,7 @@ fn simulate(sweep: &TimeSignal, request: &Request) -> Result<Vec<TimeSignal>, St
 }
 
 /// A made-up impulse response from `speaker` to `mic`.
-fn simulated_room(speaker: u16, mic: u16, sample_rate: f64, noise: &mut Lcg) -> TimeSignal {
+pub fn simulated_room(speaker: u16, mic: u16, sample_rate: f64, noise: &mut Lcg) -> TimeSignal {
     let samples = |ms: f64| (ms / 1000.0 * sample_rate) as usize;
     let mut ir = vec![0.0; samples(400.0)];
     // device latency plus the distance, different for every pair
@@ -402,10 +474,10 @@ fn simulated_room(speaker: u16, mic: u16, sample_rate: f64, noise: &mut Lcg) -> 
 }
 
 /// Repeatable noise between -1 and 1.
-struct Lcg(u64);
+pub struct Lcg(pub u64);
 
 impl Lcg {
-    fn next(&mut self) -> f64 {
+    pub fn next(&mut self) -> f64 {
         self.0 = self
             .0
             .wrapping_mul(6_364_136_223_846_793_005)

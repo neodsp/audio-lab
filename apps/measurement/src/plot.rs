@@ -88,6 +88,8 @@ pub struct Trace {
     pub name: SharedString,
     pub color: Hsla,
     pub series: Series,
+    /// Where a live measurement's coherence is below this, its curve isn't drawn.
+    pub min_coherence: f64,
 }
 
 impl Trace {
@@ -100,6 +102,9 @@ impl Trace {
                     return None;
                 }
                 let hz = 10f64.powf(x);
+                if !curves.trusted(hz, self.min_coherence) {
+                    return None;
+                }
                 Some(match kind {
                     PlotKind::Phase => curves.phase_degrees(hz),
                     _ => curves.magnitude_db(hz),
@@ -153,6 +158,11 @@ pub struct Plot {
     view: View,
     /// Whether the view follows the data, until the user zooms or pans.
     auto: bool,
+    /// While live data changes many times a second, the view stays where it is instead of
+    /// following it, so it doesn't jump. It fits once, to the first data.
+    steady: bool,
+    /// Fit to the next data that comes, once.
+    fit_pending: bool,
     /// Where the plot was painted last, in window coordinates.
     bounds: Bounds<Pixels>,
     hover: Option<Point<Pixels>>,
@@ -171,6 +181,8 @@ impl Plot {
                 y: (0.0, 1.0),
             },
             auto: true,
+            steady: false,
+            fit_pending: false,
             bounds: Bounds::default(),
             hover: None,
             drag: None,
@@ -188,10 +200,20 @@ impl Plot {
     ) {
         self.traces = traces;
         self.home_x = (freq_range.0.log10(), freq_range.1.log10());
-        if self.auto {
+        if self.fit_pending && !self.traces.is_empty() {
+            self.fit_pending = false;
+            self.view = self.home();
+        } else if self.auto && !self.steady {
             self.view = self.home();
         }
         cx.notify();
+    }
+
+    /// Keeps the view still while data comes in many times a second, or lets it follow again.
+    /// A view that followed the data fits once to the first that comes.
+    pub fn set_steady(&mut self, steady: bool) {
+        self.fit_pending = steady && self.auto;
+        self.steady = steady;
     }
 
     /// Draws the traces of the measurements `ids` on top and thicker, and the others fainter.
@@ -234,7 +256,9 @@ impl Plot {
                     .traces
                     .iter()
                     .filter_map(|trace| match &trace.series {
-                        Series::Frequency(curves) => Some(curves.magnitude_extent()),
+                        Series::Frequency(curves) => {
+                            Some(curves.magnitude_extent(trace.min_coherence))
+                        }
                         Series::Points(_) => None,
                     })
                     .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), (low, high)| {
@@ -722,20 +746,26 @@ impl Scene {
         match &trace.series {
             Series::Frequency(curves) => {
                 let positions = draw_positions(self.view.x, transform.width, curves.log_range);
-                let points: Vec<(f64, f64)> = positions
-                    .into_iter()
-                    .map(|x| {
-                        let hz = 10f64.powf(x);
-                        match self.kind {
-                            PlotKind::Phase => (x, curves.phase_degrees(hz)),
-                            _ => (x, curves.magnitude_db(hz)),
+                // in pieces, with gaps where a live measurement can't be trusted
+                let mut runs = vec![Vec::new()];
+                for x in positions {
+                    let hz = 10f64.powf(x);
+                    if !curves.trusted(hz, trace.min_coherence) {
+                        if !runs.last().is_some_and(Vec::is_empty) {
+                            runs.push(Vec::new());
                         }
-                    })
-                    .collect();
+                        continue;
+                    }
+                    let y = match self.kind {
+                        PlotKind::Phase => curves.phase_degrees(hz),
+                        _ => curves.magnitude_db(hz),
+                    };
+                    runs.last_mut().expect("starts with one").push((x, y));
+                }
                 if self.kind == PlotKind::Phase {
-                    split_at_wraps(&points)
+                    runs.iter().flat_map(|run| split_at_wraps(run)).collect()
                 } else {
-                    vec![points]
+                    runs
                 }
             }
             Series::Points(points) => vec![decimate(points, self.view.x, transform.width)],

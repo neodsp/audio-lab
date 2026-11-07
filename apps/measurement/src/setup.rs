@@ -1,6 +1,8 @@
-//! The setup of a new measurement, in the side bar: devices, speakers and microphones, the sweep.
+//! The setup of a new measurement, in the side bar: sweep or live, devices, speakers and
+//! microphones, the sweep or the noise.
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::base::Selectable as _;
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
@@ -14,6 +16,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::devices::{self, DeviceList};
+use crate::live::{LiveRequest, period_len};
 use crate::measure::{self, Channel, Request, Settings};
 use crate::theme::palette;
 
@@ -43,6 +46,7 @@ type ChoiceState<T> = Entity<SelectState<Vec<Choice<T>>>>;
 
 pub enum SetupEvent {
     Start(Request),
+    StartLive(LiveRequest),
     Close,
 }
 
@@ -66,6 +70,8 @@ pub struct Setup {
     inputs: Vec<ChannelRow>,
     sample_rate: ChoiceState<u32>,
     sweep_len: ChoiceState<u32>,
+    /// Noise periods averaged per live update.
+    averaging: ChoiceState<usize>,
     level: Entity<SliderState>,
     freq_low: Entity<InputState>,
     freq_high: Entity<InputState>,
@@ -141,6 +147,7 @@ impl Setup {
                 };
                 this.settings.sample_rate = *rate;
                 this.update_sweep_lengths(window, cx);
+                this.update_averaging(window, cx);
                 cx.notify();
             },
         ));
@@ -153,6 +160,18 @@ impl Setup {
                     return;
                 };
                 this.settings.sweep_exponent = *exponent;
+                cx.notify();
+            }),
+        );
+
+        let averaging = cx
+            .new(|cx| SelectState::new(averaging_choices(settings.sample_rate), None, window, cx));
+        subscriptions.push(
+            cx.subscribe(&averaging, |this, _, event: &SelectEvent<_>, cx| {
+                let SelectEvent::Confirm(Some(periods)) = event else {
+                    return;
+                };
+                this.settings.periods = *periods;
                 cx.notify();
             }),
         );
@@ -214,6 +233,7 @@ impl Setup {
             inputs: Vec::new(),
             sample_rate,
             sweep_len,
+            averaging,
             level,
             freq_low,
             freq_high,
@@ -223,6 +243,7 @@ impl Setup {
             _scan: None,
         };
         setup.update_sweep_lengths(window, cx);
+        setup.update_averaging(window, cx);
         setup.scan(window, cx);
         setup
     }
@@ -345,6 +366,15 @@ impl Setup {
         });
     }
 
+    fn update_averaging(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let periods = self.settings.periods;
+        let choices = averaging_choices(self.settings.sample_rate);
+        self.averaging.update(cx, |select, cx| {
+            select.set_items(choices, window, cx);
+            select.set_selected_value(&periods, window, cx);
+        });
+    }
+
     /// Matches the speakers and microphones to the chosen devices.
     fn sync_channels(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (num_outputs, num_inputs) = if self.settings.simulated {
@@ -365,8 +395,70 @@ impl Setup {
     fn start(&mut self, cx: &mut Context<Self>) {
         if self.settings.problem().is_none() {
             self.error = None;
-            cx.emit(SetupEvent::Start(self.settings.request()));
+            cx.emit(if self.settings.live {
+                SetupEvent::StartLive(self.settings.live_request())
+            } else {
+                SetupEvent::Start(self.settings.request())
+            });
         }
+    }
+
+    /// Sweep or live.
+    fn render_mode(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let live = self.settings.live;
+        ButtonGroup::new("mode")
+            .small()
+            .outline()
+            .w_full()
+            .child(
+                Button::new("mode-sweep")
+                    .flex_1()
+                    .icon(gpui_kit::assets::IconName::AudioWaveform)
+                    .label("Sweep")
+                    .selected(!live),
+            )
+            .child(
+                Button::new("mode-live")
+                    .flex_1()
+                    .icon(gpui_kit::assets::IconName::Radio)
+                    .label("Live")
+                    .selected(live),
+            )
+            .on_click(cx.listener(|this, clicked: &Vec<usize>, _, cx| {
+                this.settings.live = clicked.contains(&1);
+                cx.notify();
+            }))
+    }
+
+    fn render_noise(&self, cx: &App) -> impl IntoElement {
+        v_flex()
+            .gap_2()
+            .child(row(
+                cx,
+                "Sample rate",
+                Select::new(&self.sample_rate).small(),
+            ))
+            .child(row(cx, "Level", self.render_level(cx)))
+            .child(row(cx, "Averaging", Select::new(&self.averaging).small()))
+            .child(hint(
+                cx,
+                "Pink noise plays on the speakers until you stop it; switch them on and off \
+                 while it runs. More averaging is steadier, less follows changes faster.",
+            ))
+    }
+
+    fn render_level(&self, cx: &App) -> impl IntoElement {
+        let level = self.settings.level_db;
+        h_flex()
+            .gap_3()
+            .child(div().flex_1().child(Slider::new(&self.level)))
+            .child(
+                div()
+                    .w(px(64.0))
+                    .text_sm()
+                    .text_color(palette::text_muted(cx))
+                    .child(format!("{level:.0} dBFS")),
+            )
     }
 
     fn render_devices(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -481,7 +573,6 @@ impl Setup {
     }
 
     fn render_sweep(&self, cx: &App) -> impl IntoElement {
-        let level = self.settings.level_db;
         v_flex()
             .gap_2()
             .child(row(
@@ -490,20 +581,7 @@ impl Setup {
                 Select::new(&self.sample_rate).small(),
             ))
             .child(row(cx, "Length", Select::new(&self.sweep_len).small()))
-            .child(row(
-                cx,
-                "Level",
-                h_flex()
-                    .gap_3()
-                    .child(div().flex_1().child(Slider::new(&self.level)))
-                    .child(
-                        div()
-                            .w(px(64.0))
-                            .text_sm()
-                            .text_color(palette::text_muted(cx))
-                            .child(format!("{level:.0} dBFS")),
-                    ),
-            ))
+            .child(row(cx, "Level", self.render_level(cx)))
             .child(row(cx, "From", number(cx, &self.freq_low, "Hz")))
             .child(row(cx, "To", number(cx, &self.freq_high, "Hz")))
             .child(row(cx, "Tail", number(cx, &self.tail, "ms")))
@@ -549,15 +627,25 @@ impl Render for Setup {
                             v_flex()
                                 .p_3()
                                 .gap_2()
-                                .child(row(cx, "Name", Input::new(&self.name).small()))
+                                .child(self.render_mode(cx))
+                                .when(!self.settings.live, |this| {
+                                    this.child(row(cx, "Name", Input::new(&self.name).small()))
+                                })
                                 .child(section(cx, "Devices"))
                                 .child(self.render_devices(cx))
                                 .child(section(cx, "Speakers"))
                                 .child(self.render_channels(true, cx))
                                 .child(section(cx, "Microphones"))
                                 .child(self.render_channels(false, cx))
-                                .child(section(cx, "Sweep"))
-                                .child(self.render_sweep(cx)),
+                                .map(|this| {
+                                    if self.settings.live {
+                                        this.child(section(cx, "Noise"))
+                                            .child(self.render_noise(cx))
+                                    } else {
+                                        this.child(section(cx, "Sweep"))
+                                            .child(self.render_sweep(cx))
+                                    }
+                                }),
                         ),
                 ),
             )
@@ -574,19 +662,25 @@ impl Render for Setup {
                             .small()
                             .w_full()
                             .icon(IconName::Play)
-                            .label("Start measurement")
+                            .label(if self.settings.live {
+                                "Start live"
+                            } else {
+                                "Start measurement"
+                            })
                             .disabled(problem.is_some())
                             .on_click(cx.listener(|this, _, _, cx| this.start(cx))),
                     )
                     .map(|this| match problem {
                         Some(problem) => this.child(hint(cx, problem)),
-                        None if !self.settings.simulated => this.child(hint(
-                            cx,
-                            format!(
-                                "Takes about {:.0} s. Keep it quiet.",
-                                request.duration().as_secs_f64()
-                            ),
-                        )),
+                        None if !self.settings.simulated && !self.settings.live => {
+                            this.child(hint(
+                                cx,
+                                format!(
+                                    "Takes about {:.0} s. Keep it quiet.",
+                                    request.duration().as_secs_f64()
+                                ),
+                            ))
+                        }
                         None => this,
                     })
                     .when_some(self.error.clone(), |this, error| {
@@ -625,6 +719,23 @@ fn sync_rows(
             _subscription: subscription,
         });
     }
+}
+
+/// How many noise periods to average, with how long that takes at `sample_rate`.
+fn averaging_choices(sample_rate: u32) -> Vec<Choice<usize>> {
+    let period = period_len(f64::from(sample_rate)) as f64 / f64::from(sample_rate);
+    [1, 2, 4, 8]
+        .into_iter()
+        .map(|periods| Choice {
+            title: format!(
+                "{periods} period{} ({:.1} s)",
+                if periods == 1 { "" } else { "s" },
+                periods as f64 * period
+            )
+            .into(),
+            value: periods,
+        })
+        .collect()
 }
 
 /// The sweep lengths to choose from at `sample_rate`, as powers of two.

@@ -20,23 +20,38 @@ pub struct Curves {
     /// The phase as complex values, which interpolate across its wraps.
     re: Vec<f64>,
     im: Vec<f64>,
+    /// The coherence of a live measurement, smoothed like the magnitude. Where it is below the
+    /// chosen limit, the curves aren't drawn.
+    coherence: Option<Vec<f64>>,
 }
 
 impl Curves {
     /// The curves of `response` within `range`. The magnitude is smoothed on its own, the phase
-    /// as complex values.
-    pub fn new(response: &FreqSignal, range: (f64, f64), smoothing: Option<f64>) -> Self {
-        let smoothed = |mode| match smoothing {
+    /// as complex values, the `coherence` like the magnitude.
+    pub fn new(
+        response: &FreqSignal,
+        coherence: Option<&FreqSignal>,
+        range: (f64, f64),
+        smoothing: Option<f64>,
+    ) -> Self {
+        let smoothed = |signal: &FreqSignal, mode| match smoothing {
             Some(num_fractions) => {
                 let config = FractionalOctaveSmoothingConfig::new(num_fractions).with_mode(mode);
-                smooth_fractional_octave(response, &config)
+                smooth_fractional_octave(signal, &config)
                     .map(|(smoothed, _)| smoothed)
-                    .unwrap_or_else(|_| response.clone())
+                    .unwrap_or_else(|_| signal.clone())
             }
-            None => response.clone(),
+            None => signal.clone(),
         };
-        let magnitude = smoothed(FractionalOctaveSmoothingMode::MagnitudeZeroPhase);
-        let phase = smoothed(FractionalOctaveSmoothingMode::Complex);
+        let magnitude = smoothed(response, FractionalOctaveSmoothingMode::MagnitudeZeroPhase);
+        let phase = smoothed(response, FractionalOctaveSmoothingMode::Complex);
+        let coherence = coherence.map(|coherence| {
+            smoothed(coherence, FractionalOctaveSmoothingMode::MagnitudeZeroPhase)
+                .channel(0)
+                .iter()
+                .map(|c| c.norm())
+                .collect()
+        });
 
         let freq_bins = response.freq_bins();
         let first_bin = freq_bins.first().copied().unwrap_or(0.0);
@@ -57,6 +72,18 @@ impl Curves {
                 .collect(),
             re: phase.channel(0).iter().map(|h| h.re).collect(),
             im: phase.channel(0).iter().map(|h| h.im).collect(),
+            coherence,
+        }
+    }
+
+    /// Whether the curve is drawn at `hz`: always for a sweep, for a live measurement where
+    /// the coherence reaches `min_coherence`.
+    pub fn trusted(&self, hz: f64, min_coherence: f64) -> bool {
+        match &self.coherence {
+            Some(coherence) if min_coherence > 0.0 => {
+                interpolate(coherence, self.position(hz)) >= min_coherence
+            }
+            _ => true,
         }
     }
 
@@ -76,11 +103,14 @@ impl Curves {
             .to_degrees()
     }
 
-    /// The lowest and highest magnitude within the drawn range, in dB.
-    pub fn magnitude_extent(&self) -> (f64, f64) {
+    /// The lowest and highest magnitude within the drawn range where it is
+    /// [`trusted`](Self::trusted), in dB.
+    pub fn magnitude_extent(&self, min_coherence: f64) -> (f64, f64) {
         let (low, high) = self.log_range;
         (0..=200)
-            .map(|i| self.magnitude_db(10f64.powf(low + (high - low) * i as f64 / 200.0)))
+            .map(|i| 10f64.powf(low + (high - low) * i as f64 / 200.0))
+            .filter(|&hz| self.trusted(hz, min_coherence))
+            .map(|hz| self.magnitude_db(hz))
             .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), db| {
                 (min.min(db), max.max(db))
             })
@@ -198,15 +228,34 @@ mod tests {
 
     #[test]
     fn curves_are_smooth_and_cover_the_range() {
-        let curves = Curves::new(&impulse_response(), (20.0, 20_000.0), Some(3.0));
+        let curves = Curves::new(&impulse_response(), None, (20.0, 20_000.0), Some(3.0));
         assert!((curves.log_range.0 - 20f64.log10()).abs() < 1e-9);
         assert!((curves.log_range.1 - 20_000f64.log10()).abs() < 1e-9);
         // an impulse is flat at 0 dB
         for hz in [20.0, 31.4, 1000.0, 19_999.0] {
             assert!(curves.magnitude_db(hz).abs() < 0.1, "{hz}");
         }
-        let (low, high) = curves.magnitude_extent();
+        let (low, high) = curves.magnitude_extent(0.5);
         assert!(low > -0.1 && high < 0.1);
+    }
+
+    #[test]
+    fn low_coherence_is_left_out() {
+        let response = impulse_response();
+        // coherent up to 1 kHz, noise above
+        let freqs = response.freq_bins().to_owned();
+        let mut coherence = response.clone();
+        for (c, f) in coherence.channel_mut(0).iter_mut().zip(freqs) {
+            *c = if f < 1000.0 { 1.0 } else { 0.1 }.into();
+        }
+        let curves = Curves::new(&response, Some(&coherence), (20.0, 20_000.0), None);
+        assert!(curves.trusted(500.0, 0.5));
+        assert!(!curves.trusted(5000.0, 0.5));
+        // a limit of 0 shows everything
+        assert!(curves.trusted(5000.0, 0.0));
+        // and a sweep has no coherence: all of it is trusted
+        let sweep = Curves::new(&response, None, (20.0, 20_000.0), None);
+        assert!(sweep.trusted(5000.0, 0.5));
     }
 
     #[test]

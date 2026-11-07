@@ -3,11 +3,14 @@
 use std::rc::Rc;
 use std::time::Duration;
 
+use chrono::{DateTime, Local};
 use gpui_kit::base::actions::{SelectDown, SelectUp};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::component::popover::Popover;
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::{Select, SelectEvent, SelectItem as _, SelectState};
@@ -20,6 +23,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::curves::{Curves, impulse_points};
+use crate::live::{self, Analysis, Live, LiveRequest, Status};
 use crate::measure::{self, Job, Outcome, Response};
 use crate::panes::{Panes, Side, Target};
 use crate::plot::{FrequencyChanged, Plot, PlotKind, Series, Trace};
@@ -99,16 +103,54 @@ struct ContentDrop {
 struct Group {
     id: u64,
     name: SharedString,
+    /// When it was measured: the start of the sweeps, the snapshot, or the start of live.
+    measured: DateTime<Local>,
+    /// How it was measured, a line each.
+    about: Vec<SharedString>,
+    notes: Notes,
     /// The sweep's frequency range: outside of it there is nothing to show.
     range: (f64, f64),
     expanded: bool,
     measurements: Vec<Measurement>,
 }
 
+/// What the user writes down about a measurement or a folder.
+struct Notes {
+    field: Entity<TextareaState>,
+    _subscription: Subscription,
+}
+
+impl Notes {
+    fn new(text: &str, window: &mut Window, cx: &mut Context<MeasurementApp>) -> Self {
+        let field = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("Add notes…")
+                .default_value(text.to_string())
+        });
+        // the list shows which have notes
+        let subscription = cx.subscribe(&field, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+        Self {
+            field,
+            _subscription: subscription,
+        }
+    }
+
+    fn text(&self, cx: &App) -> SharedString {
+        self.field.read(cx).value()
+    }
+}
+
 struct Measurement {
     id: u64,
     /// `speaker → mic`.
     name: SharedString,
+    /// When it was measured, like its folder.
+    measured: DateTime<Local>,
+    notes: Notes,
     /// `group · speaker → mic`, for the plots.
     full_name: SharedString,
     response: Response,
@@ -121,6 +163,20 @@ struct Measurement {
     _subscription: Subscription,
 }
 
+impl Measurement {
+    /// Names it after its response, in the folder `group`, and takes the impulse response to
+    /// draw from it: after it was made, and whenever a live response changes.
+    fn follow_response(&mut self, group: &str) {
+        let short = format!("{} → {}", self.response.speaker, self.response.mic);
+        self.full_name = format!("{group} · {short}").into();
+        self.name = short.into();
+        self.impulse = Rc::new(impulse_points(
+            &self.response.impulse_response,
+            self.response.start,
+        ));
+    }
+}
+
 /// Something to do to the list.
 #[derive(Clone, Copy)]
 enum Action {
@@ -128,6 +184,28 @@ enum Action {
     Delete(u64),
     /// Show only this measurement.
     Solo(u64),
+}
+
+/// The id of the live folder; the others count from 1.
+const LIVE_GROUP: u64 = 0;
+/// How often a running live measurement is analyzed.
+const LIVE_UPDATE: Duration = Duration::from_millis(100);
+
+/// A live measurement that runs, and its folder at the top of the list.
+struct LiveRun {
+    /// Tells this run's analyses from those of an earlier one that still finish.
+    run: u64,
+    live: Live,
+    /// One measurement per mic, updated with every analysis.
+    group: Group,
+    level: Entity<SliderState>,
+    /// An analysis runs in the background; the next waits for it.
+    analyzing: bool,
+    status: Status,
+    /// Why the last analysis failed.
+    error: Option<String>,
+    _ticker: Task<()>,
+    _subscription: Subscription,
 }
 
 pub struct MeasurementApp {
@@ -155,6 +233,12 @@ pub struct MeasurementApp {
     impulse: Entity<Plot>,
     job: Option<Job>,
     _job_task: Option<Task<()>>,
+    live: Option<LiveRun>,
+    /// Counts the live runs.
+    live_runs: u64,
+    /// Below this coherence, live measurements and their snapshots aren't drawn.
+    min_coherence: f64,
+    coherence_slider: Entity<SliderState>,
     _ticker: Option<Task<()>>,
     /// Problems with single responses of the last measurement.
     warnings: Vec<String>,
@@ -173,6 +257,14 @@ impl MeasurementApp {
                 .scale(SliderScale::Logarithmic)
                 .default_value(smoothing as f32)
         });
+        let min_coherence = 0.5;
+        let coherence_slider = cx.new(|_| {
+            SliderState::new()
+                .min(0.0)
+                .max(1.0)
+                .step(0.05)
+                .default_value(min_coherence as f32)
+        });
         let themes = theme::choices(cx);
         let current = themes
             .iter()
@@ -183,44 +275,54 @@ impl MeasurementApp {
         });
         let magnitude = cx.new(|_| Plot::new(PlotKind::Magnitude));
         let phase = cx.new(|_| Plot::new(PlotKind::Phase));
-        let subscriptions =
-            vec![
-                // magnitude and phase always show the same frequencies
-                cx.subscribe(&magnitude, |this, _, FrequencyChanged(x), cx| {
-                    this.phase
-                        .update(cx, |phase, cx| phase.link_frequency(*x, cx))
-                }),
-                cx.subscribe(&phase, |this, _, FrequencyChanged(x), cx| {
-                    this.magnitude
-                        .update(cx, |magnitude, cx| magnitude.link_frequency(*x, cx))
-                }),
-                cx.subscribe(&theme_select, |_, _, event: &SelectEvent<_>, cx| {
-                    if let SelectEvent::Confirm(Some(name)) = event {
-                        theme::select(name, cx);
+        let subscriptions = vec![
+            // magnitude and phase always show the same frequencies
+            cx.subscribe(&magnitude, |this, _, FrequencyChanged(x), cx| {
+                this.phase
+                    .update(cx, |phase, cx| phase.link_frequency(*x, cx))
+            }),
+            cx.subscribe(&phase, |this, _, FrequencyChanged(x), cx| {
+                this.magnitude
+                    .update(cx, |magnitude, cx| magnitude.link_frequency(*x, cx))
+            }),
+            cx.subscribe(&theme_select, |_, _, event: &SelectEvent<_>, cx| {
+                if let SelectEvent::Confirm(Some(name)) = event {
+                    theme::select(name, cx);
+                }
+            }),
+            // closed without choosing: back to the theme from before the preview
+            cx.subscribe(&theme_select, |_, _, _: &DismissEvent, cx| {
+                theme::end_preview(cx)
+            }),
+            cx.subscribe_in(
+                &setup,
+                window,
+                |this, _, event: &SetupEvent, window, cx| match event {
+                    SetupEvent::Start(request) => this.start(request.clone(), window, cx),
+                    SetupEvent::StartLive(request) => this.start_live(request.clone(), window, cx),
+                    SetupEvent::Close => {
+                        this.side_bar = SideBar::Measurements;
+                        cx.notify();
                     }
-                }),
-                // closed without choosing: back to the theme from before the preview
-                cx.subscribe(&theme_select, |_, _, _: &DismissEvent, cx| {
-                    theme::end_preview(cx)
-                }),
-                cx.subscribe_in(&setup, window, |this, _, event: &SetupEvent, window, cx| {
-                    match event {
-                        SetupEvent::Start(request) => this.start(request.clone(), window, cx),
-                        SetupEvent::Close => {
-                            this.side_bar = SideBar::Measurements;
-                            cx.notify();
-                        }
-                    }
-                }),
-                cx.subscribe(&smoothing_slider, |this, _, event: &SliderEvent, cx| {
-                    let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
-                    let value = f64::from(value.start()).round();
-                    if value != this.smoothing {
-                        this.smoothing = value;
-                        this.refresh_plots(cx);
-                    }
-                }),
-            ];
+                },
+            ),
+            cx.subscribe(&coherence_slider, |this, _, event: &SliderEvent, cx| {
+                let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
+                let value = f64::from(value.start());
+                if value != this.min_coherence {
+                    this.min_coherence = value;
+                    this.refresh_plots(cx);
+                }
+            }),
+            cx.subscribe(&smoothing_slider, |this, _, event: &SliderEvent, cx| {
+                let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
+                let value = f64::from(value.start()).round();
+                if value != this.smoothing {
+                    this.smoothing = value;
+                    this.refresh_plots(cx);
+                }
+            }),
+        ];
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
         Self {
@@ -244,6 +346,10 @@ impl MeasurementApp {
             impulse: cx.new(|_| Plot::new(PlotKind::Impulse)),
             job: None,
             _job_task: None,
+            live: None,
+            live_runs: 0,
+            min_coherence,
+            coherence_slider,
             _ticker: None,
             warnings: Vec::new(),
             _subscriptions: subscriptions,
@@ -254,13 +360,24 @@ impl MeasurementApp {
         self.smoothing_enabled.then_some(self.smoothing)
     }
 
+    /// The live folder while live runs, then the others.
+    fn all_groups(&self) -> impl Iterator<Item = &Group> {
+        self.live.iter().map(|run| &run.group).chain(&self.groups)
+    }
+
+    fn all_groups_mut(&mut self) -> impl Iterator<Item = &mut Group> {
+        self.live
+            .iter_mut()
+            .map(|run| &mut run.group)
+            .chain(&mut self.groups)
+    }
+
     fn num_measurements(&self) -> usize {
         self.groups.iter().map(|g| g.measurements.len()).sum()
     }
 
     fn num_visible(&self) -> usize {
-        self.groups
-            .iter()
+        self.all_groups()
             .flat_map(|g| &g.measurements)
             .filter(|m| m.visible)
             .count()
@@ -288,6 +405,8 @@ impl MeasurementApp {
         if self.job.is_some() {
             return;
         }
+        // the sweep needs the device
+        self.stop_live(cx);
         self.setup.update(cx, |setup, cx| setup.set_error(None, cx));
         self.job = Some(Job::new(request.clone()));
         let work = cx.background_spawn(async move { measure::run(&request) });
@@ -321,7 +440,25 @@ impl MeasurementApp {
         self._ticker = None;
         match result {
             Ok(outcome) => {
-                self.add_group(outcome, &job, window, cx);
+                let name = self.setup.read(cx).name();
+                let name = if name.is_empty() {
+                    let taken = self.group_names();
+                    next_name("", taken.iter().map(|n| n.as_ref()))
+                } else {
+                    name
+                };
+                let range = (job.request.range.start, job.request.range.end);
+                let about = job.request.describe();
+                self.add_group(
+                    name,
+                    range,
+                    about,
+                    job.started_at,
+                    outcome.responses,
+                    window,
+                    cx,
+                );
+                self.warnings = outcome.warnings;
                 self.side_bar = SideBar::Measurements;
                 let taken = self.group_names();
                 self.setup.update(cx, |setup, cx| {
@@ -335,68 +472,288 @@ impl MeasurementApp {
         self.refresh_plots(cx);
     }
 
+    /// Adds a folder `name` with the `responses`, measured at `measured` within `range` (Hz)
+    /// as `about` tells.
+    #[allow(clippy::too_many_arguments)]
     fn add_group(
         &mut self,
-        outcome: Outcome,
-        job: &Job,
+        name: String,
+        range: (f64, f64),
+        about: Vec<String>,
+        measured: DateTime<Local>,
+        responses: Vec<Response>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let name = self.setup.read(cx).name();
-        let name = if name.is_empty() {
-            let taken = self.group_names();
-            next_name("", taken.iter().map(|n| n.as_ref()))
-        } else {
-            name
-        };
-        let mut measurements = Vec::new();
-        for response in outcome.responses {
-            let id = self.next_measurement_id;
-            self.next_measurement_id += 1;
-            let color = trace_color(id as usize - 1);
-            let color_picker = cx.new(|cx| ColorPickerState::new(window, cx).default_value(color));
-            let subscription = cx.subscribe(
-                &color_picker,
-                move |this, _, event: &ColorPickerEvent, cx| {
-                    let ColorPickerEvent::Change(Some(color)) = event else {
-                        return;
-                    };
-                    if let Some(m) = this.measurement_mut(id) {
-                        m.color = *color;
-                    }
-                    this.refresh_plots(cx);
-                },
-            );
-            let short = format!("{} → {}", response.speaker, response.mic);
-            measurements.push(Measurement {
-                id,
-                full_name: format!("{name} · {short}").into(),
-                name: short.into(),
-                impulse: Rc::new(impulse_points(&response.impulse_response, response.start)),
-                response,
-                visible: true,
-                color,
-                color_picker,
-                curves: None,
-                _subscription: subscription,
-            });
-        }
+        let measurements = responses
+            .into_iter()
+            .map(|response| self.new_measurement_of(response, &name, measured, window, cx))
+            .collect();
         self.groups.push(Group {
             id: self.next_group_id,
             name: name.into(),
-            range: (job.request.range.start, job.request.range.end),
+            measured,
+            about: about.into_iter().map(Into::into).collect(),
+            notes: Notes::new("", window, cx),
+            range,
             expanded: true,
             measurements,
         });
         self.next_group_id += 1;
-        self.warnings = outcome.warnings;
+    }
+
+    /// A measurement of `response` in the folder `group`, with a color of its own.
+    fn new_measurement_of(
+        &mut self,
+        response: Response,
+        group: &str,
+        measured: DateTime<Local>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Measurement {
+        let id = self.next_measurement_id;
+        self.next_measurement_id += 1;
+        let color = trace_color(id as usize - 1);
+        let color_picker = cx.new(|cx| ColorPickerState::new(window, cx).default_value(color));
+        let subscription = cx.subscribe(
+            &color_picker,
+            move |this, _, event: &ColorPickerEvent, cx| {
+                let ColorPickerEvent::Change(Some(color)) = event else {
+                    return;
+                };
+                if let Some(m) = this.measurement_mut(id) {
+                    m.color = *color;
+                }
+                this.refresh_plots(cx);
+            },
+        );
+        let mut measurement = Measurement {
+            id,
+            measured,
+            notes: Notes::new("", window, cx),
+            full_name: SharedString::default(),
+            name: SharedString::default(),
+            impulse: Rc::default(),
+            response,
+            visible: true,
+            color,
+            color_picker,
+            curves: None,
+            _subscription: subscription,
+        };
+        measurement.follow_response(group);
+        measurement
     }
 
     fn measurement_mut(&mut self, id: u64) -> Option<&mut Measurement> {
-        self.groups
-            .iter_mut()
+        self.all_groups_mut()
             .flat_map(|g| &mut g.measurements)
             .find(|m| m.id == id)
+    }
+
+    /// Plays noise and analyzes what the mics hear until stopped, in the live folder.
+    fn start_live(&mut self, request: LiveRequest, window: &mut Window, cx: &mut Context<Self>) {
+        if self.job.is_some() {
+            return;
+        }
+        self.stop_live(cx);
+        let range = request.range();
+        let level_db = request.level_db;
+        let about = request.describe(level_db);
+        let live = match Live::start(request) {
+            Ok(live) => live,
+            Err(error) => {
+                self.setup
+                    .update(cx, |setup, cx| setup.set_error(Some(error), cx));
+                return;
+            }
+        };
+        self.live_runs += 1;
+        let run = self.live_runs;
+        let level = cx.new(|_| {
+            SliderState::new()
+                .min(-60.0)
+                .max(0.0)
+                .step(1.0)
+                .default_value(level_db as f32)
+        });
+        let subscription = cx.subscribe(&level, |this, _, event: &SliderEvent, cx| {
+            let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
+            if let Some(run) = &this.live {
+                run.live.set_level(f64::from(value.start()));
+            }
+            cx.notify();
+        });
+        let ticker = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(LIVE_UPDATE).await;
+                if this
+                    .update_in(cx, |this, window, cx| this.live_tick(window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        self.live = Some(LiveRun {
+            run,
+            live,
+            group: Group {
+                id: LIVE_GROUP,
+                name: "Live".into(),
+                measured: Local::now(),
+                about: about.into_iter().map(Into::into).collect(),
+                notes: Notes::new("", window, cx),
+                range,
+                expanded: true,
+                measurements: Vec::new(),
+            },
+            level,
+            analyzing: false,
+            status: Status::default(),
+            error: None,
+            _ticker: ticker,
+            _subscription: subscription,
+        });
+        self.side_bar = SideBar::Measurements;
+        cx.notify();
+    }
+
+    fn stop_live(&mut self, cx: &mut Context<Self>) {
+        let Some(run) = self.live.take() else { return };
+        run.live.stop();
+        for plot in [&self.magnitude, &self.phase, &self.impulse] {
+            plot.update(cx, |plot, _| plot.set_steady(false));
+        }
+        self.refresh_plots(cx);
+    }
+
+    /// Starts analyzing the latest recording, unless the last analysis still runs.
+    fn live_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let smoothing = self.smoothing();
+        let Some(run) = &mut self.live else { return };
+        run.status = run.live.status();
+        if let Some(error) = run.status.error.take() {
+            self.warnings = vec![format!("Live stopped: {error}")];
+            self.stop_live(cx);
+            return;
+        }
+        if run.analyzing {
+            return;
+        }
+        let Some(recording) = run.live.take(smoothing) else {
+            return;
+        };
+        run.analyzing = true;
+        let id = run.run;
+        cx.spawn_in(window, async move |this, cx| {
+            let analysis = cx
+                .background_spawn(async move { live::analyze(recording) })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.live_analyzed(id, analysis, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Shows a live analysis in the live folder.
+    fn live_analyzed(
+        &mut self,
+        id: u64,
+        analysis: Result<Analysis, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(run) = self.live.as_mut().filter(|run| run.run == id) else {
+            return;
+        };
+        run.analyzing = false;
+        let analysis = match analysis {
+            Ok(analysis) => analysis,
+            Err(error) => {
+                run.error = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        run.error = None;
+        // an analysis that started before "Find delays" still has the old ones
+        if run.live.delays_ms.is_none() && analysis.found_delays {
+            run.live.delays_ms = Some(analysis.delays_ms);
+        }
+        if run.group.measurements.len() != analysis.responses.len() {
+            let measured = run.group.measured;
+            let measurements = analysis
+                .responses
+                .into_iter()
+                .map(|response| self.new_measurement_of(response, "Live", measured, window, cx))
+                .collect();
+            if let Some(run) = &mut self.live {
+                run.group.measurements = measurements;
+            }
+            // from now on the curves change many times a second: the plots fit to them once,
+            // then stay where they are
+            for plot in [&self.magnitude, &self.phase, &self.impulse] {
+                plot.update(cx, |plot, _| plot.set_steady(true));
+            }
+        } else {
+            for ((m, response), curves) in run
+                .group
+                .measurements
+                .iter_mut()
+                .zip(analysis.responses)
+                .zip(analysis.curves)
+            {
+                m.response = response;
+                m.follow_response("Live");
+                // made with the smoothing of the time; if that changed meanwhile, they're
+                // made again
+                m.curves = Some(Rc::new(curves));
+            }
+        }
+        self.refresh_plots(cx);
+    }
+
+    /// Keeps the live curves as they are now, in a folder of their own.
+    fn snapshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(run) = &self.live else { return };
+        let responses: Vec<Response> = run
+            .group
+            .measurements
+            .iter()
+            .map(|m| m.response.clone())
+            .collect();
+        if responses.is_empty() {
+            return;
+        }
+        let range = run.group.range;
+        let level_db = f64::from(run.level.read(cx).value().start());
+        let about = run.live.request.describe(level_db);
+        // what was written about the live curves goes with them
+        let folder_notes = run.group.notes.text(cx);
+        let notes: Vec<SharedString> = run
+            .group
+            .measurements
+            .iter()
+            .map(|m| m.notes.text(cx))
+            .collect();
+        let taken = self.group_names();
+        let name = next_name("Snapshot 1", taken.iter().map(|n| n.as_ref()));
+        self.add_group(name, range, about, Local::now(), responses, window, cx);
+        if let Some(group) = self.groups.last() {
+            group
+                .notes
+                .field
+                .update(cx, |field, cx| field.set_value(folder_notes, window, cx));
+            for (m, text) in group.measurements.iter().zip(notes) {
+                m.notes
+                    .field
+                    .update(cx, |field, cx| field.set_value(text, window, cx));
+            }
+        }
+        self.refresh_plots(cx);
     }
 
     fn group_names(&self) -> Vec<SharedString> {
@@ -413,7 +770,7 @@ impl MeasurementApp {
                 self.groups.retain(|group| !group.measurements.is_empty());
             }
             Action::Solo(id) => {
-                for m in self.groups.iter_mut().flat_map(|g| &mut g.measurements) {
+                for m in self.all_groups_mut().flat_map(|g| &mut g.measurements) {
                     m.visible = m.id == id;
                 }
             }
@@ -567,16 +924,20 @@ impl MeasurementApp {
 
     fn refresh_plot(&mut self, tab: Tab, cx: &mut Context<Self>) {
         let smoothing = self.smoothing();
+        let min_coherence = self.min_coherence;
         let frequency = tab != Tab::Impulse;
         let mut range = (f64::INFINITY, 0.0f64);
         let mut traces = Vec::new();
-        for group in &mut self.groups {
+        // the live curves last, so on top
+        let groups: Vec<&mut Group> = self.all_groups_mut().collect();
+        for group in groups.into_iter().rev() {
             for m in group.measurements.iter_mut().filter(|m| m.visible) {
                 range = (range.0.min(group.range.0), range.1.max(group.range.1));
                 let series = if frequency {
                     if m.curves.as_ref().is_none_or(|c| c.smoothing != smoothing) {
                         m.curves = Some(Rc::new(Curves::new(
                             &m.response.frequency_response,
+                            m.response.coherence.as_ref(),
                             group.range,
                             smoothing,
                         )));
@@ -590,6 +951,7 @@ impl MeasurementApp {
                     name: m.full_name.clone(),
                     color: m.color,
                     series,
+                    min_coherence,
                 });
             }
         }
@@ -674,12 +1036,13 @@ impl MeasurementApp {
 
     fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = v_flex().w_full().py_1();
-        // newest on top
-        for group in self.groups.iter().rev() {
+        // live on top, then the newest
+        let live = self.live.iter().map(|run| &run.group);
+        for group in live.chain(self.groups.iter().rev()) {
             list = list.child(self.render_group_row(group, cx));
             if group.expanded {
                 for m in &group.measurements {
-                    list = list.child(self.render_measurement_row(m, cx));
+                    list = list.child(self.render_measurement_row(m, group.id == LIVE_GROUP, cx));
                 }
             }
         }
@@ -710,6 +1073,9 @@ impl MeasurementApp {
                             .on_click(cx.listener(|this, _, _, cx| this.new_measurement(cx))),
                     ),
             )
+            .when_some(self.live.as_ref(), |this, run| {
+                this.child(self.render_live(run, cx))
+            })
             .when(!self.warnings.is_empty(), |this| {
                 this.child(self.render_warnings(cx))
             })
@@ -720,7 +1086,7 @@ impl MeasurementApp {
                         .size_full()
                         .overflow_y_scrollbar()
                         .map(|this| {
-                            if self.groups.is_empty() {
+                            if self.groups.is_empty() && self.live.is_none() {
                                 this.child(
                                     v_flex()
                                         .p_4()
@@ -747,6 +1113,152 @@ impl MeasurementApp {
                             }
                         }),
                 ),
+            )
+    }
+
+    /// The controls of a running live measurement: which speakers play, the level, the
+    /// levels the mics hear, and a snapshot.
+    fn render_live(&self, run: &LiveRun, cx: &mut Context<Self>) -> impl IntoElement {
+        let live = &run.live;
+        let level = run.level.read(cx).value().start();
+        let delays = live.delays_ms.as_ref();
+        v_flex()
+            .m_2()
+            .p_2()
+            .gap_2()
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(palette::accent(cx).opacity(0.4))
+            .bg(palette::accent(cx).opacity(0.06))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Icon::new(gpui_kit::assets::IconName::Radio)
+                            .small()
+                            .text_color(palette::accent(cx)),
+                    )
+                    .child(div().flex_1().text_sm().font_medium().child("Live"))
+                    .child(
+                        Button::new("live-stop")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Square)
+                            .label("Stop")
+                            .on_click(cx.listener(|this, _, _, cx| this.stop_live(cx))),
+                    ),
+            )
+            // which speakers play
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette::text_muted(cx))
+                            .child("Plays on"),
+                    )
+                    .children(live.request.speakers.iter().enumerate().map(
+                        |(index, (_, name))| {
+                            Checkbox::new(("live-speaker", index))
+                                .small()
+                                .label(name.clone())
+                                .checked(live.is_playing(index))
+                                .on_change(cx.listener(move |this, checked: &bool, _, cx| {
+                                    if let Some(run) = &mut this.live {
+                                        run.live.set_playing(index, *checked);
+                                    }
+                                    cx.notify();
+                                }))
+                        },
+                    )),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette::text_muted(cx))
+                            .child("Level"),
+                    )
+                    .child(div().flex_1().child(Slider::new(&run.level)))
+                    .child(
+                        div()
+                            .w(px(64.0))
+                            .text_xs()
+                            .text_color(palette::text_muted(cx))
+                            .child(format!("{level:.0} dBFS")),
+                    ),
+            )
+            // what the mics hear
+            .children(run.group.measurements.iter().enumerate().map(|(index, m)| {
+                let peak = m.response.peak_db;
+                let clipping = peak >= -0.1;
+                let delay = delays.and_then(|delays| delays.get(index));
+                h_flex()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(if clipping {
+                        palette::error(cx)
+                    } else {
+                        palette::text_muted(cx)
+                    })
+                    .child(div().flex_1().child(m.response.mic.clone()))
+                    .when_some(delay, |this, delay| this.child(format!("{delay:.2} ms")))
+                    .child(if clipping {
+                        "clipping!".to_string()
+                    } else {
+                        format!("peak {peak:.1} dBFS")
+                    })
+            }))
+            .when(
+                run.status.dropouts > 0 || run.status.lost_frames > 0,
+                |this| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(palette::warning(cx))
+                            .child(format!(
+                                "Dropouts: {} · lost frames: {}",
+                                run.status.dropouts, run.status.lost_frames
+                            )),
+                    )
+                },
+            )
+            .when_some(run.error.clone(), |this, error| {
+                this.child(div().text_xs().text_color(palette::error(cx)).child(error))
+            })
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("live-snapshot")
+                            .primary()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::Camera)
+                            .label("Snapshot")
+                            .tooltip("Keep the live curves as they are now, in a folder")
+                            .disabled(run.group.measurements.is_empty())
+                            .on_click(cx.listener(|this, _, window, cx| this.snapshot(window, cx))),
+                    )
+                    .child(
+                        Button::new("live-find-delays")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::Crosshair)
+                            .label("Find delays")
+                            .tooltip(
+                                "Take each mic's delay from the peak of its impulse response \
+                                 and keep it, so changes show in the phase",
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(run) = &mut this.live {
+                                    run.live.find_delays();
+                                }
+                                cx.notify();
+                            })),
+                    ),
             )
     }
 
@@ -810,7 +1322,7 @@ impl MeasurementApp {
             .cursor_pointer()
             .hover(|style| style.bg(palette::hover(cx)))
             .on_click(cx.listener(move |this, _, _, cx| {
-                if let Some(group) = this.groups.iter_mut().find(|g| g.id == id) {
+                if let Some(group) = this.all_groups_mut().find(|g| g.id == id) {
                     group.expanded = !group.expanded;
                 }
                 cx.notify();
@@ -824,15 +1336,19 @@ impl MeasurementApp {
                 .xsmall()
                 .text_color(palette::text_muted(cx)),
             )
-            .child(
+            .child(if id == LIVE_GROUP {
+                Icon::new(gpui_kit::assets::IconName::Radio)
+                    .small()
+                    .text_color(palette::accent(cx))
+            } else {
                 Icon::new(if group.expanded {
                     IconName::FolderOpen
                 } else {
                     IconName::Folder
                 })
                 .small()
-                .text_color(palette::text_muted(cx)),
-            )
+                .text_color(palette::text_muted(cx))
+            })
             .child(
                 div()
                     .flex_1()
@@ -854,22 +1370,36 @@ impl MeasurementApp {
                     .text_color(palette::text_placeholder(cx))
                     .child(format!("{}", group.measurements.len())),
             )
-            .child(
-                div()
-                    .invisible()
-                    .group_hover(row_group.clone(), |style| style.visible())
-                    .child(
-                        Button::new(("delete-group", id))
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Delete)
-                            .tooltip("Delete the folder")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.confirm_delete(Action::DeleteGroup(id), window, cx);
-                            })),
-                    ),
-            )
+            .child(info_button(
+                ("group-info", id),
+                Info {
+                    title: group.name.clone(),
+                    when: when(group.measured, id == LIVE_GROUP),
+                    lines: group.about.clone(),
+                    notes: group.notes.field.clone(),
+                    note_text: group.notes.text(cx),
+                },
+                cx,
+            ))
+            // the live folder goes with Stop
+            .when(id != LIVE_GROUP, |this| {
+                this.child(
+                    div()
+                        .invisible()
+                        .group_hover(row_group.clone(), |style| style.visible())
+                        .child(
+                            Button::new(("delete-group", id))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Delete)
+                                .tooltip("Delete the folder")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.confirm_delete(Action::DeleteGroup(id), window, cx);
+                                })),
+                        ),
+                )
+            })
             .child(
                 div()
                     .relative()
@@ -881,7 +1411,7 @@ impl MeasurementApp {
                             .when(!(some && !all), |this| this.tooltip("Show or hide all"))
                             .on_change(cx.listener(move |this, checked: &bool, _, cx| {
                                 cx.stop_propagation();
-                                if let Some(group) = this.groups.iter_mut().find(|g| g.id == id) {
+                                if let Some(group) = this.all_groups_mut().find(|g| g.id == id) {
                                     group
                                         .measurements
                                         .iter_mut()
@@ -895,7 +1425,13 @@ impl MeasurementApp {
             )
     }
 
-    fn render_measurement_row(&self, m: &Measurement, cx: &mut Context<Self>) -> impl IntoElement {
+    /// A measurement in the list; `live` ones change all the time and can't be deleted.
+    fn render_measurement_row(
+        &self,
+        m: &Measurement,
+        live: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let id = m.id;
         let details = details(&m.response);
         let app = cx.entity();
@@ -939,6 +1475,17 @@ impl MeasurementApp {
                     })
                     .child(m.name.clone()),
             )
+            .child(info_button(
+                ("measurement-info", id),
+                Info {
+                    title: m.full_name.clone(),
+                    when: when(m.measured, live),
+                    lines: details.clone(),
+                    notes: m.notes.field.clone(),
+                    note_text: m.notes.text(cx),
+                },
+                cx,
+            ))
             .child(
                 Checkbox::new(("visible", id))
                     .small()
@@ -957,13 +1504,17 @@ impl MeasurementApp {
                 for line in &details {
                     menu = menu.label(line.clone());
                 }
-                menu.separator()
+                menu = menu
+                    .separator()
                     .item(
                         PopupMenuItem::new("Show only this").on_click(move |_, window, cx| {
                             solo.update(cx, |this, cx| this.apply(Action::Solo(id), window, cx));
                         }),
-                    )
-                    .separator()
+                    );
+                if live {
+                    return menu;
+                }
+                menu.separator()
                     .item(
                         PopupMenuItem::new("Delete…").on_click(move |_, window, cx| {
                             delete.update(cx, |this, cx| {
@@ -1085,6 +1636,12 @@ impl MeasurementApp {
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let frequency = self.panes.visible().any(|tab| tab != Tab::Impulse);
+        // only live measurements and their snapshots know their coherence
+        let coherence = frequency
+            && self
+                .all_groups()
+                .flat_map(|g| &g.measurements)
+                .any(|m| m.visible && m.response.coherence.is_some());
         h_flex()
             .h(px(36.0))
             .flex_shrink_0()
@@ -1118,6 +1675,29 @@ impl MeasurementApp {
                             palette::text_placeholder(cx)
                         })
                         .child(format!("1/{:.0} octave", self.smoothing)),
+                )
+            })
+            .when(coherence, |this| {
+                this.child(
+                    div()
+                        .id("min-coherence-label")
+                        .text_sm()
+                        .text_color(palette::text_muted(cx))
+                        .child("Min. coherence")
+                        .tooltip(|window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(
+                                "Hides the live curves where the result changes from one noise \
+                                 period to the next, e.g. from room noise. 0 shows everything.",
+                            )
+                            .build(window, cx)
+                        }),
+                )
+                .child(div().w(px(100.0)).child(Slider::new(&self.coherence_slider)))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(palette::text_muted(cx))
+                        .child(format!("{:.2}", self.min_coherence)),
                 )
             })
             .child(div().flex_1())
@@ -1366,15 +1946,126 @@ fn panel_header(title: &'static str, cx: &App) -> impl IntoElement {
         .child(title.to_uppercase())
 }
 
+/// What the info card of a measurement or a folder shows.
+struct Info {
+    title: SharedString,
+    when: String,
+    /// How it was measured, or what came out.
+    lines: Vec<SharedString>,
+    notes: Entity<TextareaState>,
+    note_text: SharedString,
+}
+
+/// When something was measured: the date and time, or since when it runs live.
+fn when(measured: DateTime<Local>, live: bool) -> String {
+    if live {
+        format!("Live since {}", measured.format("%H:%M:%S"))
+    } else {
+        measured.format("%A, %-d %B %Y, %H:%M:%S").to_string()
+    }
+}
+
+/// A button that opens the info card: when it was measured, how, and notes to edit. With
+/// notes it shows a note, and the notes as its tooltip.
+fn info_button(id: impl Into<ElementId>, info: Info, cx: &App) -> impl IntoElement {
+    let id = id.into();
+    let has_notes = !info.note_text.trim().is_empty();
+    let tooltip: SharedString = if has_notes {
+        let text = info.note_text.trim();
+        match text.char_indices().nth(200) {
+            Some((end, _)) => format!("{}…", &text[..end]).into(),
+            None => text.to_string().into(),
+        }
+    } else {
+        "Info and notes".into()
+    };
+    let trigger = Button::new(ElementId::Name(format!("{id}-button").into()))
+        .ghost()
+        .xsmall()
+        .icon(
+            Icon::new(if has_notes {
+                gpui_kit::assets::IconName::StickyNote
+            } else {
+                gpui_kit::assets::IconName::Info
+            })
+            .text_color(if has_notes {
+                palette::text_muted(cx)
+            } else {
+                palette::text_placeholder(cx)
+            }),
+        )
+        .tooltip(tooltip);
+    // a click opens the card, it doesn't toggle the row
+    div()
+        .id(ElementId::Name(format!("{id}-wrapper").into()))
+        .on_click(|_, _, cx| cx.stop_propagation())
+        .child(Popover::new(id).trigger(trigger).content(move |_, _, cx| {
+            v_flex()
+                .w(px(300.0))
+                .gap_2()
+                .child(div().text_sm().font_medium().child(info.title.clone()))
+                .child(
+                    h_flex()
+                        .gap_1p5()
+                        .text_xs()
+                        .text_color(palette::text_muted(cx))
+                        .child(Icon::new(gpui_kit::assets::IconName::CalendarClock).xsmall())
+                        .child(info.when.clone()),
+                )
+                .when(!info.lines.is_empty(), |this| {
+                    this.child(
+                        v_flex()
+                            .gap_0p5()
+                            .text_xs()
+                            .text_color(palette::text_muted(cx))
+                            .children(info.lines.iter().cloned()),
+                    )
+                })
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_medium()
+                                .text_color(palette::text_muted(cx))
+                                .child("Notes"),
+                        )
+                        .child(Textarea::new(&info.notes).h(px(96.0))),
+                )
+        }))
+}
+
 /// Peak level, IR start and peak, shown in a measurement's menu. The times include the device
 /// latency.
 fn details(response: &Response) -> Vec<SharedString> {
     let sample_rate = response.impulse_response.sample_rate();
     let ms = |samples: usize| samples as f64 / sample_rate * 1000.0;
     let peak = response.start + measure::peak_index(&response.impulse_response);
-    vec![
-        format!("Recording peak: {:.1} dBFS", response.peak_db).into(),
-        format!("IR start: {:.2} ms (with latency)", ms(response.start)).into(),
-        format!("IR peak: {:.2} ms (with latency)", ms(peak)).into(),
-    ]
+    let mut lines = Vec::new();
+    if response.coherence.is_some() {
+        lines.push("Measured live, with pink noise".into());
+    }
+    lines.push(format!("Recording peak: {:.1} dBFS", response.peak_db).into());
+    if response.coherence.is_none() {
+        lines.push(format!("IR start: {:.2} ms (with latency)", ms(response.start)).into());
+    }
+    lines.push(format!("IR peak: {:.2} ms (with latency)", ms(peak)).into());
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone as _;
+
+    use super::*;
+    // `gpui_kit::*` brings GPUI's test macro, which needs an app
+    use core::prelude::v1::test;
+
+    #[test]
+    fn dates_are_spelled_out_and_live_tells_since_when() {
+        let measured = Local.with_ymd_and_hms(2026, 11, 7, 14, 32, 5).unwrap();
+        assert_eq!(when(measured, false), "Saturday, 7 November 2026, 14:32:05");
+        assert_eq!(when(measured, true), "Live since 14:32:05");
+    }
 }

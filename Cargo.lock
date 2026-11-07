@@ -4479,6 +4479,7 @@ version = "0.1.0"
 dependencies = [
  "audio-host",
  "audio-lab",
+ "chrono",
  "gpui-kit",
  "num",
 ]
