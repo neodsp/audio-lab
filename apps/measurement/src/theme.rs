@@ -7,7 +7,7 @@ use gpui_kit::component::select::SelectItem;
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeRegistry};
 use gpui_kit::{
     App, Global, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, rgb,
+    StatefulInteractiveElement as _, Styled as _, Window, div, px, rgb,
 };
 
 const DEFAULT_THEME: &str = "Default Dark";
@@ -151,9 +151,12 @@ impl SelectItem for ThemeChoice {
 
     fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let name = self.0.clone();
+        // The select wraps this in a box only as wide as its content, so `w_full` would leave
+        // the hover area at the width of the name: hovering the rest of the highlighted row
+        // previewed nothing. Wider than any menu instead; the row clips it, hover area included.
         div()
             .id(SharedString::from(format!("theme-{name}")))
-            .w_full()
+            .min_w(px(10_000.0))
             .child(name.clone())
             .on_hover(move |hovered, _, cx| {
                 if *hovered {
