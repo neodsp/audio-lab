@@ -1,6 +1,7 @@
 //! The setup of a new measurement, in the side bar: sweep or live, devices, speakers and
 //! microphones, the sweep or the noise.
 
+use gpui_kit::base::FocusableExt as _;
 use gpui_kit::base::Selectable as _;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -616,10 +617,18 @@ impl Setup {
                                         .small()
                                         .disabled(!channel.enabled)
                                         .when(is_duplicate(channels, index), |this| {
-                                            this.border_color(palette::error(cx))
+                                            this.focus_ring(false).border_color(palette::error(cx))
                                         }),
                                 ),
                             )
+                            .when(is_duplicate(channels, index), |this| {
+                                let kind = if outputs { "speaker" } else { "microphone" };
+                                this.child(name_clash(
+                                    SharedString::from(format!("{prefix}-clash-{index}")),
+                                    format!("Another {kind} is called “{}”", channel.name.trim()),
+                                    cx,
+                                ))
+                            })
                     }),
             )
     }
@@ -684,10 +693,26 @@ impl Render for Setup {
                                     this.child(row(
                                         cx,
                                         "Name",
-                                        Input::new(&self.name)
-                                            .small()
+                                        h_flex()
+                                            .gap_2()
+                                            .child(div().flex_1().child(
+                                                Input::new(&self.name).small().when(
+                                                    self.name_taken(),
+                                                    |this| {
+                                                        this.focus_ring(false)
+                                                            .border_color(palette::error(cx))
+                                                    },
+                                                ),
+                                            ))
                                             .when(self.name_taken(), |this| {
-                                                this.border_color(palette::error(cx))
+                                                this.child(name_clash(
+                                                    "name-clash",
+                                                    format!(
+                                                        "There is a folder called “{}” already",
+                                                        self.settings.name.trim()
+                                                    ),
+                                                    cx,
+                                                ))
                                             }),
                                     ))
                                 })
@@ -847,6 +872,26 @@ fn number(cx: &App, input: &Entity<InputState>, unit: &'static str) -> impl Into
             .text_color(palette::text_placeholder(cx))
             .child(unit),
     )
+}
+
+/// A red warning next to a name that is taken, saying by what.
+pub fn name_clash(
+    id: impl Into<ElementId>,
+    message: impl Into<SharedString>,
+    cx: &App,
+) -> impl IntoElement {
+    let message = message.into();
+    div()
+        .id(id.into())
+        .flex_shrink_0()
+        .child(
+            gpui_kit::component::Icon::new(IconName::TriangleAlert)
+                .small()
+                .text_color(palette::error(cx)),
+        )
+        .tooltip(move |window, cx| {
+            gpui_kit::component::tooltip::Tooltip::new(message.clone()).build(window, cx)
+        })
 }
 
 pub fn hint(cx: &App, text: impl Into<SharedString>) -> impl IntoElement {

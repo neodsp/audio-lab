@@ -4,6 +4,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
+use gpui_kit::base::FocusableExt as _;
 use gpui_kit::base::actions::{SelectDown, SelectUp};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -28,7 +29,7 @@ use crate::measure::same_name;
 use crate::measure::{self, Job, Outcome, Response};
 use crate::panes::{Panes, Side, Target};
 use crate::plot::{FrequencyChanged, Plot, PlotKind, Series, Trace};
-use crate::setup::{Setup, SetupEvent, hint, next_name};
+use crate::setup::{Setup, SetupEvent, hint, name_clash, next_name};
 use crate::theme::{self, ShownThemes, ThemeList, palette, trace_color};
 
 actions!(
@@ -158,10 +159,14 @@ struct Measurement {
     visible: bool,
     color: Hsla,
     color_picker: Entity<ColorPickerState>,
+    /// The color under the mouse in its open color picker, drawn instead of `color`.
+    preview_color: Option<Hsla>,
+    /// Whether its color picker is open: then its curve stands out.
+    picking: bool,
     /// The frequency curves for the current smoothing, computed when first shown.
     curves: Option<Rc<Curves>>,
     impulse: Rc<Vec<(f64, f64)>>,
-    _subscription: Subscription,
+    _subscriptions: [Subscription; 2],
 }
 
 impl Measurement {
@@ -578,6 +583,24 @@ impl MeasurementApp {
                 this.refresh_plots(cx);
             },
         );
+        // while its picker is open, the curve stands out and shows the color under the mouse
+        let preview = cx.observe(&color_picker, move |this, picker, cx| {
+            let picker = picker.read(cx);
+            let open = picker.is_open();
+            let shown = picker.preview().filter(|_| open);
+            let Some(m) = this.measurement_mut(id) else {
+                return;
+            };
+            let changed = m.preview_color != shown;
+            m.preview_color = shown;
+            if m.picking != open {
+                m.picking = open;
+                this.hover_measurements(Rc::new([id]), open, cx);
+            }
+            if changed {
+                this.refresh_plots(cx);
+            }
+        });
         let mut measurement = Measurement {
             id,
             measured: how.at,
@@ -591,8 +614,10 @@ impl MeasurementApp {
             visible: true,
             color,
             color_picker,
+            preview_color: None,
+            picking: false,
             curves: None,
-            _subscription: subscription,
+            _subscriptions: [subscription, preview],
         };
         measurement.follow_response(group);
         measurement
@@ -1161,7 +1186,7 @@ impl MeasurementApp {
                 traces.push(Trace {
                     id: m.id,
                     name: m.full_name.clone(),
-                    color: m.color,
+                    color: m.preview_color.unwrap_or(m.color),
                     series,
                     min_coherence,
                     preview,
@@ -1618,29 +1643,40 @@ impl MeasurementApp {
             })
             .map(
                 |this| match self.renaming.as_ref().filter(|r| r.group == id) {
-                    Some(renaming) => this.child(
-                        div()
-                            .id(("rename", id))
-                            .flex_1()
-                            .min_w_0()
-                            // typing and clicking in the field don't open or close the folder
-                            .on_click(|_, _, cx| cx.stop_propagation())
-                            .capture_key_down(cx.listener(
-                                |this, event: &KeyDownEvent, window, cx| {
-                                    if event.keystroke.key == "escape" {
-                                        cx.stop_propagation();
-                                        this.finish_rename(false, window, cx);
-                                    }
-                                },
+                    Some(renaming) => this
+                        .child(
+                            div()
+                                .id(("rename", id))
+                                .flex_1()
+                                .min_w_0()
+                                // typing and clicking in the field don't open or close the folder
+                                .on_click(|_, _, cx| cx.stop_propagation())
+                                .capture_key_down(cx.listener(
+                                    |this, event: &KeyDownEvent, window, cx| {
+                                        if event.keystroke.key == "escape" {
+                                            cx.stop_propagation();
+                                            this.finish_rename(false, window, cx);
+                                        }
+                                    },
+                                ))
+                                .child(
+                                    Input::new(&renaming.field).xsmall().when(
+                                        self.rename_clashes(cx),
+                                        |this| {
+                                            this.focus_ring(false).border_color(palette::error(cx))
+                                        },
+                                    ),
+                                ),
+                        )
+                        // why Enter does nothing
+                        .when(self.rename_clashes(cx), |this| {
+                            let name = renaming.field.read(cx).value();
+                            this.child(name_clash(
+                                ("rename-clash", id),
+                                format!("There is a folder called “{}” already", name.trim()),
+                                cx,
                             ))
-                            .child(
-                                Input::new(&renaming.field)
-                                    .xsmall()
-                                    .when(self.rename_clashes(cx), |this| {
-                                        this.border_color(palette::error(cx))
-                                    }),
-                            ),
-                    ),
+                        }),
                     None => this.child(
                         div()
                             .flex_1()

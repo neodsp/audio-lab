@@ -691,8 +691,8 @@ impl Scene {
             // the highlighted ones last, so on top
             let highlighted = |trace: &&Trace| self.highlight.contains(&trace.id);
             let others = self.traces.iter().filter(|t| !highlighted(t));
-            // previews of hidden ones leave the others as they are: they come on top
-            let dim = self.traces.iter().any(|t| highlighted(&t) && !t.preview);
+            // hidden or not, what is under the mouse in the list stands out
+            let dim = self.traces.iter().any(|t| highlighted(&t));
             for trace in others {
                 let color = if dim {
                     trace.color.opacity(DIMMED)
