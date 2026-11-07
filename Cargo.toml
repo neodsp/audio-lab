@@ -67,10 +67,6 @@ name = "measure_impulse_response"
 required-features = ["playback", "plot"]
 
 [[example]]
-name = "measurement_app"
-required-features = ["playback", "plot"]
-
-[[example]]
 name = "octave_filter_bank"
 required-features = ["plot"]
 
@@ -84,3 +80,7 @@ required-features = ["plot"]
 
 [package.metadata.docs.rs]
 all-features = true
+
+[workspace]
+# the measurement app, written with GPUI
+members = ["apps/measurement"]

@@ -2,7 +2,6 @@
 
 use std::f64::consts::TAU;
 use std::ops::Range;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use audio_lab::dsp::{ConvolveMode, DeconvolutionConfig, convolve, deconvolve, window_and_trim};
@@ -187,37 +186,20 @@ pub struct Outcome {
     pub warnings: Vec<String>,
 }
 
-/// A measurement running on a background thread.
+/// A measurement that is running: what it measures and how far along it is. The work itself
+/// runs as a background task of the app.
 pub struct Job {
-    rx: Receiver<Result<Outcome, String>>,
     started: Instant,
     expected: Duration,
     pub request: Request,
 }
 
 impl Job {
-    pub fn start(request: Request, ctx: &eframe::egui::Context) -> Self {
-        let (tx, rx) = mpsc::channel();
-        let ctx = ctx.clone();
-        let job_request = request.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(run(&job_request));
-            ctx.request_repaint();
-        });
+    pub fn new(request: Request) -> Self {
         Self {
-            rx,
             started: Instant::now(),
             expected: request.duration(),
             request,
-        }
-    }
-
-    /// The result once the measurement is done.
-    pub fn poll(&self) -> Option<Result<Outcome, String>> {
-        match self.rx.try_recv() {
-            Ok(result) => Some(result),
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some(Err("the measurement thread crashed".into())),
         }
     }
 
@@ -234,7 +216,8 @@ impl Job {
     }
 }
 
-fn run(request: &Request) -> Result<Outcome, String> {
+/// Plays the sweeps and records, or simulates that, and finds the responses. Blocks until done.
+pub fn run(request: &Request) -> Result<Outcome, String> {
     let sample_rate = request.sample_rate;
     let sweep = generate_sweep(
         request.sweep_len,

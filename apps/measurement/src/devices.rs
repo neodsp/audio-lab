@@ -1,6 +1,5 @@
-//! The audio devices to choose from, listed in the background: listing can take a moment.
-
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+//! The audio devices to choose from. Listing them can take a moment, so the app does it in the
+//! background.
 
 use audio_host::{AudioBackend, AudioHost};
 
@@ -42,7 +41,8 @@ fn num_channels(devices: &[Device], name: &str) -> u16 {
         .unwrap_or(UNKNOWN_CHANNELS)
 }
 
-fn list() -> Result<Devices, String> {
+/// Lists the devices. Blocks.
+pub fn list() -> Result<Devices, String> {
     let host = AudioHost::new().map_err(|error| error.to_string())?;
     let convert = |devices: Vec<audio_host::DeviceInfo>| {
         devices
@@ -63,37 +63,12 @@ fn list() -> Result<Devices, String> {
 
 /// The device list: being listed, listed, or why it couldn't be.
 pub enum DeviceList {
-    Scanning(Receiver<Result<Devices, String>>),
+    Scanning,
     Ready(Devices),
     Failed(String),
 }
 
 impl DeviceList {
-    /// Starts listing the devices in the background.
-    pub fn scan(ctx: &eframe::egui::Context) -> Self {
-        let (tx, rx) = mpsc::channel();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(list());
-            ctx.request_repaint();
-        });
-        Self::Scanning(rx)
-    }
-
-    /// Picks up the list once it is ready.
-    pub fn poll(&mut self) {
-        if let Self::Scanning(rx) = self {
-            *self = match rx.try_recv() {
-                Ok(Ok(devices)) => Self::Ready(devices),
-                Ok(Err(error)) => Self::Failed(error),
-                Err(TryRecvError::Empty) => return,
-                Err(TryRecvError::Disconnected) => {
-                    Self::Failed("listing the devices failed".into())
-                }
-            };
-        }
-    }
-
     pub fn devices(&self) -> Option<&Devices> {
         match self {
             Self::Ready(devices) => Some(devices),
