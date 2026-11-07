@@ -142,7 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Modules
 
-- `signal`: signal types, generators, I/O, playback
+- `signal`: signal types, generators, I/O, playback and recording measurements
 - `dsp`: DSP and measurement primitives
 - `plot`: plotting and visualization
 
