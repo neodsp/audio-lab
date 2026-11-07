@@ -2,12 +2,14 @@
 
 use std::f64::consts::TAU;
 use std::ops::Range;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use audio_lab::dsp::{ConvolveMode, DeconvolutionConfig, convolve, deconvolve, window_and_trim};
 use audio_lab::signal::measure::{SequenceConfig, Step};
 use audio_lab::signal::ndarray::{Array2, Axis};
-use audio_lab::signal::playback::{DeviceConfig, play_and_record};
+use audio_lab::signal::playback::{DeviceConfig, play_and_record_cancellable};
 use audio_lab::signal::{FreqSignal, SweepConfig, SweepType, TimeSignal, generate_sweep};
 use chrono::{DateTime, Local};
 use num::complex::Complex64;
@@ -297,6 +299,8 @@ pub struct Outcome {
 /// runs as a background task of the app.
 pub struct Job {
     started: Instant,
+    /// Set to stop it: the device stops within a few tens of milliseconds.
+    cancel: Arc<AtomicBool>,
     /// When it started, by the clock.
     pub started_at: DateTime<Local>,
     expected: Duration,
@@ -307,6 +311,7 @@ impl Job {
     pub fn new(request: Request) -> Self {
         Self {
             started: Instant::now(),
+            cancel: Arc::default(),
             started_at: Local::now(),
             expected: request.duration(),
             request,
@@ -321,13 +326,29 @@ impl Job {
         (self.started.elapsed().as_secs_f32() / self.expected.as_secs_f32()).min(0.99)
     }
 
+    /// Stops it: [`run`] returns early, and what it found is thrown away.
+    pub fn stop(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// For [`run`], to tell it to stop.
+    pub fn cancel(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel)
+    }
+
     pub fn remaining(&self) -> Duration {
         self.expected.saturating_sub(self.started.elapsed())
     }
 }
 
-/// Plays the sweeps and records, or simulates that, and finds the responses. Blocks until done.
-pub fn run(request: &Request) -> Result<Outcome, String> {
+/// Plays the sweeps and records, or simulates that, and finds the responses. Blocks until done,
+/// or until `cancel` is set.
+pub fn run(request: &Request, cancel: &AtomicBool) -> Result<Outcome, String> {
+    let stopped = || cancel.load(Ordering::Relaxed);
     let sample_rate = request.sample_rate;
     let sweep = generate_sweep(
         request.sweep_len,
@@ -357,9 +378,10 @@ pub fn run(request: &Request) -> Result<Outcome, String> {
                 .iter()
                 .map(|(output, _)| Step::new(vec![*output], sweep.clone()))
                 .collect();
-            play_and_record(steps, &config, device).map_err(|error| error.to_string())?
+            play_and_record_cancellable(steps, &config, device, cancel)
+                .map_err(|error| error.to_string())?
         }
-        None => simulate(&sweep, request)?,
+        None => simulate(&sweep, request, cancel)?,
     };
 
     let deconvolution = DeconvolutionConfig::default().with_frequency_range(request.range.clone());
@@ -369,6 +391,9 @@ pub fn run(request: &Request) -> Result<Outcome, String> {
     };
     for ((_, speaker), recording) in request.speakers.iter().zip(&recordings) {
         for (index, (_, mic)) in request.mics.iter().enumerate() {
+            if stopped() {
+                return Err(STOPPED.into());
+            }
             let label = format!("{speaker} → {mic}");
             let recorded = channel(recording, index);
             let peak = recorded
@@ -446,9 +471,16 @@ fn channel(signal: &TimeSignal, index: usize) -> TimeSignal {
     TimeSignal::new(data, signal.sample_rate()).expect("valid sample rate")
 }
 
+/// Why [`run`] returned early.
+const STOPPED: &str = "The measurement was stopped.";
+
 /// Recordings like `play_and_record` returns them, from a made-up room: each speaker reaches
 /// each mic with its own delay, a speaker-like band limit, a few reflections and reverb.
-fn simulate(sweep: &TimeSignal, request: &Request) -> Result<Vec<TimeSignal>, String> {
+fn simulate(
+    sweep: &TimeSignal,
+    request: &Request,
+    cancel: &AtomicBool,
+) -> Result<Vec<TimeSignal>, String> {
     let sample_rate = request.sample_rate;
     let len = request.sweep_len + (request.tail.as_secs_f64() * sample_rate) as usize;
     let mut noise = Lcg(1);
@@ -458,6 +490,9 @@ fn simulate(sweep: &TimeSignal, request: &Request) -> Result<Vec<TimeSignal>, St
         .map(|&(speaker, _)| {
             let mut recording = Array2::zeros((request.mics.len(), len));
             for (index, &(mic, _)) in request.mics.iter().enumerate() {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(STOPPED.to_string());
+                }
                 let ir = simulated_room(speaker, mic, sample_rate, &mut noise);
                 let heard = convolve(sweep, &ir, ConvolveMode::Full).map_err(|e| e.to_string())?;
                 for (dst, src) in recording
@@ -538,7 +573,7 @@ mod tests {
         settings.sync_channels(SIMULATED_CHANNELS, SIMULATED_CHANNELS);
         settings.outputs[1].enabled = true;
         settings.inputs[2].enabled = true;
-        let outcome = run(&settings.request()).unwrap();
+        let outcome = run(&settings.request(), &AtomicBool::new(false)).unwrap();
         assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
         assert_eq!(outcome.responses.len(), 4);
         let names: Vec<_> = outcome
@@ -584,6 +619,22 @@ mod tests {
         assert_eq!(
             settings.problem().as_deref(),
             Some("Give every microphone a name.")
+        );
+    }
+
+    #[test]
+    fn a_stopped_measurement_finds_nothing() {
+        let mut settings = Settings {
+            simulated: true,
+            ..Default::default()
+        };
+        settings.sync_channels(SIMULATED_CHANNELS, SIMULATED_CHANNELS);
+        let job = Job::new(settings.request());
+        job.stop();
+        assert!(job.is_stopped());
+        assert_eq!(
+            run(&job.request, &job.cancel()).err().as_deref(),
+            Some(STOPPED)
         );
     }
 

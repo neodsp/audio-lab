@@ -441,8 +441,10 @@ impl MeasurementApp {
         // the sweep needs the device
         self.stop_live(cx);
         self.setup.update(cx, |setup, cx| setup.set_error(None, cx));
-        self.job = Some(Job::new(request.clone()));
-        let work = cx.background_spawn(async move { measure::run(&request) });
+        let job = Job::new(request.clone());
+        let cancel = job.cancel();
+        self.job = Some(job);
+        let work = cx.background_spawn(async move { measure::run(&request, &cancel) });
         self._job_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = work.await;
             this.update_in(cx, |this, window, cx| this.finish(result, window, cx))
@@ -471,6 +473,11 @@ impl MeasurementApp {
     ) {
         let Some(job) = self.job.take() else { return };
         self._ticker = None;
+        if job.is_stopped() {
+            // back to the setup as it was, notes included, to start again
+            cx.notify();
+            return;
+        }
         match result {
             Ok(outcome) => {
                 // no name, or one a folder got while it measured: the next free number
@@ -1220,9 +1227,19 @@ impl MeasurementApp {
         }
     }
 
-    /// While a sweep runs: how far along it is, and the notes, still to edit.
-    fn render_progress(&self, job: &Job, cx: &App) -> impl IntoElement {
+    /// Stops the sweep that runs. What it measured so far is thrown away.
+    fn stop_job(&mut self, cx: &mut Context<Self>) {
+        if let Some(job) = &self.job {
+            job.stop();
+        }
+        cx.notify();
+    }
+
+    /// While a sweep runs: how far along it is, a button to stop it, and the notes, still to
+    /// edit.
+    fn render_progress(&self, job: &Job, cx: &mut Context<Self>) -> impl IntoElement {
         let remaining = job.remaining().as_secs();
+        let stopping = job.is_stopped();
         v_flex()
             .size_full()
             .child(panel_header("Measuring", cx))
@@ -1231,13 +1248,28 @@ impl MeasurementApp {
                     .p_3()
                     .gap_3()
                     .child(Progress::new("measure-progress").value(job.progress() * 100.0))
-                    .child(div().text_sm().text_color(palette::text_muted(cx)).child(
-                        if remaining > 0 {
-                            format!("About {remaining} s left. Keep it quiet.")
-                        } else {
-                            "Analyzing…".to_string()
-                        },
-                    ))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(palette::text_muted(cx))
+                            .child(if stopping {
+                                "Stopping…".to_string()
+                            } else if remaining > 0 {
+                                format!("About {remaining} s left. Keep it quiet.")
+                            } else {
+                                "Analyzing…".to_string()
+                            }),
+                    )
+                    .child(
+                        Button::new("measure-stop")
+                            .small()
+                            .w_full()
+                            .icon(IconName::Square)
+                            .label("Stop")
+                            .tooltip("Stop the measurement; nothing is kept")
+                            .disabled(stopping)
+                            .on_click(cx.listener(|this, _, _, cx| this.stop_job(cx))),
+                    )
                     .child(notes_field(self.setup.read(cx).notes(), cx)),
             )
     }
