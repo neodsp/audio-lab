@@ -219,15 +219,58 @@ impl LiveNoiseApp {
     }
 }
 
-/// One mic's curve, in dB and wrapped degrees over log frequency.
+/// One mic's curve: the smoothed values per bin, drawn at the resolution of the screen.
 struct Curve {
     label: String,
     color: egui::Color32,
-    /// Pieces of the magnitude where the coherence is high enough.
-    magnitude: Vec<Vec<PlotPoint>>,
-    /// Pieces of the phase where the coherence is high enough, split at the wraps so a wrap
-    /// from -180° to 180° is not drawn as a line across the plot.
-    phase: Vec<Vec<PlotPoint>>,
+    bin_width: f64,
+    magnitude_db: Vec<f64>,
+    /// The phase as complex values, which interpolate across its wraps.
+    phase_re: Vec<f64>,
+    phase_im: Vec<f64>,
+    coherence: Vec<f64>,
+    /// Below this coherence the curve is hidden.
+    min_coherence: f64,
+}
+
+impl Curve {
+    /// The magnitude at `positions` (log10 of Hz), in pieces where the coherence is high enough.
+    fn magnitude_pieces(&self, positions: &[f64]) -> Vec<Vec<PlotPoint>> {
+        let mut pieces = vec![Vec::new()];
+        for &x in positions {
+            let bin = 10f64.powf(x) / self.bin_width;
+            if self.trusted(bin) {
+                let db = interpolate(&self.magnitude_db, bin);
+                pieces.last_mut().unwrap().push(PlotPoint::new(x, db));
+            } else if !pieces.last().unwrap().is_empty() {
+                pieces.push(Vec::new());
+            }
+        }
+        pieces
+    }
+
+    /// The phase at `positions` in degrees, wrapped, in pieces where the coherence is high
+    /// enough and between the wraps.
+    fn phase_pieces(&self, positions: &[f64]) -> Vec<Vec<PlotPoint>> {
+        let mut pieces = Vec::new();
+        let mut run = Vec::new();
+        for &x in positions {
+            let bin = 10f64.powf(x) / self.bin_width;
+            if self.trusted(bin) {
+                let phase =
+                    interpolate(&self.phase_im, bin).atan2(interpolate(&self.phase_re, bin));
+                run.push(PlotPoint::new(x, phase.to_degrees()));
+            } else if !run.is_empty() {
+                pieces.extend(split_at_wraps(std::mem::take(&mut run).into_iter()));
+            }
+        }
+        pieces.extend(split_at_wraps(run.into_iter()));
+        pieces
+    }
+
+    fn trusted(&self, bin: f64) -> bool {
+        interpolate(&self.coherence, bin) >= self.min_coherence
+    }
 }
 
 /// A transfer function and its coherence, unsmoothed.
@@ -308,56 +351,9 @@ fn curves(
         return Vec::new();
     };
 
-    // the curves are drawn at points evenly spaced on the log axis, read from the bins with
-    // smooth interpolation, so they look the same at the low end, where the bins lie far apart,
-    // as at the top, where many bins share a pixel
     let bin_width = response.sample_rate() / response.num_time_steps() as f64;
-    let display_freqs = display_frequencies();
     (0..response.num_channels())
         .map(|channel| {
-            let magnitude_db: Vec<f64> = magnitude
-                .channel(channel)
-                .iter()
-                .map(|h| 20.0 * h.norm().max(1e-12).log10())
-                .collect();
-            let coherence: Vec<f64> = coherence.channel(channel).iter().map(|c| c.re).collect();
-            let phase_re: Vec<f64> = phase.channel(channel).iter().map(|h| h.re).collect();
-            let phase_im: Vec<f64> = phase.channel(channel).iter().map(|h| h.im).collect();
-            let points = display_freqs.iter().map(|&f| {
-                let bin = f / bin_width;
-                let good = interpolate(&coherence, bin) >= settings.min_coherence;
-                let phase = interpolate(&phase_im, bin).atan2(interpolate(&phase_re, bin));
-                (
-                    f.log10(),
-                    interpolate(&magnitude_db, bin),
-                    phase.to_degrees(),
-                    good,
-                )
-            });
-
-            // only where it is trusted
-            let mut magnitude_pieces = vec![Vec::new()];
-            for (x, db, _, good) in points.clone() {
-                if good {
-                    magnitude_pieces
-                        .last_mut()
-                        .unwrap()
-                        .push(PlotPoint::new(x, db));
-                } else if !magnitude_pieces.last().unwrap().is_empty() {
-                    magnitude_pieces.push(Vec::new());
-                }
-            }
-            let mut phase_pieces = Vec::new();
-            let mut run = Vec::new();
-            for (x, _, degrees, good) in points {
-                if good {
-                    run.push(PlotPoint::new(x, degrees));
-                } else if !run.is_empty() {
-                    phase_pieces.extend(split_at_wraps(std::mem::take(&mut run).into_iter()));
-                }
-            }
-            phase_pieces.extend(split_at_wraps(run.into_iter()));
-
             let mic = response.channel_label(channel).unwrap_or("mic");
             Curve {
                 label: match name {
@@ -365,21 +361,57 @@ fn curves(
                     None => mic.to_string(),
                 },
                 color: color(first_color + channel),
-                magnitude: magnitude_pieces,
-                phase: phase_pieces,
+                bin_width,
+                magnitude_db: magnitude
+                    .channel(channel)
+                    .iter()
+                    .map(|h| 20.0 * h.norm().max(1e-12).log10())
+                    .collect(),
+                phase_re: phase.channel(channel).iter().map(|h| h.re).collect(),
+                phase_im: phase.channel(channel).iter().map(|h| h.im).collect(),
+                coherence: coherence.channel(channel).iter().map(|c| c.re).collect(),
+                min_coherence: settings.min_coherence,
             }
         })
         .collect()
 }
 
-/// Frequencies the curves are drawn at: 96 per octave from 20 Hz to 20 kHz, fine enough for the
-/// narrowest smoothing (1/48 octave).
-fn display_frequencies() -> Vec<f64> {
-    const PER_OCTAVE: f64 = 96.0;
-    let num_points = (PER_OCTAVE * (20_000f64 / 20.0).log2()).ceil() as usize + 1;
+/// The frequency range shown, on the log axis.
+fn log_range() -> (f64, f64) {
+    (20f64.log10(), 20_000f64.log10())
+}
+
+/// Where to draw the curves on the log axis: evenly spaced, one per screen point of the
+/// `visible` range, `width` screen points wide. Also half the visible width beyond each side,
+/// so the curves don't end at the old edges in the frame in which the view is panned or zoomed
+/// (the plot only knows the last frame's view). So they stay smooth however far you zoom in.
+fn draw_positions(visible: Option<(f64, f64)>, width: f64) -> Vec<f64> {
+    let (low, high) = log_range();
+    let (start, end, step) = match visible {
+        Some((left, right)) if left < right && left < high && low < right && width >= 1.0 => {
+            let margin = 0.5 * (right - left);
+            (
+                low.max(left - margin),
+                high.min(right + margin),
+                (right - left) / width,
+            )
+        }
+        // nothing to go by yet, e.g. in the first frame
+        _ => (low, high, (high - low) / 2000.0),
+    };
+    let num_points = ((end - start) / step).ceil() as usize + 1;
     (0..num_points)
-        .map(|i| (20.0 * 2f64.powf(i as f64 / PER_OCTAVE)).min(20_000.0))
+        .map(|i| (start + i as f64 * step).min(end))
         .collect()
+}
+
+/// [`draw_positions`] for the plot's current view.
+fn positions_in_view(plot_ui: &egui_plot::PlotUi) -> Vec<f64> {
+    let bounds = plot_ui.plot_bounds();
+    let visible = bounds
+        .is_valid_x()
+        .then(|| (bounds.min()[0], bounds.max()[0]));
+    draw_positions(visible, f64::from(plot_ui.transform().frame().width()))
 }
 
 /// `values` at the fractional index `position`, by monotone cubic interpolation: a smooth
@@ -593,14 +625,12 @@ impl eframe::App for LiveNoiseApp {
                 .label_formatter(|pos| hover_label(pos, "°"))
                 .show(ui, |plot_ui| {
                     plot_ui.set_plot_bounds_y(-180.0..=180.0);
+                    let positions = positions_in_view(plot_ui);
                     for curve in all_curves() {
                         if hidden.contains(&ItemId::new(&curve.label)) {
                             continue;
                         }
-                        for piece in curve.phase.iter().filter(|piece| piece.len() > 1) {
-                            let line = Line::new(&curve.label, PlotPoints::Borrowed(piece));
-                            plot_ui.line(line.color(curve.color));
-                        }
+                        draw(plot_ui, curve, curve.phase_pieces(&positions));
                     }
                 });
 
@@ -611,28 +641,36 @@ impl eframe::App for LiveNoiseApp {
                 .label_formatter(|pos| hover_label(pos, "dB"))
                 .legend(Legend::default())
                 .show(ui, |plot_ui| {
-                    // fit once there is something to fit
+                    // fit once there is something to fit, to the whole range
                     if self.fit_y {
+                        let positions = draw_positions(None, 0.0);
                         let (lo, hi) = all_curves()
-                            .flat_map(|curve| &curve.magnitude)
-                            .flat_map(|piece| piece.iter().map(|p| p.y))
-                            .fold((f64::MAX, f64::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
+                            .flat_map(|curve| curve.magnitude_pieces(&positions))
+                            .flatten()
+                            .fold((f64::MAX, f64::MIN), |(lo, hi), p| {
+                                (lo.min(p.y), hi.max(p.y))
+                            });
                         if lo <= hi {
                             plot_ui.set_plot_bounds_y(lo - 6.0..=hi + 6.0);
                             self.fit_y = false;
                         }
                     }
+                    let positions = positions_in_view(plot_ui);
                     for curve in all_curves() {
-                        for piece in curve.magnitude.iter().filter(|piece| piece.len() > 1) {
-                            let line = Line::new(&curve.label, PlotPoints::Borrowed(piece));
-                            plot_ui.line(line.color(curve.color));
-                        }
+                        draw(plot_ui, curve, curve.magnitude_pieces(&positions));
                     }
                 });
         });
 
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
+    }
+}
+
+fn draw(plot_ui: &mut egui_plot::PlotUi, curve: &Curve, pieces: Vec<Vec<PlotPoint>>) {
+    for piece in pieces.into_iter().filter(|piece| piece.len() > 1) {
+        let line = Line::new(&curve.label, PlotPoints::Owned(piece));
+        plot_ui.line(line.color(curve.color));
     }
 }
 
