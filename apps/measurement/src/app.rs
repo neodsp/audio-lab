@@ -878,7 +878,10 @@ impl MeasurementApp {
                 div()
                     .text_xs()
                     .text_color(palette::text_placeholder(cx))
-                    .child("Scroll to zoom · drag to pan · right-drag to zoom in · double-click to fit"),
+                    .child(
+                        "Scroll to move · Ctrl+scroll to zoom (+Shift: horizontal, +Alt: vertical) · \
+                         double-click to fit",
+                    ),
             )
     }
 

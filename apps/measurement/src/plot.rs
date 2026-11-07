@@ -1,8 +1,9 @@
 //! The plots of the tabs: magnitude and phase over log frequency, impulse responses over time.
 //!
-//! Scroll to zoom around the mouse (Shift: only the time or frequency, Ctrl: only the value),
-//! drag to pan, right-drag to zoom into a box, double-click to fit the data again. Until zoomed
-//! or panned, a plot follows its data.
+//! Like in Figma or Excalidraw, scrolling (two fingers on a touchpad) moves the view and
+//! Ctrl+scroll or a pinch zooms around the mouse; Ctrl+Shift+scroll zooms only the time or
+//! frequency, Ctrl+Alt+scroll only the value. Drag to move the view, right-drag to zoom into a
+//! box, double-click to fit the data again. Until zoomed or moved, a plot follows its data.
 
 use std::rc::Rc;
 
@@ -270,26 +271,51 @@ impl Plot {
         self.auto = false;
     }
 
+    /// Like Figma or Excalidraw: scrolling (two fingers on a touchpad) moves the view, with Ctrl
+    /// it zooms around the mouse, with Ctrl+Shift only horizontally, with Ctrl+Alt only
+    /// vertically. Shift turns a mouse wheel's vertical scrolling into horizontal moving.
     fn on_scroll(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
         let delta = event.delta.pixel_delta(window.line_height());
-        let (dx, dy) = (delta.x.as_f32() as f64, delta.y.as_f32() as f64);
-        if dy == 0.0 && dx != 0.0 && !event.modifiers.shift {
-            // sideways: pan along x
-            let span = self.view.x.1 - self.view.x.0;
-            let shift = -dx / self.area().size.width.as_f32().max(1.0) as f64 * span;
-            self.view.x = (self.view.x.0 + shift, self.view.x.1 + shift);
-            self.auto = false;
-        } else {
+        let (mut dx, mut dy) = (delta.x.as_f32() as f64, delta.y.as_f32() as f64);
+        let modifiers = event.modifiers;
+        if modifiers.control || modifiers.platform {
             let amount = if dy != 0.0 { dy } else { dx };
-            let factor = (-amount * 0.0015).exp();
-            let (fx, fy) = match (event.modifiers.shift, event.modifiers.control) {
+            let factor = (-amount * 0.002).exp();
+            let (fx, fy) = match (modifiers.shift, modifiers.alt) {
                 (true, false) => (factor, 1.0),
                 (false, true) => (1.0, factor),
                 _ => (factor, factor),
             };
             self.zoom(event.position, fx, fy);
+        } else {
+            if modifiers.shift && dx == 0.0 {
+                (dx, dy) = (dy, 0.0);
+            }
+            self.pan_by_pixels(dx, dy);
         }
         cx.notify();
+    }
+
+    /// Zooms with a touchpad pinch.
+    fn on_pinch(&mut self, event: &PinchEvent, cx: &mut Context<Self>) {
+        let factor = 1.0 / (1.0 + f64::from(event.delta)).max(0.1);
+        self.zoom(event.position, factor, factor);
+        cx.notify();
+    }
+
+    /// Moves what is shown along with content dragged by `dx`, `dy` pixels.
+    fn pan_by_pixels(&mut self, dx: f64, dy: f64) {
+        let area = self.area();
+        let width = area.size.width.as_f32().max(1.0) as f64;
+        let height = area.size.height.as_f32().max(1.0) as f64;
+        let shift_x = -dx / width * (self.view.x.1 - self.view.x.0);
+        self.view.x = (self.view.x.0 + shift_x, self.view.x.1 + shift_x);
+        if !self.kind.y_fixed() {
+            // the value axis points up, the screen down
+            let shift_y = dy / height * (self.view.y.1 - self.view.y.0);
+            self.view.y = (self.view.y.0 + shift_y, self.view.y.1 + shift_y);
+        }
+        self.auto = false;
     }
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
@@ -377,6 +403,7 @@ impl Render for Plot {
             .bg(palette::editor(cx))
             .cursor_crosshair()
             .on_scroll(cx.listener(Self::on_scroll))
+            .on_pinch(cx.listener(|this, event, _, cx| this.on_pinch(event, cx)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event, _, cx| this.on_mouse_down(event, cx)),
