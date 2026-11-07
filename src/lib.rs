@@ -149,7 +149,7 @@
 //! All of these are enabled by default, except `serde`:
 //!
 //! - `plot`: the `plot` module. Pulls in egui, so turn it off if you don't need windows.
-//! - `playback`: `signal::playback`, plays signals on the default audio device.
+//! - `playback`: `signal::playback`, plays signals on an audio device and records measurements.
 //! - `audio-file`: `signal::fs::audio`, reads and writes audio files.
 //! - `numpy`: `signal::fs::npy`, reads and writes NumPy `.npy` files.
 //! - `serde`: `Serialize` and `Deserialize` for the signal types.
