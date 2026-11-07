@@ -28,7 +28,7 @@ use crate::measure::same_name;
 use crate::measure::{self, Job, Outcome, Response};
 use crate::panes::{Panes, Side, Target};
 use crate::plot::{FrequencyChanged, Plot, PlotKind, Series, Trace};
-use crate::setup::{Setup, SetupEvent, next_name};
+use crate::setup::{Setup, SetupEvent, hint, next_name};
 use crate::theme::{self, ShownThemes, ThemeList, palette, trace_color};
 
 actions!(
@@ -490,7 +490,7 @@ impl MeasurementApp {
                 };
                 let range = (job.request.range.start, job.request.range.end);
                 let about = job.request.describe();
-                // written while setting it up and while it ran
+                // written while setting it up
                 let notes = self
                     .setup
                     .update(cx, |setup, cx| setup.take_notes(window, cx));
@@ -1235,42 +1235,66 @@ impl MeasurementApp {
         cx.notify();
     }
 
-    /// While a sweep runs: how far along it is, a button to stop it, and the notes, still to
-    /// edit.
+    /// While a sweep runs: how far along it is, and a button to stop it. Laid out like the
+    /// setup, so Stop is where Start was: under the mouse, in case it was started by accident.
     fn render_progress(&self, job: &Job, cx: &mut Context<Self>) -> impl IntoElement {
         let remaining = job.remaining().as_secs();
         let stopping = job.is_stopped();
+        // large, above the progress bar; the time under a small label
+        let (label, status) = if stopping {
+            (None, "Stopping…".to_string())
+        } else if remaining > 0 {
+            (
+                Some("Time left"),
+                format!("{}:{:02}", remaining / 60, remaining % 60),
+            )
+        } else {
+            (None, "Analyzing…".to_string())
+        };
+        // under Start was a line, except for the simulated device: one under Stop too, so it
+        // is exactly where Start was
+        let line_below = !job.request.is_simulated();
         v_flex()
             .size_full()
             .child(panel_header("Measuring", cx))
             .child(
                 v_flex()
+                    .flex_1()
+                    .min_h_0()
                     .p_3()
                     .gap_3()
-                    .child(Progress::new("measure-progress").value(job.progress() * 100.0))
                     .child(
-                        div()
-                            .text_sm()
-                            .text_color(palette::text_muted(cx))
-                            .child(if stopping {
-                                "Stopping…".to_string()
-                            } else if remaining > 0 {
-                                format!("About {remaining} s left. Keep it quiet.")
-                            } else {
-                                "Analyzing…".to_string()
-                            }),
+                        v_flex()
+                            .when_some(label, |this, label| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette::text_muted(cx))
+                                        .child(label),
+                                )
+                            })
+                            .child(div().text_3xl().font_semibold().child(status)),
                     )
+                    .child(Progress::new("measure-progress").value(job.progress() * 100.0)),
+            )
+            .child(
+                v_flex()
+                    .flex_shrink_0()
+                    .p_3()
+                    .gap_2()
+                    .border_t_1()
+                    .border_color(palette::border(cx))
                     .child(
                         Button::new("measure-stop")
+                            .danger()
                             .small()
                             .w_full()
                             .icon(IconName::Square)
-                            .label("Stop")
-                            .tooltip("Stop the measurement; nothing is kept")
+                            .label("Stop measurement")
                             .disabled(stopping)
                             .on_click(cx.listener(|this, _, _, cx| this.stop_job(cx))),
                     )
-                    .child(notes_field(self.setup.read(cx).notes(), cx)),
+                    .when(line_below, |this| this.child(hint(cx, "Keep it quiet."))),
             )
     }
 

@@ -62,8 +62,8 @@ pub struct Setup {
     /// Why the last measurement failed.
     error: Option<String>,
     name: Entity<InputState>,
-    /// What the user writes about the next measurement, while setting it up and while it
-    /// runs. It goes with the measurement.
+    /// What the user writes about the next measurement while setting it up. It goes with
+    /// the measurement.
     notes: Entity<TextareaState>,
     /// The names of the folders there are: a new one needs another.
     taken: Vec<String>,
@@ -262,11 +262,6 @@ impl Setup {
     /// The name the next measurement gets.
     pub fn name(&self) -> String {
         self.settings.name.trim().to_string()
-    }
-
-    /// The notes field, to show it while the measurement runs.
-    pub fn notes(&self) -> &Entity<TextareaState> {
-        &self.notes
     }
 
     /// The notes for the measurement that just started or finished; the field is cleared for
@@ -854,7 +849,7 @@ fn number(cx: &App, input: &Entity<InputState>, unit: &'static str) -> impl Into
     )
 }
 
-fn hint(cx: &App, text: impl Into<SharedString>) -> impl IntoElement {
+pub fn hint(cx: &App, text: impl Into<SharedString>) -> impl IntoElement {
     div()
         .text_xs()
         .text_color(palette::text_placeholder(cx))

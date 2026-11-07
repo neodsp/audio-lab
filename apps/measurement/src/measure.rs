@@ -227,6 +227,10 @@ pub struct Request {
 }
 
 impl Request {
+    pub fn is_simulated(&self) -> bool {
+        self.device.is_none()
+    }
+
     /// About how long the measurement takes.
     pub fn duration(&self) -> Duration {
         let Some(device) = &self.device else {
