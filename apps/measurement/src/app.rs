@@ -706,9 +706,6 @@ impl MeasurementApp {
     fn stop_live(&mut self, cx: &mut Context<Self>) {
         let Some(run) = self.live.take() else { return };
         run.live.stop();
-        for plot in [&self.magnitude, &self.phase, &self.impulse] {
-            plot.update(cx, |plot, _| plot.set_steady(false));
-        }
         self.refresh_plots(cx);
     }
 
@@ -776,11 +773,6 @@ impl MeasurementApp {
                 .collect();
             if let Some(run) = &mut self.live {
                 run.group.measurements = measurements;
-            }
-            // from now on the curves change many times a second: the plots fit to them once,
-            // then stay where they are
-            for plot in [&self.magnitude, &self.phase, &self.impulse] {
-                plot.update(cx, |plot, _| plot.set_steady(true));
             }
         } else {
             for ((m, response), curves) in run

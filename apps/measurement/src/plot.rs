@@ -25,6 +25,9 @@ const LINE_WIDTH: f32 = 1.5;
 const HIGHLIGHT_WIDTH: f32 = 3.0;
 /// How much of their color the other traces keep while some are highlighted.
 const DIMMED: f32 = 0.35;
+/// A hidden trace under the mouse in the list is dashed: so long on, so long off, in pixels.
+const DASH: f32 = 7.0;
+const GAP: f32 = 5.0;
 /// A path's vertex indices are 16 bit, so long curves are drawn in pieces.
 const POINTS_PER_PATH: usize = 2000;
 /// At most this many traces are listed under the mouse.
@@ -158,13 +161,9 @@ pub struct Plot {
     /// The frequency range to show when fitting a frequency plot.
     home_x: (f64, f64),
     view: View,
-    /// Whether the view follows the data, until the user zooms or pans.
+    /// Whether the view still makes room for data that comes, until the user zooms or pans.
+    /// See [`Plot::set_traces`].
     auto: bool,
-    /// While live data changes many times a second, the view stays where it is instead of
-    /// following it, so it doesn't jump. It fits once, to the first data.
-    steady: bool,
-    /// Fit to the next data that comes, once.
-    fit_pending: bool,
     /// Where the plot was painted last, in window coordinates.
     bounds: Bounds<Pixels>,
     hover: Option<Point<Pixels>>,
@@ -183,8 +182,6 @@ impl Plot {
                 y: (0.0, 1.0),
             },
             auto: true,
-            steady: false,
-            fit_pending: false,
             bounds: Bounds::default(),
             hover: None,
             drag: None,
@@ -194,28 +191,34 @@ impl Plot {
     }
 
     /// Shows `traces`; a frequency plot shows `freq_range` (Hz) when it fits the data.
+    ///
+    /// The view moves as little as it can, so it doesn't jump whenever a curve is shown or
+    /// hidden: hiding curves leaves it as it is, and curves that weren't shown before (newly
+    /// measured, shown again, or live) only widen it as far as they need, unless the user
+    /// zoomed or moved it. Changing data of the same curves, as live data does many times a
+    /// second, leaves it too. Only a plot that showed nothing fits to what comes.
     pub fn set_traces(
         &mut self,
         traces: Vec<Trace>,
         freq_range: (f64, f64),
         cx: &mut Context<Self>,
     ) {
+        let shown = |traces: &[Trace]| -> Vec<u64> {
+            traces.iter().filter(|t| !t.preview).map(|t| t.id).collect()
+        };
+        let before = shown(&self.traces);
         self.traces = traces;
         self.home_x = (freq_range.0.log10(), freq_range.1.log10());
-        if self.fit_pending && !self.traces.is_empty() {
-            self.fit_pending = false;
-            self.view = self.home();
-        } else if self.auto && !self.steady {
-            self.view = self.home();
-        }
+        let now = shown(&self.traces);
+        self.view = follow(
+            self.view,
+            self.home(),
+            self.auto,
+            self.kind.y_fixed(),
+            &before,
+            &now,
+        );
         cx.notify();
-    }
-
-    /// Keeps the view still while data comes in many times a second, or lets it follow again.
-    /// A view that followed the data fits once to the first that comes.
-    pub fn set_steady(&mut self, steady: bool) {
-        self.fit_pending = steady && self.auto;
-        self.steady = steady;
     }
 
     /// Draws the traces of the measurements `ids` on top and thicker, and the others fainter.
@@ -703,10 +706,14 @@ impl Scene {
                     stroke(window, &piece, color, LINE_WIDTH, &transform);
                 }
             }
-            // hidden ones under the mouse look like shown ones
+            // hidden ones under the mouse in the list dashed, shown ones solid
             for trace in self.traces.iter().filter(highlighted) {
                 for piece in self.trace_points(trace, &transform) {
-                    stroke(window, &piece, trace.color, HIGHLIGHT_WIDTH, &transform);
+                    if trace.preview {
+                        stroke_dashed(window, &piece, trace.color, HIGHLIGHT_WIDTH, &transform);
+                    } else {
+                        stroke(window, &piece, trace.color, HIGHLIGHT_WIDTH, &transform);
+                    }
                 }
             }
             if let Some((start, current)) = self.zoom_box {
@@ -909,9 +916,14 @@ impl Scene {
             .iter()
             .take(MAX_READOUT)
             .map(|(trace, value)| {
+                let name = if trace.preview {
+                    format!("{} (hidden)", trace.name)
+                } else {
+                    trace.name.to_string()
+                };
                 (
                     trace.color,
-                    self.shape(&trace.name, palette::text_muted(cx), window),
+                    self.shape(&name, palette::text_muted(cx), window),
                     self.shape(&self.kind.format_value(*value), palette::text(cx), window),
                 )
             })
@@ -1014,6 +1026,27 @@ impl Scene {
     }
 }
 
+/// Where the view goes when the curves shown change from `before` to `now` (ids), given the
+/// view that fits them all, `home`; see [`Plot::set_traces`]. `auto` while the user hasn't
+/// zoomed or moved it; `y_fixed` for a plot whose values always show the same range.
+fn follow(view: View, home: View, auto: bool, y_fixed: bool, before: &[u64], now: &[u64]) -> View {
+    if before.is_empty() {
+        return if now.is_empty() { view } else { home };
+    }
+    if !auto || now.iter().all(|id| before.contains(id)) {
+        return view;
+    }
+    let widen = |(a, b): (f64, f64), (c, d): (f64, f64)| (a.min(c), b.max(d));
+    View {
+        x: widen(view.x, home.x),
+        y: if y_fixed {
+            view.y
+        } else {
+            widen(view.y, home.y)
+        },
+    }
+}
+
 /// Strokes the polyline through `points` (plot units).
 fn stroke(
     window: &mut Window,
@@ -1038,6 +1071,64 @@ fn stroke(
         }
         // the next piece starts where this one ends
         start = end - 1;
+    }
+}
+
+/// Strokes the polyline through `points` (plot units) in dashes of [`DASH`] pixels with gaps
+/// of [`GAP`], measured along the line on screen, so they look the same at any zoom.
+fn stroke_dashed(
+    window: &mut Window,
+    points: &[(f64, f64)],
+    color: Hsla,
+    width: f32,
+    transform: &Transform,
+) {
+    let screen: Vec<(f32, f32)> = points
+        .iter()
+        .map(|&p| {
+            let p = transform.to_screen(p);
+            (p.x.as_f32(), p.y.as_f32())
+        })
+        .collect();
+    let mut path = PathBuilder::stroke(px(width));
+    let mut vertices = 0;
+    // whether the pen draws, how far until it switches, and whether a dash is open
+    let (mut on, mut left, mut open) = (true, DASH, false);
+    for segment in screen.windows(2) {
+        let (mut from, to) = (segment[0], segment[1]);
+        let mut length = ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt();
+        while length > 0.0 {
+            let step = left.min(length);
+            let t = step / length;
+            let end = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+            if on {
+                if !open {
+                    path.move_to(point(px(from.0), px(from.1)));
+                    open = true;
+                }
+                path.line_to(point(px(end.0), px(end.1)));
+                vertices += 1;
+            }
+            left -= step;
+            length -= step;
+            from = end;
+            if left <= 0.0 {
+                on = !on;
+                left = if on { DASH } else { GAP };
+                open = false;
+            }
+        }
+        // a path's vertex indices are 16 bit: long curves in pieces
+        if vertices >= POINTS_PER_PATH {
+            if let Ok(full) = std::mem::replace(&mut path, PathBuilder::stroke(px(width))).build() {
+                window.paint_path(full, color);
+            }
+            vertices = 0;
+            open = false;
+        }
+    }
+    if let Ok(path) = path.build() {
+        window.paint_path(path, color);
     }
 }
 
@@ -1137,6 +1228,39 @@ pub fn format_hz(hz: f64, decimals: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_view_moves_as_little_as_it_can() {
+        let view = View {
+            x: (2.0, 3.0),
+            y: (-30.0, 0.0),
+        };
+        let home = View {
+            x: (1.3, 4.3),
+            y: (-40.0, 10.0),
+        };
+        // hiding a curve, or new data for the same ones: stays
+        assert_eq!(follow(view, home, true, false, &[1, 2], &[1]), view);
+        assert_eq!(follow(view, home, true, false, &[1], &[1]), view);
+        // a curve that wasn't shown: widens to make room for it, never shrinks
+        let wide = View {
+            x: (1.3, 4.3),
+            y: (-40.0, 10.0),
+        };
+        assert_eq!(follow(view, home, true, false, &[1], &[1, 2]), wide);
+        let small_home = View {
+            x: (2.2, 2.8),
+            y: (-20.0, -10.0),
+        };
+        assert_eq!(follow(view, small_home, true, false, &[1], &[1, 2]), view);
+        // zoomed or moved by the user: stays
+        assert_eq!(follow(view, home, false, false, &[1], &[1, 2]), view);
+        // the phase always shows the full turn
+        assert_eq!(follow(view, home, true, true, &[1], &[1, 2]).y, view.y);
+        // nothing shown before: fits; nothing now: stays
+        assert_eq!(follow(view, home, false, false, &[], &[3]), home);
+        assert_eq!(follow(view, home, true, false, &[], &[]), view);
+    }
     // `gpui_kit::*` brings GPUI's test macro, which needs an app
     use core::prelude::v1::test;
 
