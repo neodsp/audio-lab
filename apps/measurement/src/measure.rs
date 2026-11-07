@@ -187,6 +187,23 @@ pub fn is_duplicate(channels: &[Channel], index: usize) -> bool {
         .any(|(other, c)| other != index && c.enabled && same_name(&c.name, &channel.name))
 }
 
+/// Whether to mark the `index`th channel as having a taken name. Of the channels taking part
+/// that share a name, one is marked, so that the field being edited isn't lost among red
+/// ones: the one `edited` last, or else those after the first.
+pub fn is_marked(channels: &[Channel], index: usize, edited: Option<usize>) -> bool {
+    if !is_duplicate(channels, index) {
+        return false;
+    }
+    let name = &channels[index].name;
+    let sharing: Vec<usize> = (0..channels.len())
+        .filter(|&i| channels[i].enabled && same_name(&channels[i].name, name))
+        .collect();
+    match edited {
+        Some(edited) if sharing.contains(&edited) => edited == index,
+        _ => index != sharing[0],
+    }
+}
+
 /// The channels that take part: their number and name.
 fn enabled(channels: &[Channel]) -> Vec<(u16, String)> {
     channels
@@ -618,6 +635,14 @@ mod tests {
         settings.outputs[1].enabled = false;
         assert_eq!(settings.problem(), None);
         assert!(!is_duplicate(&settings.outputs, 0));
+
+        // of those sharing a name, the one edited is marked, else the later ones
+        settings.outputs[1].enabled = true;
+        assert!(is_marked(&settings.outputs, 0, Some(0)));
+        assert!(!is_marked(&settings.outputs, 1, Some(0)));
+        assert!(!is_marked(&settings.outputs, 0, None));
+        assert!(is_marked(&settings.outputs, 1, None));
+        settings.outputs[1].enabled = false;
 
         settings.inputs[0].name = "  ".into();
         assert_eq!(

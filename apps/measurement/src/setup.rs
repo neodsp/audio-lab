@@ -18,7 +18,7 @@ use gpui_kit::*;
 
 use crate::devices::{self, DeviceList};
 use crate::live::{LiveRequest, period_len};
-use crate::measure::{self, Channel, Request, Settings, is_duplicate, same_name};
+use crate::measure::{self, Channel, Request, Settings, is_marked, same_name};
 use crate::theme::palette;
 
 /// Width of the labels in front of the controls.
@@ -66,6 +66,9 @@ pub struct Setup {
     /// What the user writes about the next measurement while setting it up. It goes with
     /// the measurement.
     notes: Entity<TextareaState>,
+    /// The speaker and the microphone whose name or check box was changed last: of two
+    /// with the same name, that one is marked.
+    edited: [Option<usize>; 2],
     /// The names of the folders there are: a new one needs another.
     taken: Vec<String>,
     /// The name last filled in for the user, to tell whether they typed their own since.
@@ -234,6 +237,7 @@ impl Setup {
         let mut setup = Self {
             suggested_name: settings.name.clone(),
             taken: Vec::new(),
+            edited: [None; 2],
             settings,
             devices: DeviceList::Scanning,
             error: None,
@@ -581,6 +585,7 @@ impl Setup {
             (&self.inputs, &self.settings.inputs)
         };
         let prefix = if outputs { "output" } else { "input" };
+        let edited = self.edited[usize::from(!outputs)];
         v_flex()
             .gap_1()
             .children(
@@ -606,6 +611,7 @@ impl Setup {
                                                 if let Some(channel) = channels.get_mut(index) {
                                                     channel.enabled = *checked;
                                                 }
+                                                this.edited[usize::from(!outputs)] = Some(index);
                                                 cx.notify();
                                             },
                                         )),
@@ -616,12 +622,12 @@ impl Setup {
                                     Input::new(&row.name)
                                         .small()
                                         .disabled(!channel.enabled)
-                                        .when(is_duplicate(channels, index), |this| {
+                                        .when(is_marked(channels, index, edited), |this| {
                                             this.focus_ring(false).border_color(palette::error(cx))
                                         }),
                                 ),
                             )
-                            .when(is_duplicate(channels, index), |this| {
+                            .when(is_marked(channels, index, edited), |this| {
                                 let kind = if outputs { "speaker" } else { "microphone" };
                                 this.child(name_clash(
                                     SharedString::from(format!("{prefix}-clash-{index}")),
@@ -799,6 +805,7 @@ fn sync_rows(
             if let Some(channel) = channels.get_mut(index) {
                 channel.name = input.read(cx).value().to_string();
             }
+            this.edited[usize::from(!outputs)] = Some(index);
             // names that clash are marked
             cx.notify();
         });
