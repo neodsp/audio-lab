@@ -3,10 +3,15 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use audio_host::{AudioBackend, AudioBlock, AudioBlockMut, AudioHost, Config, StreamError};
+use audio_host::{
+    AudioBackend, AudioBlock, AudioBlockMut, AudioHost, BlockMut, Config, MAX_NUM_FRAMES,
+    StreamError, StreamStatus,
+};
 
 use crate::signal::TimeSignal;
-use crate::signal::measure::{RecordError, Sequence, SequenceConfig, Step};
+use crate::signal::measure::{
+    LiveConfig, LiveReader, LiveSnapshot, RecordError, Sequence, SequenceConfig, Step, live_channel,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlaybackError {
@@ -164,6 +169,124 @@ pub fn play_and_record(
     Ok(sequence.into_recordings())
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveSessionConfig {
+    /// Input channels to record, one per mic.
+    pub inputs: Vec<u16>,
+    /// Output channels the stream opens, e.g.
+    /// [`NoiseSource::num_output_channels`](crate::signal::measure::NoiseSource::num_output_channels).
+    pub num_output_channels: u16,
+    pub sample_rate: f64,
+    /// How much is kept for [`LiveSession::latest`]. Also how long the audio thread can run
+    /// without `latest` being called before frames are dropped.
+    pub history: Duration,
+}
+
+impl Default for LiveSessionConfig {
+    fn default() -> Self {
+        Self {
+            inputs: vec![0],
+            num_output_channels: 2,
+            sample_rate: 48_000.0,
+            history: Duration::from_secs(3),
+        }
+    }
+}
+
+/// Plays a source and records inputs and the source's reference continuously, e.g. pink noise
+/// on several speakers for a live transfer function. Runs until [`stop`](Self::stop)ped or
+/// dropped.
+///
+/// ```no_run
+/// use audio_lab::dsp::{TransferFunctionConfig, transfer_function};
+/// use audio_lab::signal::measure::{NoiseSource, NoiseSourceConfig};
+/// use audio_lab::signal::playback::{DeviceConfig, LiveSession, LiveSessionConfig};
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let mut noise = NoiseSource::new(&NoiseSourceConfig {
+///     outputs: vec![0, 1],
+///     ..Default::default()
+/// })?;
+/// let period = noise.period();
+/// let config = LiveSessionConfig {
+///     inputs: vec![0, 1],
+///     num_output_channels: noise.num_output_channels(),
+///     ..Default::default()
+/// };
+/// let mut session = LiveSession::start(
+///     move |output, reference| noise.fill(output, reference),
+///     &config,
+///     &DeviceConfig::default(),
+/// )?;
+///
+/// std::thread::sleep(std::time::Duration::from_secs(2));
+/// let snapshot = session.latest(4 * period);
+/// let tf_config = TransferFunctionConfig::default().with_segment_len(period);
+/// let response = transfer_function(&snapshot.inputs, &snapshot.reference, &tf_config)?;
+/// session.stop()?;
+/// # Ok(())
+/// # }
+/// ```
+pub struct LiveSession {
+    host: AudioHost,
+    reader: LiveReader,
+}
+
+impl LiveSession {
+    /// Starts the stream. `source` runs on the audio thread for every block: it fills the
+    /// output block and the reference (one sample per frame, the signal the measurement is
+    /// relative to), see
+    /// [`LiveWriter::process`](crate::signal::measure::LiveWriter::process). It must be real-time safe.
+    pub fn start(
+        mut source: impl FnMut(&mut BlockMut<'_>, &mut [f32]) + Send + 'static,
+        config: &LiveSessionConfig,
+        device: &DeviceConfig,
+    ) -> Result<Self, PlaybackError> {
+        let history = (config.history.as_secs_f64() * config.sample_rate).ceil() as usize;
+        let (mut writer, reader) = live_channel(&LiveConfig {
+            inputs: config.inputs.clone(),
+            sample_rate: config.sample_rate,
+            history,
+            queue: history,
+            max_block: MAX_NUM_FRAMES,
+        })?;
+        let stream_config = device.stream_config(
+            config.sample_rate,
+            writer.num_input_channels(),
+            config.num_output_channels,
+        )?;
+        let mut host = device.open()?;
+        host.start(stream_config, move |input, mut output| {
+            writer.process(&input, &mut output, |output, reference| {
+                source(output, reference)
+            });
+        })?;
+        Ok(Self { host, reader })
+    }
+
+    /// The most recent `num_frames` frames of every input and of the reference, or all that
+    /// were recorded if fewer. Call it regularly, at least once per
+    /// [`history`](LiveSessionConfig::history).
+    pub fn latest(&mut self, num_frames: usize) -> LiveSnapshot {
+        self.reader.latest(num_frames)
+    }
+
+    /// Frames lost because `latest` wasn't called often enough, since the start.
+    pub fn dropped_frames(&self) -> u64 {
+        self.reader.dropped_frames()
+    }
+
+    /// Whether the stream still runs, why it stopped and how many dropouts the device had.
+    pub fn status(&self) -> StreamStatus {
+        self.host.status()
+    }
+
+    pub fn stop(mut self) -> Result<(), PlaybackError> {
+        self.host.stop()?;
+        Ok(())
+    }
+}
+
 pub fn play(signal: &TimeSignal) -> Result<(), audio_host::Error> {
     let num_output_channels = signal.num_channels() as u16;
     let sample_rate = signal.sample_rate().round() as u32;
@@ -244,6 +367,45 @@ mod tests {
         );
         let ir = deconvolve(&recordings[0], &sweep, &DeconvolutionConfig::default()).unwrap();
         println!("{ir}");
+    }
+
+    /// Needs a device with a loopback (output 0 wired to input 0) or a speaker and mic.
+    #[test]
+    #[ignore]
+    fn live_session_records_noise() {
+        use crate::signal::measure::{NoiseSource, NoiseSourceConfig};
+
+        let mut noise = NoiseSource::new(&NoiseSourceConfig::default()).unwrap();
+        let period = noise.period();
+        let config = LiveSessionConfig {
+            num_output_channels: noise.num_output_channels(),
+            ..Default::default()
+        };
+        let mut session = LiveSession::start(
+            move |output, reference| noise.fill(output, reference),
+            &config,
+            &DeviceConfig::default(),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_secs(2));
+        let snapshot = session.latest(2 * period);
+        assert_eq!(snapshot.inputs.num_time_steps(), 2 * period);
+        assert!(snapshot.reference.channel(0).iter().any(|&s| s != 0.0));
+        assert_eq!(session.dropped_frames(), 0);
+        session.stop().unwrap();
+    }
+
+    #[test]
+    fn invalid_live_config_fails_before_opening_a_device() {
+        let config = LiveSessionConfig {
+            inputs: vec![],
+            ..Default::default()
+        };
+        let result = LiveSession::start(|_, _| {}, &config, &DeviceConfig::default());
+        assert!(matches!(
+            result,
+            Err(PlaybackError::Record(RecordError::NoInputs))
+        ));
     }
 
     #[test]

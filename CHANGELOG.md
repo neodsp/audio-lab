@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `signal::playback::play_and_record`: runs a `Sequence` on an audio device in one duplex
   stream, e.g. a sweep per speaker while several mics record. Fails on dropouts instead of
   returning a recording with gaps. `DeviceConfig` selects the devices and stream settings.
+- Live measurements: `signal::measure::live_channel` records inputs next to a reference signal
+  without locks on the audio thread, and `signal::playback::LiveSession` runs it on an audio
+  device. `signal::measure::NoiseSource` plays looped pink (or white) noise on several outputs
+  as the source, with gain and on/off that can change while it plays.
+- `dsp::transfer_function`: the transfer function from a reference to each channel, averaged
+  over segments. Exact for periodic excitation such as `NoiseSource`.
 - `signal::audio_blocks`: re-export of `audio-blocks`, whose block types `Sequence` processes.
 
 ## [0.1.0] - 2026-11-04

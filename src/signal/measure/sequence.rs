@@ -21,6 +21,8 @@ pub enum RecordError {
     DuplicateOutput { step: usize, channel: u16 },
     #[error("Channel {0} is too large, the highest supported channel is 65534")]
     ChannelOutOfRange(u16),
+    #[error("Sample rate must be finite and > 0, got {0}")]
+    InvalidSampleRate(f64),
     #[error("Step {step} has sample rate {actual} Hz, but step 0 has {expected} Hz")]
     SampleRateMismatch {
         step: usize,
