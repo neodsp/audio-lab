@@ -1,13 +1,15 @@
 //! The look: one of gpui-kit's themes, for the components and for what the app draws itself.
 //! The chosen theme is remembered in the user's config directory.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
-use gpui_kit::component::select::SelectItem;
-use gpui_kit::component::{ActiveTheme as _, Theme, ThemeRegistry};
+use gpui_kit::component::select::{SelectDelegate, SelectItem};
+use gpui_kit::component::{ActiveTheme as _, IndexPath, Theme, ThemeRegistry};
 use gpui_kit::{
     App, Global, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, px, rgb,
+    StatefulInteractiveElement as _, Styled as _, Task, Window, div, px, rgb,
 };
 
 const DEFAULT_THEME: &str = "Default Dark";
@@ -171,6 +173,80 @@ pub fn choices(cx: &App) -> Vec<ThemeChoice> {
     let mut names: Vec<SharedString> = ThemeRegistry::global(cx).themes().keys().cloned().collect();
     names.sort_by_key(|name| (!name.starts_with("Default "), name.to_lowercase()));
     names.into_iter().map(ThemeChoice).collect()
+}
+
+/// The names of the themes the selector lists right now, in order: all of them, or those
+/// matching the search. The select only tells the row of its keyboard cursor; this turns
+/// the row into a theme.
+#[derive(Clone, Default)]
+pub struct ShownThemes(Rc<RefCell<Vec<SharedString>>>);
+
+impl ShownThemes {
+    /// Previews the theme in `row`, if there is one.
+    pub fn preview(&self, row: Option<IndexPath>, cx: &mut App) {
+        let name = row.and_then(|row| self.0.borrow().get(row.row).cloned());
+        if let Some(name) = name {
+            preview(&name, cx);
+        }
+    }
+}
+
+/// The selector's list of themes, filtered by the search, which keeps [`ShownThemes`] in step.
+pub struct ThemeList {
+    all: Vec<ThemeChoice>,
+    shown: Vec<ThemeChoice>,
+    names: ShownThemes,
+}
+
+impl ThemeList {
+    pub fn new(all: Vec<ThemeChoice>) -> (Self, ShownThemes) {
+        let names = ShownThemes::default();
+        let mut list = Self {
+            all,
+            shown: Vec::new(),
+            names: names.clone(),
+        };
+        list.show_matching("");
+        (list, names)
+    }
+
+    fn show_matching(&mut self, query: &str) {
+        self.shown = self
+            .all
+            .iter()
+            .filter(|choice| choice.matches(query))
+            .cloned()
+            .collect();
+        *self.names.0.borrow_mut() = self.shown.iter().map(|choice| choice.0.clone()).collect();
+    }
+}
+
+impl SelectDelegate for ThemeList {
+    type Item = ThemeChoice;
+
+    fn items_count(&self, _: usize) -> usize {
+        self.shown.len()
+    }
+
+    fn item(&self, ix: IndexPath) -> Option<&ThemeChoice> {
+        self.shown.get(ix.row)
+    }
+
+    fn position<V>(&self, value: &V) -> Option<IndexPath>
+    where
+        ThemeChoice: SelectItem<Value = V>,
+        V: PartialEq,
+    {
+        self.shown
+            .iter()
+            .position(|choice| choice.value() == value)
+            .map(IndexPath::new)
+    }
+
+    fn perform_search(&mut self, query: &str, _: &mut Window, _: &mut App) -> Task<()> {
+        self.show_matching(query);
+        Task::ready(())
+    }
 }
 
 /// The name of the theme in use.

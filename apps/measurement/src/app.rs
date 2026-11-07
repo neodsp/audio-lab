@@ -3,15 +3,14 @@
 use std::rc::Rc;
 use std::time::Duration;
 
+use gpui_kit::base::actions::{SelectDown, SelectUp};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::select::{
-    SearchableVec, Select, SelectEvent, SelectItem as _, SelectState,
-};
+use gpui_kit::component::select::{Select, SelectEvent, SelectItem as _, SelectState};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderScale, SliderState};
 use gpui_kit::component::{
     Disableable as _, Icon, IconName, IndexPath, Sizable as _, StyledExt as _, TitleBar,
@@ -24,7 +23,7 @@ use crate::curves::{Curves, impulse_points};
 use crate::measure::{self, Job, Outcome, Response};
 use crate::plot::{Plot, PlotKind, Series, Trace};
 use crate::setup::{Setup, SetupEvent};
-use crate::theme::{self, ThemeChoice, palette, trace_color};
+use crate::theme::{self, ShownThemes, ThemeList, palette, trace_color};
 
 actions!(
     measurement,
@@ -111,7 +110,8 @@ pub struct MeasurementApp {
     /// 1/N octave.
     smoothing: f64,
     smoothing_slider: Entity<SliderState>,
-    theme_select: Entity<SelectState<SearchableVec<ThemeChoice>>>,
+    theme_select: Entity<SelectState<ThemeList>>,
+    shown_themes: ShownThemes,
     setup: Entity<Setup>,
     magnitude: Entity<Plot>,
     phase: Entity<Plot>,
@@ -140,14 +140,9 @@ impl MeasurementApp {
         let current = themes
             .iter()
             .position(|choice| *choice.value() == theme::current(cx));
+        let (theme_list, shown_themes) = ThemeList::new(themes);
         let theme_select = cx.new(|cx| {
-            SelectState::new(
-                SearchableVec::new(themes),
-                current.map(IndexPath::new),
-                window,
-                cx,
-            )
-            .searchable(true)
+            SelectState::new(theme_list, current.map(IndexPath::new), window, cx).searchable(true)
         });
         let subscriptions =
             vec![
@@ -191,6 +186,7 @@ impl MeasurementApp {
             smoothing,
             smoothing_slider,
             theme_select,
+            shown_themes,
             setup,
             magnitude: cx.new(|_| Plot::new(PlotKind::Magnitude)),
             phase: cx.new(|_| Plot::new(PlotKind::Phase)),
@@ -220,6 +216,23 @@ impl MeasurementApp {
     }
 
     /// Runs `request` in the background, and a timer for the progress bar.
+    /// Previews the theme under the theme select's keyboard cursor. Meant for an arrow key on
+    /// its way to the select, so it waits until the select has moved the cursor.
+    fn theme_cursor_preview(&self) -> impl Fn(&mut App) + 'static {
+        let select = self.theme_select.downgrade();
+        let shown = self.shown_themes.clone();
+        move |cx| {
+            let select = select.clone();
+            let shown = shown.clone();
+            cx.defer(move |cx| {
+                let Ok(row) = select.read_with(cx, |select, cx| select.selected_index(cx)) else {
+                    return;
+                };
+                shown.preview(row, cx);
+            });
+        }
+    }
+
     fn start(&mut self, request: measure::Request, window: &mut Window, cx: &mut Context<Self>) {
         if self.job.is_some() {
             return;
@@ -982,14 +995,26 @@ impl MeasurementApp {
                             .gap_1()
                             .child(Icon::new(IconName::Palette).xsmall())
                             .child(
-                                div().w(px(170.0)).child(
-                                    Select::new(&self.theme_select)
-                                        .xsmall()
-                                        .appearance(false)
-                                        .search_placeholder("Search themes")
-                                        .menu_width(px(240.0))
-                                        .menu_max_h(px(420.0)),
-                                ),
+                                div()
+                                    .w(px(170.0))
+                                    // The arrow keys move the select's cursor; preview the
+                                    // theme it lands on, once the list has moved it.
+                                    .capture_action({
+                                        let preview = self.theme_cursor_preview();
+                                        move |_: &SelectUp, _, cx| preview(cx)
+                                    })
+                                    .capture_action({
+                                        let preview = self.theme_cursor_preview();
+                                        move |_: &SelectDown, _, cx| preview(cx)
+                                    })
+                                    .child(
+                                        Select::new(&self.theme_select)
+                                            .xsmall()
+                                            .appearance(false)
+                                            .search_placeholder("Search themes")
+                                            .menu_width(px(240.0))
+                                            .menu_max_h(px(420.0)),
+                                    ),
                             ),
                     ),
             )
