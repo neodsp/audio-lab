@@ -606,12 +606,14 @@ mod tests {
             response([false, true]),
             response([true, true]),
         );
-        for bin in [200, 1000, 3000] {
+        // over a band, relative to the parts: where they cancel, the sum is small and the
+        // background noise relatively large
+        let (mut error, mut size) = (0.0, 0.0);
+        for bin in 100..4000 {
             let (a, b) = (first.channel(0)[bin], second.channel(0)[bin]);
-            // relative to the parts: where they cancel, the sum is small and the background
-            // noise relatively large
-            let error = (both.channel(0)[bin] - (a + b)).norm() / (a.norm() + b.norm());
-            assert!(error < 0.01, "bin {bin}: off by {:.2} %", error * 100.0);
+            error += (both.channel(0)[bin] - (a + b)).norm();
+            size += a.norm() + b.norm();
         }
+        assert!(error / size < 0.01, "off by {:.2} %", error / size * 100.0);
     }
 }

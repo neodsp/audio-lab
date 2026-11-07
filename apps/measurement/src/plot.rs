@@ -25,6 +25,10 @@ const LINE_WIDTH: f32 = 1.5;
 const HIGHLIGHT_WIDTH: f32 = 3.0;
 /// How much of their color the other traces keep while some are highlighted.
 const DIMMED: f32 = 0.35;
+/// A hidden trace shown while the mouse is over it in the list: muted, so it's clear it
+/// is hidden.
+const PREVIEW: f32 = 0.5;
+const PREVIEW_WIDTH: f32 = 2.0;
 /// A path's vertex indices are 16 bit, so long curves are drawn in pieces.
 const POINTS_PER_PATH: usize = 2000;
 /// At most this many traces are listed under the mouse.
@@ -90,6 +94,9 @@ pub struct Trace {
     pub series: Series,
     /// Where a live measurement's coherence is below this, its curve isn't drawn.
     pub min_coherence: f64,
+    /// Hidden, but shown muted while the mouse is over it in the list. The view doesn't
+    /// fit to it.
+    pub preview: bool,
 }
 
 impl Trace {
@@ -248,13 +255,21 @@ impl Plot {
         cx.notify();
     }
 
+    /// The traces the view fits to: the shown ones, not previews of hidden ones, unless there
+    /// is nothing else.
+    fn fitted(&self) -> impl Iterator<Item = &Trace> {
+        let only_previews = self.traces.iter().all(|trace| trace.preview);
+        self.traces
+            .iter()
+            .filter(move |trace| only_previews || !trace.preview)
+    }
+
     /// The view that fits the data.
     fn home(&self) -> View {
         match self.kind {
             PlotKind::Magnitude => {
                 let (low, high) = self
-                    .traces
-                    .iter()
+                    .fitted()
                     .filter_map(|trace| match &trace.series {
                         Series::Frequency(curves) => {
                             Some(curves.magnitude_extent(trace.min_coherence))
@@ -282,7 +297,7 @@ impl Plot {
             },
             PlotKind::Impulse => {
                 let (mut first, mut last, mut peak) = (f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
-                for trace in &self.traces {
+                for trace in self.fitted() {
                     if let Series::Points(points) = &trace.series {
                         if let (Some(a), Some(b)) = (points.first(), points.last()) {
                             first = first.min(a.0);
@@ -681,9 +696,10 @@ impl Scene {
             // the highlighted ones last, so on top
             let highlighted = |trace: &&Trace| self.highlight.contains(&trace.id);
             let others = self.traces.iter().filter(|t| !highlighted(t));
-            let any = self.traces.iter().any(|t| highlighted(&t));
+            // previews of hidden ones leave the others as they are: they come on top
+            let dim = self.traces.iter().any(|t| highlighted(&t) && !t.preview);
             for trace in others {
-                let color = if any {
+                let color = if dim {
                     trace.color.opacity(DIMMED)
                 } else {
                     trace.color
@@ -693,8 +709,13 @@ impl Scene {
                 }
             }
             for trace in self.traces.iter().filter(highlighted) {
+                let (color, width) = if trace.preview {
+                    (trace.color.opacity(PREVIEW), PREVIEW_WIDTH)
+                } else {
+                    (trace.color, HIGHLIGHT_WIDTH)
+                };
                 for piece in self.trace_points(trace, &transform) {
-                    stroke(window, &piece, trace.color, HIGHLIGHT_WIDTH, &transform);
+                    stroke(window, &piece, color, width, &transform);
                 }
             }
             if let Some((start, current)) = self.zoom_box {
@@ -721,7 +742,10 @@ impl Scene {
                 .border_color(palette::border(cx)),
         );
 
-        if let Some(at) = self.hover.filter(|at| area.contains(at)) {
+        // where the mouse is now: a plot may have missed the mouse leaving it, e.g. while
+        // something was dragged, and nothing is read out while a tab is dragged over it
+        let at = window.mouse_position();
+        if self.hover.is_some() && area.contains(&at) && !cx.has_active_drag() {
             self.paint_readout(at, area, &transform, window, cx);
         }
     }

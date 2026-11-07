@@ -4,7 +4,7 @@
 use gpui_kit::base::Selectable as _;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
@@ -62,6 +62,9 @@ pub struct Setup {
     /// Why the last measurement failed.
     error: Option<String>,
     name: Entity<InputState>,
+    /// What the user writes about the next measurement, while setting it up and while it
+    /// runs. It goes with the measurement.
+    notes: Entity<TextareaState>,
     /// The name last filled in for the user, to tell whether they typed their own since.
     suggested_name: String,
     output_device: ChoiceState<Option<String>>,
@@ -95,6 +98,10 @@ impl Setup {
                 cx.notify();
             }
         }));
+
+        let notes = cx.new(|cx| {
+            TextareaState::new(window, cx).placeholder("What is measured,\nwhat changed…")
+        });
 
         let device_select = |window: &mut Window, cx: &mut Context<Self>| {
             let items = vec![Choice {
@@ -227,6 +234,7 @@ impl Setup {
             devices: DeviceList::Scanning,
             error: None,
             name,
+            notes,
             output_device,
             input_device,
             outputs: Vec::new(),
@@ -251,6 +259,20 @@ impl Setup {
     /// The name the next measurement gets.
     pub fn name(&self) -> String {
         self.settings.name.trim().to_string()
+    }
+
+    /// The notes field, to show it while the measurement runs.
+    pub fn notes(&self) -> &Entity<TextareaState> {
+        &self.notes
+    }
+
+    /// The notes for the measurement that just started or finished; the field is cleared for
+    /// the next one.
+    pub fn take_notes(&mut self, window: &mut Window, cx: &mut Context<Self>) -> String {
+        let text = self.notes.read(cx).value().to_string();
+        self.notes
+            .update(cx, |notes, cx| notes.set_value("", window, cx));
+        text
     }
 
     pub fn set_error(&mut self, error: Option<String>, cx: &mut Context<Self>) {
@@ -410,6 +432,8 @@ impl Setup {
             .small()
             .outline()
             .w_full()
+            // apart from the fields: it switches what they are
+            .mb_2()
             .child(
                 Button::new("mode-sweep")
                     .flex_1()
@@ -631,6 +655,7 @@ impl Render for Setup {
                                 .when(!self.settings.live, |this| {
                                     this.child(row(cx, "Name", Input::new(&self.name).small()))
                                 })
+                                .child(row(cx, "Notes", Textarea::new(&self.notes).h(px(64.0))))
                                 .child(section(cx, "Devices"))
                                 .child(self.render_devices(cx))
                                 .child(section(cx, "Speakers"))

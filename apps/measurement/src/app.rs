@@ -99,17 +99,13 @@ struct ContentDrop {
     target: Target<Tab>,
 }
 
-/// Measurements taken together: one per speaker and mic.
+/// A folder of measurements: those taken together, one per speaker and mic, or whatever the
+/// user moved into it. Only a name and notes: when and how its measurements were measured is
+/// theirs, so they can move between folders.
 struct Group {
     id: u64,
     name: SharedString,
-    /// When it was measured: the start of the sweeps, the snapshot, or the start of live.
-    measured: DateTime<Local>,
-    /// How it was measured, a line each.
-    about: Vec<SharedString>,
     notes: Notes,
-    /// The sweep's frequency range: outside of it there is nothing to show.
-    range: (f64, f64),
     expanded: bool,
     measurements: Vec<Measurement>,
 }
@@ -148,8 +144,12 @@ struct Measurement {
     id: u64,
     /// `speaker → mic`.
     name: SharedString,
-    /// When it was measured, like its folder.
+    /// When it was measured: the start of the sweeps or the snapshot.
     measured: DateTime<Local>,
+    /// How it was measured, a line each.
+    about: Rc<[SharedString]>,
+    /// The frequency range it was measured in, in Hz: outside of it there is nothing to show.
+    range: (f64, f64),
     notes: Notes,
     /// `group · speaker → mic`, for the plots.
     full_name: SharedString,
@@ -184,6 +184,11 @@ enum Action {
     Delete(u64),
     /// Show only this measurement.
     Solo(u64),
+    /// Move the measurement `id` into the folder `to`, or a new one.
+    Move {
+        id: u64,
+        to: Option<u64>,
+    },
 }
 
 /// The id of the live folder; the others count from 1.
@@ -192,10 +197,21 @@ const LIVE_GROUP: u64 = 0;
 const LIVE_UPDATE: Duration = Duration::from_millis(100);
 
 /// A live measurement that runs, and its folder at the top of the list.
+/// When, how and within which frequency range something was measured.
+#[derive(Clone)]
+struct Measured {
+    at: DateTime<Local>,
+    about: Rc<[SharedString]>,
+    /// In Hz.
+    range: (f64, f64),
+}
+
 struct LiveRun {
     /// Tells this run's analyses from those of an earlier one that still finish.
     run: u64,
     live: Live,
+    /// Since when, how and in which range it measures.
+    how: Measured,
     /// One measurement per mic, updated with every analysis.
     group: Group,
     level: Entity<SliderState>,
@@ -376,6 +392,13 @@ impl MeasurementApp {
         self.groups.iter().map(|g| g.measurements.len()).sum()
     }
 
+    /// Whether hidden measurements are shown because the mouse is over them in the list.
+    fn previewing(&self) -> bool {
+        self.all_groups()
+            .flat_map(|g| &g.measurements)
+            .any(|m| !m.visible && self.highlight.contains(&m.id))
+    }
+
     fn num_visible(&self) -> usize {
         self.all_groups()
             .flat_map(|g| &g.measurements)
@@ -449,11 +472,16 @@ impl MeasurementApp {
                 };
                 let range = (job.request.range.start, job.request.range.end);
                 let about = job.request.describe();
+                // written while setting it up and while it ran
+                let notes = self
+                    .setup
+                    .update(cx, |setup, cx| setup.take_notes(window, cx));
                 self.add_group(
                     name,
                     range,
                     about,
                     job.started_at,
+                    &notes,
                     outcome.responses,
                     window,
                     cx,
@@ -473,7 +501,7 @@ impl MeasurementApp {
     }
 
     /// Adds a folder `name` with the `responses`, measured at `measured` within `range` (Hz)
-    /// as `about` tells.
+    /// as `about` tells, with `notes`.
     #[allow(clippy::too_many_arguments)]
     fn add_group(
         &mut self,
@@ -481,33 +509,38 @@ impl MeasurementApp {
         range: (f64, f64),
         about: Vec<String>,
         measured: DateTime<Local>,
+        notes: &str,
         responses: Vec<Response>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let about: Rc<[SharedString]> = about.into_iter().map(Into::into).collect();
+        let how = Measured {
+            at: measured,
+            about,
+            range,
+        };
         let measurements = responses
             .into_iter()
-            .map(|response| self.new_measurement_of(response, &name, measured, window, cx))
+            .map(|response| self.new_measurement_of(response, &name, &how, window, cx))
             .collect();
         self.groups.push(Group {
             id: self.next_group_id,
             name: name.into(),
-            measured,
-            about: about.into_iter().map(Into::into).collect(),
-            notes: Notes::new("", window, cx),
-            range,
+            notes: Notes::new(notes, window, cx),
             expanded: true,
             measurements,
         });
         self.next_group_id += 1;
     }
 
-    /// A measurement of `response` in the folder `group`, with a color of its own.
+    /// A measurement of `response` in the folder `group`, measured as `how` tells, with a
+    /// color of its own.
     fn new_measurement_of(
         &mut self,
         response: Response,
         group: &str,
-        measured: DateTime<Local>,
+        how: &Measured,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Measurement {
@@ -529,7 +562,9 @@ impl MeasurementApp {
         );
         let mut measurement = Measurement {
             id,
-            measured,
+            measured: how.at,
+            about: how.about.clone(),
+            range: how.range,
             notes: Notes::new("", window, cx),
             full_name: SharedString::default(),
             name: SharedString::default(),
@@ -568,6 +603,10 @@ impl MeasurementApp {
                 return;
             }
         };
+        // written while setting it up; editable in the live box while it runs
+        let notes = self
+            .setup
+            .update(cx, |setup, cx| setup.take_notes(window, cx));
         self.live_runs += 1;
         let run = self.live_runs;
         let level = cx.new(|_| {
@@ -598,13 +637,15 @@ impl MeasurementApp {
         self.live = Some(LiveRun {
             run,
             live,
+            how: Measured {
+                at: Local::now(),
+                about: about.into_iter().map(Into::into).collect(),
+                range,
+            },
             group: Group {
                 id: LIVE_GROUP,
                 name: "Live".into(),
-                measured: Local::now(),
-                about: about.into_iter().map(Into::into).collect(),
-                notes: Notes::new("", window, cx),
-                range,
+                notes: Notes::new(&notes, window, cx),
                 expanded: true,
                 measurements: Vec::new(),
             },
@@ -684,11 +725,11 @@ impl MeasurementApp {
             run.live.delays_ms = Some(analysis.delays_ms);
         }
         if run.group.measurements.len() != analysis.responses.len() {
-            let measured = run.group.measured;
+            let how = run.how.clone();
             let measurements = analysis
                 .responses
                 .into_iter()
-                .map(|response| self.new_measurement_of(response, "Live", measured, window, cx))
+                .map(|response| self.new_measurement_of(response, "Live", &how, window, cx))
                 .collect();
             if let Some(run) = &mut self.live {
                 run.group.measurements = measurements;
@@ -728,7 +769,7 @@ impl MeasurementApp {
         if responses.is_empty() {
             return;
         }
-        let range = run.group.range;
+        let range = run.how.range;
         let level_db = f64::from(run.level.read(cx).value().start());
         let about = run.live.request.describe(level_db);
         // what was written about the live curves goes with them
@@ -741,12 +782,17 @@ impl MeasurementApp {
             .collect();
         let taken = self.group_names();
         let name = next_name("Snapshot 1", taken.iter().map(|n| n.as_ref()));
-        self.add_group(name, range, about, Local::now(), responses, window, cx);
+        self.add_group(
+            name,
+            range,
+            about,
+            Local::now(),
+            &folder_notes,
+            responses,
+            window,
+            cx,
+        );
         if let Some(group) = self.groups.last() {
-            group
-                .notes
-                .field
-                .update(cx, |field, cx| field.set_value(folder_notes, window, cx));
             for (m, text) in group.measurements.iter().zip(notes) {
                 m.notes
                     .field
@@ -774,8 +820,12 @@ impl MeasurementApp {
                     m.visible = m.id == id;
                 }
             }
+            Action::Move { id, to } => self.move_measurement(id, to, window, cx),
         }
-        if matches!(action, Action::DeleteGroup(_) | Action::Delete(_)) {
+        if matches!(
+            action,
+            Action::DeleteGroup(_) | Action::Delete(_) | Action::Move { .. }
+        ) {
             // the deleted numbers are free again
             let taken = self.group_names();
             self.setup.update(cx, |setup, cx| {
@@ -783,6 +833,54 @@ impl MeasurementApp {
             });
         }
         self.refresh_plots(cx);
+    }
+
+    /// Moves the measurement `id` into the folder `to`, or into a new one. It keeps when and
+    /// how it was measured. A folder it leaves empty is removed.
+    fn move_measurement(
+        &mut self,
+        id: u64,
+        to: Option<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(from) = self
+            .groups
+            .iter()
+            .position(|group| group.measurements.iter().any(|m| m.id == id))
+        else {
+            return;
+        };
+        if to == Some(self.groups[from].id) {
+            return;
+        }
+        let dest = match to {
+            Some(to) => match self.groups.iter().position(|group| group.id == to) {
+                Some(dest) => dest,
+                None => return,
+            },
+            None => {
+                let taken = self.group_names();
+                let name = next_name("Folder 1", taken.iter().map(|n| n.as_ref()));
+                self.groups.push(Group {
+                    id: self.next_group_id,
+                    name: name.into(),
+                    notes: Notes::new("", window, cx),
+                    expanded: true,
+                    measurements: Vec::new(),
+                });
+                self.next_group_id += 1;
+                self.groups.len() - 1
+            }
+        };
+        let source = &mut self.groups[from].measurements;
+        let at = source.iter().position(|m| m.id == id).expect("found above");
+        let mut m = source.remove(at);
+        let dest = &mut self.groups[dest];
+        m.follow_response(&dest.name);
+        dest.measurements.push(m);
+        dest.expanded = true;
+        self.groups.retain(|group| !group.measurements.is_empty());
     }
 
     /// Asks before deleting a measurement or a folder, then deletes it.
@@ -815,7 +913,7 @@ impl MeasurementApp {
                     "This can't be undone.".to_string(),
                 )
             }
-            Action::Solo(_) => return,
+            Action::Solo(_) | Action::Move { .. } => return,
         };
         let app = cx.entity();
         window.open_alert_dialog(cx, move |alert, _, _| {
@@ -846,6 +944,14 @@ impl MeasurementApp {
         self.highlight = highlight.clone();
         for plot in [&self.magnitude, &self.phase, &self.impulse] {
             plot.update(cx, |plot, cx| plot.set_highlight(highlight.clone(), cx));
+        }
+        // hidden ones among them are shown while the mouse is over them
+        let hidden = self
+            .all_groups()
+            .flat_map(|g| &g.measurements)
+            .any(|m| !m.visible);
+        if hidden {
+            self.refresh_plots(cx);
         }
     }
 
@@ -929,16 +1035,22 @@ impl MeasurementApp {
         let mut range = (f64::INFINITY, 0.0f64);
         let mut traces = Vec::new();
         // the live curves last, so on top
+        let highlight = self.highlight.clone();
         let groups: Vec<&mut Group> = self.all_groups_mut().collect();
         for group in groups.into_iter().rev() {
-            for m in group.measurements.iter_mut().filter(|m| m.visible) {
-                range = (range.0.min(group.range.0), range.1.max(group.range.1));
+            // hidden ones under the mouse in the list are shown muted, without fitting to them
+            let shown = |m: &&mut Measurement| m.visible || highlight.contains(&m.id);
+            for m in group.measurements.iter_mut().filter(shown) {
+                let preview = !m.visible;
+                if !preview {
+                    range = (range.0.min(m.range.0), range.1.max(m.range.1));
+                }
                 let series = if frequency {
                     if m.curves.as_ref().is_none_or(|c| c.smoothing != smoothing) {
                         m.curves = Some(Rc::new(Curves::new(
                             &m.response.frequency_response,
                             m.response.coherence.as_ref(),
-                            group.range,
+                            m.range,
                             smoothing,
                         )));
                     }
@@ -952,6 +1064,7 @@ impl MeasurementApp {
                     color: m.color,
                     series,
                     min_coherence,
+                    preview,
                 });
             }
         }
@@ -1014,6 +1127,7 @@ impl MeasurementApp {
         }
     }
 
+    /// While a sweep runs: how far along it is, and the notes, still to edit.
     fn render_progress(&self, job: &Job, cx: &App) -> impl IntoElement {
         let remaining = job.remaining().as_secs();
         v_flex()
@@ -1030,7 +1144,8 @@ impl MeasurementApp {
                         } else {
                             "Analyzing…".to_string()
                         },
-                    )),
+                    ))
+                    .child(notes_field(self.setup.read(cx).notes(), cx)),
             )
     }
 
@@ -1229,6 +1344,8 @@ impl MeasurementApp {
             .when_some(run.error.clone(), |this, error| {
                 this.child(div().text_xs().text_color(palette::error(cx)).child(error))
             })
+            // what is going on now; snapshots keep it
+            .child(notes_field(&run.group.notes.field, cx))
             .child(
                 h_flex()
                     .gap_2()
@@ -1374,8 +1491,16 @@ impl MeasurementApp {
                 ("group-info", id),
                 Info {
                     title: group.name.clone(),
-                    when: when(group.measured, id == LIVE_GROUP),
-                    lines: group.about.clone(),
+                    // live tells since when and how it measures; a folder what its
+                    // measurements have in common
+                    when: match &self.live {
+                        Some(run) if id == LIVE_GROUP => when(run.how.at, true),
+                        _ => span(group.measurements.iter().map(|m| m.measured)),
+                    },
+                    lines: match &self.live {
+                        Some(run) if id == LIVE_GROUP => run.how.about.to_vec(),
+                        _ => common_about(group.measurements.iter().map(|m| &m.about)),
+                    },
                     notes: group.notes.field.clone(),
                     note_text: group.notes.text(cx),
                 },
@@ -1434,6 +1559,14 @@ impl MeasurementApp {
     ) -> impl IntoElement {
         let id = m.id;
         let details = details(&m.response);
+        // where it can move: the other folders, newest first like the list
+        let folders: Vec<(u64, SharedString)> = self
+            .groups
+            .iter()
+            .rev()
+            .filter(|group| group.measurements.iter().all(|other| other.id != id))
+            .map(|group| (group.id, group.name.clone()))
+            .collect();
         let app = cx.entity();
         let ids: Rc<[u64]> = Rc::new([id]);
         h_flex()
@@ -1480,7 +1613,7 @@ impl MeasurementApp {
                 Info {
                     title: m.full_name.clone(),
                     when: when(m.measured, live),
-                    lines: details.clone(),
+                    lines: m.about.iter().chain(&details).cloned().collect(),
                     notes: m.notes.field.clone(),
                     note_text: m.notes.text(cx),
                 },
@@ -1498,7 +1631,7 @@ impl MeasurementApp {
                         this.refresh_plots(cx);
                     })),
             )
-            .context_menu(move |mut menu, _, _| {
+            .context_menu(move |mut menu, window, cx| {
                 let solo = app.clone();
                 let delete = app.clone();
                 for line in &details {
@@ -1514,6 +1647,45 @@ impl MeasurementApp {
                 if live {
                     return menu;
                 }
+                let folders = folders.clone();
+                let mover = app.clone();
+                menu = menu.separator().submenu_with_icon(
+                    Some(gpui_kit::assets::IconName::FolderInput.into()),
+                    "Move to",
+                    window,
+                    cx,
+                    move |mut menu, _, _| {
+                        for (folder, name) in &folders {
+                            let (mover, to) = (mover.clone(), *folder);
+                            menu = menu.item(
+                                PopupMenuItem::new(name.clone())
+                                    .icon(IconName::Folder)
+                                    .on_click(move |_, window, cx| {
+                                        mover.update(cx, |this, cx| {
+                                            this.apply(
+                                                Action::Move { id, to: Some(to) },
+                                                window,
+                                                cx,
+                                            )
+                                        });
+                                    }),
+                            );
+                        }
+                        if !folders.is_empty() {
+                            menu = menu.separator();
+                        }
+                        let mover = mover.clone();
+                        menu.item(
+                            PopupMenuItem::new("New folder")
+                                .icon(gpui_kit::assets::IconName::FolderPlus)
+                                .on_click(move |_, window, cx| {
+                                    mover.update(cx, |this, cx| {
+                                        this.apply(Action::Move { id, to: None }, window, cx)
+                                    });
+                                }),
+                        )
+                    },
+                );
                 menu.separator()
                     .item(
                         PopupMenuItem::new("Delete…").on_click(move |_, window, cx| {
@@ -1714,7 +1886,7 @@ impl MeasurementApp {
 
     /// The plot of `tab`, shown in the `pane`th pane.
     fn render_plot(&self, tab: Tab, pane: usize, cx: &mut Context<Self>) -> AnyElement {
-        if self.num_visible() == 0 {
+        if self.num_visible() == 0 && !self.previewing() {
             let message = if self.groups.is_empty() {
                 "No measurements yet."
             } else {
@@ -1946,6 +2118,20 @@ fn panel_header(title: &'static str, cx: &App) -> impl IntoElement {
         .child(title.to_uppercase())
 }
 
+/// A notes field with its label.
+fn notes_field(notes: &Entity<TextareaState>, cx: &App) -> impl IntoElement {
+    v_flex()
+        .gap_1()
+        .child(
+            div()
+                .text_xs()
+                .font_medium()
+                .text_color(palette::text_muted(cx))
+                .child("Notes"),
+        )
+        .child(Textarea::new(notes).h(px(72.0)))
+}
+
 /// What the info card of a measurement or a folder shows.
 struct Info {
     title: SharedString,
@@ -1954,6 +2140,40 @@ struct Info {
     lines: Vec<SharedString>,
     notes: Entity<TextareaState>,
     note_text: SharedString,
+}
+
+/// When the measurements of a folder were measured, given their `dates`: the date if they
+/// share it, else from the first to the last.
+fn span(dates: impl Iterator<Item = DateTime<Local>> + Clone) -> String {
+    let first = dates.clone().min();
+    let last = dates.max();
+    match (first, last) {
+        (Some(first), Some(last)) if first == last => when(first, false),
+        (Some(first), Some(last)) if first.date_naive() == last.date_naive() => format!(
+            "{}–{}",
+            first.format("%A, %-d %B %Y, %H:%M:%S"),
+            last.format("%H:%M:%S")
+        ),
+        (Some(first), Some(last)) => format!(
+            "{} – {}",
+            first.format("%-d %b %Y, %H:%M"),
+            last.format("%-d %b %Y, %H:%M")
+        ),
+        _ => String::new(),
+    }
+}
+
+/// How the measurements of a folder were measured, given each one's `about`, if they all were
+/// the same way.
+fn common_about<'a>(mut abouts: impl Iterator<Item = &'a Rc<[SharedString]>>) -> Vec<SharedString> {
+    let Some(first) = abouts.next() else {
+        return Vec::new();
+    };
+    if abouts.all(|about| about == first) {
+        first.to_vec()
+    } else {
+        vec!["Measured in different ways, see each measurement".into()]
+    }
 }
 
 /// When something was measured: the date and time, or since when it runs live.
@@ -1965,8 +2185,8 @@ fn when(measured: DateTime<Local>, live: bool) -> String {
     }
 }
 
-/// A button that opens the info card: when it was measured, how, and notes to edit. With
-/// notes it shows a note, and the notes as its tooltip.
+/// A button that opens the info card: when it was measured, how, and notes to edit. Its
+/// tooltip shows the notes, if there are any.
 fn info_button(id: impl Into<ElementId>, info: Info, cx: &App) -> impl IntoElement {
     let id = id.into();
     let has_notes = !info.note_text.trim().is_empty();
@@ -1982,18 +2202,7 @@ fn info_button(id: impl Into<ElementId>, info: Info, cx: &App) -> impl IntoEleme
     let trigger = Button::new(ElementId::Name(format!("{id}-button").into()))
         .ghost()
         .xsmall()
-        .icon(
-            Icon::new(if has_notes {
-                gpui_kit::assets::IconName::StickyNote
-            } else {
-                gpui_kit::assets::IconName::Info
-            })
-            .text_color(if has_notes {
-                palette::text_muted(cx)
-            } else {
-                palette::text_placeholder(cx)
-            }),
-        )
+        .icon(Icon::new(IconName::Info).text_color(palette::text_placeholder(cx)))
         .tooltip(tooltip);
     // a click opens the card, it doesn't toggle the row
     div()
@@ -2021,18 +2230,7 @@ fn info_button(id: impl Into<ElementId>, info: Info, cx: &App) -> impl IntoEleme
                             .children(info.lines.iter().cloned()),
                     )
                 })
-                .child(
-                    v_flex()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_medium()
-                                .text_color(palette::text_muted(cx))
-                                .child("Notes"),
-                        )
-                        .child(Textarea::new(&info.notes).h(px(96.0))),
-                )
+                .child(notes_field(&info.notes, cx))
         }))
 }
 
@@ -2067,5 +2265,35 @@ mod tests {
         let measured = Local.with_ymd_and_hms(2026, 11, 7, 14, 32, 5).unwrap();
         assert_eq!(when(measured, false), "Saturday, 7 November 2026, 14:32:05");
         assert_eq!(when(measured, true), "Live since 14:32:05");
+    }
+
+    #[test]
+    fn folders_tell_what_their_measurements_share() {
+        let at = |day, hour, minute| {
+            Local
+                .with_ymd_and_hms(2026, 11, day, hour, minute, 0)
+                .unwrap()
+        };
+        assert_eq!(
+            span([at(7, 14, 32), at(7, 14, 32)].into_iter()),
+            "Saturday, 7 November 2026, 14:32:00"
+        );
+        assert_eq!(
+            span([at(7, 15, 10), at(7, 14, 32)].into_iter()),
+            "Saturday, 7 November 2026, 14:32:00–15:10:00"
+        );
+        assert_eq!(
+            span([at(7, 14, 32), at(8, 9, 10)].into_iter()),
+            "7 Nov 2026, 14:32 – 8 Nov 2026, 09:10"
+        );
+        assert_eq!(span(std::iter::empty()), "");
+
+        let sweep: Rc<[SharedString]> = Rc::new(["Sweep of 1.4 s".into()]);
+        let live: Rc<[SharedString]> = Rc::new(["Live, pink noise".into()]);
+        assert_eq!(common_about([&sweep, &sweep].into_iter()), sweep.to_vec());
+        assert_eq!(
+            common_about([&sweep, &live].into_iter()),
+            ["Measured in different ways, see each measurement"]
+        );
     }
 }

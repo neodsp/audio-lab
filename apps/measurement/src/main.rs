@@ -41,7 +41,8 @@ gpui_kit::assets::icon_assets!(
         Camera,
         Radio,
         Crosshair,
-        StickyNote,
+        FolderInput,
+        FolderPlus,
         CalendarClock
     ]
 );
