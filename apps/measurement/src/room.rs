@@ -8,9 +8,9 @@ use audio_lab::dsp::{
 use audio_lab::signal::TimeSignal;
 use audio_lab::signal::ndarray::{Axis, s};
 
-/// The octave bands, by their nominal center frequencies. The lowest one also takes
-/// everything below it, the highest everything above.
-pub const BANDS: [&str; 8] = ["63", "125", "250", "500", "1k", "2k", "4k", "8k"];
+/// The center frequencies of the octave bands in Hz, 63 Hz to 8 kHz. The lowest band also
+/// takes everything below it, the highest everything above.
+pub const BANDS: [f64; 8] = [62.5, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0];
 
 /// The parameters of one response.
 #[derive(Clone, Debug)]
@@ -92,7 +92,7 @@ pub fn decay_part(impulse_response: &TimeSignal, start: usize, len: usize) -> Ti
     .expect("valid sample rate")
 }
 
-/// What the room acoustics tab shows.
+/// What the room acoustics plot shows.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Parameter {
     T20,
@@ -150,20 +150,73 @@ impl Parameter {
         }
     }
 
-    /// The value of `parameters`, or `None` where it couldn't be measured.
-    pub fn format(self, parameters: &RoomParameters) -> Option<String> {
-        let seconds = |time: Option<audio_lab::dsp::DecayTime>| {
-            time.map(|time| format!("{:.2} s", time.seconds))
-        };
-        let db = |value: f64| value.is_finite().then(|| format!("{value:.1} dB"));
+    pub fn unit(self) -> &'static str {
         match self {
-            Parameter::T20 => seconds(parameters.t20),
-            Parameter::T30 => seconds(parameters.t30),
-            Parameter::Edt => seconds(parameters.edt),
-            Parameter::C50 => db(parameters.c50),
-            Parameter::C80 => db(parameters.c80),
-            Parameter::D50 => Some(format!("{:.0} %", parameters.d50 * 100.0)),
+            Parameter::T20 | Parameter::T30 | Parameter::Edt => "s",
+            Parameter::C50 | Parameter::C80 => "dB",
+            Parameter::D50 => "%",
         }
+    }
+
+    /// The value of `parameters` in [`unit`](Self::unit), or `None` where it couldn't be
+    /// measured.
+    pub fn value(self, parameters: &RoomParameters) -> Option<f64> {
+        let seconds = |time: Option<audio_lab::dsp::DecayTime>| time.map(|time| time.seconds);
+        let value = match self {
+            Parameter::T20 => seconds(parameters.t20)?,
+            Parameter::T30 => seconds(parameters.t30)?,
+            Parameter::Edt => seconds(parameters.edt)?,
+            Parameter::C50 => parameters.c50,
+            Parameter::C80 => parameters.c80,
+            Parameter::D50 => parameters.d50 * 100.0,
+        };
+        value.is_finite().then_some(value)
+    }
+
+    /// A value in [`unit`](Self::unit), for reading out.
+    pub fn format(self, value: f64) -> String {
+        match self {
+            Parameter::T20 | Parameter::T30 | Parameter::Edt => format!("{value:.2} s"),
+            Parameter::C50 | Parameter::C80 => format!("{value:.1} dB"),
+            Parameter::D50 => format!("{value:.0} %"),
+        }
+    }
+
+    /// The values a plot shows without data.
+    pub fn default_range(self) -> (f64, f64) {
+        match self {
+            Parameter::T20 | Parameter::T30 | Parameter::Edt => (0.0, 1.0),
+            Parameter::C50 | Parameter::C80 => (-10.0, 20.0),
+            Parameter::D50 => (0.0, 100.0),
+        }
+    }
+
+    /// The values a plot shows to fit data from `low` to `high`: times and shares from 0,
+    /// clarity around its values, with room to spare and on round numbers.
+    pub fn fitted_range(self, low: f64, high: f64) -> (f64, f64) {
+        match self {
+            Parameter::T20 | Parameter::T30 | Parameter::Edt => {
+                (0.0, (high * 1.2 / 0.1).ceil().max(1.0) * 0.1)
+            }
+            Parameter::C50 | Parameter::C80 => (
+                (low / 5.0).floor() * 5.0 - 5.0,
+                (high / 5.0).ceil() * 5.0 + 5.0,
+            ),
+            Parameter::D50 => (0.0, 100.0),
+        }
+    }
+
+    /// The points to plot for `acoustics`, at the band centers in log10 Hz. A band without a
+    /// value is NaN, which leaves a gap.
+    pub fn points(self, acoustics: &RoomAcoustics) -> Vec<(f64, f64)> {
+        BANDS
+            .iter()
+            .zip(&acoustics.bands)
+            .map(|(hz, band)| {
+                let value = band.as_ref().and_then(|p| self.value(p));
+                (hz.log10(), value.unwrap_or(f64::NAN))
+            })
+            .collect()
     }
 }
 
@@ -187,16 +240,19 @@ mod tests {
         let ir = TimeSignal::new(data, sample_rate).unwrap();
 
         let acoustics = analyze(&ir, &filters);
-        let broadband = acoustics.broadband.unwrap();
+        let broadband = acoustics.broadband.clone().unwrap();
         // the reverb falls by 60 dB in about 0.35 s
         let t30 = broadband.t30.unwrap().seconds;
         assert!((0.3..0.4).contains(&t30), "{t30}");
         assert_eq!(acoustics.bands.len(), BANDS.len());
         let t20 = acoustics.bands[4].as_ref().and_then(|p| p.t20).unwrap();
         assert!((0.3..0.4).contains(&t20.seconds), "{}", t20.seconds);
-        assert_eq!(
-            Parameter::T30.format(&broadband),
-            Some(format!("{t30:.2} s"))
+        assert_eq!(Parameter::T30.value(&broadband), Some(t30));
+        let points = Parameter::T30.points(&acoustics);
+        assert_eq!(points.len(), BANDS.len());
+        assert!((points[4].0 - 3.0).abs() < 1e-12);
+        assert!(
+            (points[4].1 - acoustics.bands[4].as_ref().unwrap().t30.unwrap().seconds).abs() < 1e-12
         );
     }
 }

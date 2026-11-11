@@ -11,8 +11,8 @@
 //! The tabs (Alt+1, 2, 3) show the magnitude, the phase and the impulse responses. The phase is
 //! relative to each impulse response's peak, so the delays are taken out; the impulse
 //! responses keep them, on a time axis from the start of the recording. The room acoustics
-//! tab (Alt+4) lists the reverberation times, clarity and definition (ISO 3382-1) of each
-//! sweep measurement, broadband and per octave band.
+//! tab (Alt+4) plots a reverberation time, the clarity or the definition (ISO 3382-1) of each
+//! sweep measurement per octave band; the broadband values are in its info.
 //!
 //! "Simulated device" in the setup measures a made-up room instead, to try the app without
 //! audio hardware.

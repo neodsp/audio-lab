@@ -29,8 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A measurement app in `apps/measurement`, written with GPUI (`cargo run --release -p
   measurement-app`): a side bar of all measurements, grouped by run, a setup panel for devices,
   speakers, mics and the sweep, and tabs for magnitude, phase and impulse responses. A simulated
-  device lets you try it without hardware. A room acoustics tab lists T20, T30, EDT, C50, C80
-  and D50 of each sweep measurement, broadband and per octave band.
+  device lets you try it without hardware. A room acoustics tab plots T20, T30, EDT, C50, C80
+  or D50 of each sweep measurement per octave band.
 - `dsp::energy_decay_curve`: the Schroeder energy decay curve of an impulse response. It stops
   where the decay meets the noise floor, so the noise doesn't flatten the end of the curve.
   By default the stopping point is found with Lundeby's iterative method, which also subtracts

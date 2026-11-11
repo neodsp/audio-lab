@@ -66,7 +66,7 @@ enum Tab {
     Magnitude,
     Phase,
     Impulse,
-    /// A table of the room acoustics, not a plot.
+    /// A room acoustics parameter per octave band.
     Room,
 }
 
@@ -278,6 +278,7 @@ pub struct MeasurementApp {
     magnitude: Entity<Plot>,
     phase: Entity<Plot>,
     impulse: Entity<Plot>,
+    room: Entity<Plot>,
     job: Option<Job>,
     _job_task: Option<Task<()>>,
     live: Option<LiveRun>,
@@ -393,6 +394,7 @@ impl MeasurementApp {
             magnitude,
             phase,
             impulse: cx.new(|_| Plot::new(PlotKind::Impulse)),
+            room: cx.new(|_| Plot::new(PlotKind::Room(Parameter::T30))),
             job: None,
             _job_task: None,
             live: None,
@@ -1071,7 +1073,7 @@ impl MeasurementApp {
             return;
         };
         self.highlight = highlight.clone();
-        for plot in [&self.magnitude, &self.phase, &self.impulse] {
+        for plot in [&self.magnitude, &self.phase, &self.impulse, &self.room] {
             plot.update(cx, |plot, cx| plot.set_highlight(highlight.clone(), cx));
         }
         // hidden ones among them are shown while the mouse is over them
@@ -1158,9 +1160,7 @@ impl MeasurementApp {
     }
 
     fn refresh_plot(&mut self, tab: Tab, cx: &mut Context<Self>) {
-        if self.plot(tab).is_none() {
-            return;
-        }
+        let room_parameter = self.room_parameter;
         let smoothing = self.smoothing();
         let min_coherence = self.min_coherence;
         let frequency = tab.is_frequency();
@@ -1177,7 +1177,13 @@ impl MeasurementApp {
                 if !preview {
                     range = (range.0.min(m.range.0), range.1.max(m.range.1));
                 }
-                let series = if frequency {
+                let series = if tab == Tab::Room {
+                    // only sweep measurements have room acoustics
+                    let Some(acoustics) = &m.response.room else {
+                        continue;
+                    };
+                    Series::Points(Rc::new(room_parameter.points(acoustics)))
+                } else if frequency {
                     if m.curves.as_ref().is_none_or(|c| c.smoothing != smoothing) {
                         m.curves = Some(Rc::new(Curves::new(
                             &m.response.frequency_response,
@@ -1203,18 +1209,25 @@ impl MeasurementApp {
         if !range.0.is_finite() {
             range = (20.0, 20_000.0);
         }
-        if let Some(plot) = self.plot(tab) {
-            plot.update(cx, |plot, cx| plot.set_traces(traces, range, cx));
+        if tab == Tab::Room {
+            // the octave bands, with half an octave to spare
+            let (low, high) = (room::BANDS[0], room::BANDS[room::BANDS.len() - 1]);
+            range = (low / 2f64.sqrt(), high * 2f64.sqrt());
         }
+        self.plot(tab).update(cx, |plot, cx| {
+            plot.set_traces(traces, range, cx);
+            if tab == Tab::Room {
+                plot.set_kind(PlotKind::Room(room_parameter), cx);
+            }
+        });
     }
 
-    /// `None` for the room acoustics, which is a table.
-    fn plot(&self, tab: Tab) -> Option<&Entity<Plot>> {
+    fn plot(&self, tab: Tab) -> &Entity<Plot> {
         match tab {
-            Tab::Magnitude => Some(&self.magnitude),
-            Tab::Phase => Some(&self.phase),
-            Tab::Impulse => Some(&self.impulse),
-            Tab::Room => None,
+            Tab::Magnitude => &self.magnitude,
+            Tab::Phase => &self.phase,
+            Tab::Impulse => &self.impulse,
+            Tab::Room => &self.room,
         }
     }
 
@@ -2140,10 +2153,7 @@ impl MeasurementApp {
                 })
                 .into_any_element();
         }
-        match self.plot(tab) {
-            Some(plot) => plot.clone().into_any_element(),
-            None => self.render_room(cx).into_any_element(),
-        }
+        self.plot(tab).clone().into_any_element()
     }
 
     /// Which parameter the room acoustics table shows.
@@ -2165,128 +2175,10 @@ impl MeasurementApp {
             .on_click(cx.listener(|this, clicked: &Vec<usize>, _, cx| {
                 if let Some(&ix) = clicked.first() {
                     this.room_parameter = Parameter::ALL[ix];
+                    this.refresh_plot(Tab::Room, cx);
                     cx.notify();
                 }
             }))
-    }
-
-    /// The room acoustics of the visible measurements: a row each, broadband and per octave.
-    fn render_room(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let parameter = self.room_parameter;
-        let name_width = px(240.0);
-        let cell_width = px(72.0);
-        let cell = |text: SharedString, muted: bool| {
-            div()
-                .w(cell_width)
-                .flex_shrink_0()
-                .text_right()
-                .when(muted, |this| this.text_color(palette::text_placeholder(cx)))
-                .child(text)
-        };
-        let header = h_flex()
-            .h(px(30.0))
-            .px_3()
-            .gap_2()
-            .text_xs()
-            .text_color(palette::text_muted(cx))
-            .border_b_1()
-            .border_color(palette::border(cx))
-            .child(div().w(name_width).flex_shrink_0().child("Measurement"))
-            .child(cell("Broadband".into(), false))
-            .children(
-                room::BANDS
-                    .iter()
-                    .map(|band| cell(format!("{band} Hz").into(), false)),
-            );
-        let visible: Vec<&Measurement> = self
-            .all_groups()
-            .flat_map(|g| &g.measurements)
-            .filter(|m| m.visible)
-            .collect();
-        let rows = visible.iter().map(|m| {
-            let value = |parameters: Option<&audio_lab::dsp::RoomParameters>| {
-                parameters
-                    .and_then(|p| parameter.format(p))
-                    .map_or(("–".into(), true), |text| (text.into(), false))
-            };
-            let row = h_flex()
-                .h(px(28.0))
-                .px_3()
-                .gap_2()
-                .text_sm()
-                .border_b_1()
-                .border_color(palette::grid(cx))
-                .child(
-                    h_flex()
-                        .w(name_width)
-                        .flex_shrink_0()
-                        .gap_2()
-                        .child(
-                            div()
-                                .size(px(10.0))
-                                .flex_shrink_0()
-                                .rounded_full()
-                                .bg(m.preview_color.unwrap_or(m.color)),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .child(m.full_name.clone()),
-                        ),
-                );
-            match &m.response.room {
-                Some(acoustics) => {
-                    let (text, muted) = value(acoustics.broadband.as_ref());
-                    row.child(cell(text, muted).font_medium())
-                        .children(acoustics.bands.iter().map(|band| {
-                            let (text, muted) = value(band.as_ref());
-                            cell(text, muted)
-                        }))
-                }
-                None => row.child(
-                    div()
-                        .text_color(palette::text_placeholder(cx))
-                        .child("Only sweep measurements have room acoustics"),
-                ),
-            }
-        });
-        v_flex()
-            .size_full()
-            .bg(palette::editor(cx))
-            .child(header)
-            .child(
-                v_flex()
-                    .id("room-rows")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scrollbar()
-                    .children(rows)
-                    .when(visible.is_empty(), |this| {
-                        this.child(
-                            div()
-                                .p_3()
-                                .text_sm()
-                                .text_color(palette::text_placeholder(cx))
-                                .child("Show a measurement to see its room acoustics."),
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .text_xs()
-                    .text_color(palette::text_muted(cx))
-                    .border_t_1()
-                    .border_color(palette::border(cx))
-                    .child(format!(
-                        "{} · – where the decay doesn't reach far enough above the noise.                          The 63 Hz band includes everything below it, the 8 kHz band everything                          above.",
-                        parameter.description()
-                    )),
-            )
     }
 
     fn render_status_bar(&self, cx: &App) -> impl IntoElement {
@@ -2639,6 +2531,25 @@ fn details(response: &Response) -> Vec<SharedString> {
         lines.push(format!("IR start: {:.2} ms (with latency)", ms(response.start)).into());
     }
     lines.push(format!("IR peak: {:.2} ms (with latency)", ms(peak)).into());
+    if let Some(broadband) = response
+        .room
+        .as_ref()
+        .and_then(|room| room.broadband.as_ref())
+    {
+        let values = |parameters: &[Parameter]| {
+            parameters
+                .iter()
+                .map(|p| {
+                    let value = p.value(broadband).map_or("–".into(), |v| p.format(v));
+                    format!("{} {value}", p.label())
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let [t20, t30, edt, c50, c80, d50] = Parameter::ALL;
+        lines.push(format!("Broadband: {}", values(&[t20, t30, edt])).into());
+        lines.push(format!("Broadband: {}", values(&[c50, c80, d50])).into());
+    }
     lines
 }
 

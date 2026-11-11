@@ -17,6 +17,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::curves::{Curves, draw_positions, split_at_wraps};
+use crate::room::Parameter;
 use crate::theme::palette;
 
 /// Room for the value labels left of the plot area.
@@ -44,11 +45,17 @@ pub enum PlotKind {
     Magnitude,
     Phase,
     Impulse,
+    /// A room acoustics parameter per octave band: points over log frequency.
+    Room(Parameter),
 }
 
 impl PlotKind {
     fn is_frequency(self) -> bool {
         self != Self::Impulse
+    }
+
+    fn is_room(self) -> bool {
+        matches!(self, Self::Room(_))
     }
 
     /// The phase always shows the full turn: only the frequency zooms and pans.
@@ -69,6 +76,7 @@ impl PlotKind {
             Self::Magnitude => format!("{} dB", format_number(y, step)),
             Self::Phase => format!("{y:.0}°"),
             Self::Impulse => format_number(y, step),
+            Self::Room(parameter) => format!("{} {}", format_number(y, step), parameter.unit()),
         }
     }
 
@@ -77,6 +85,7 @@ impl PlotKind {
             Self::Magnitude => format!("{y:.1} dB"),
             Self::Phase => format!("{y:.1}°"),
             Self::Impulse => format!("{y:.4}"),
+            Self::Room(parameter) => parameter.format(y),
         }
     }
 }
@@ -132,7 +141,7 @@ impl Trace {
                     Some(before) if x - points[before].0 < points[index].0 - x => before,
                     _ => index,
                 };
-                Some(points[nearest].1)
+                Some(points[nearest].1).filter(|y| y.is_finite())
             }
         }
     }
@@ -202,6 +211,16 @@ impl Plot {
         cx.notify();
     }
 
+    /// Shows another room acoustics parameter, fitted to the traces, which show it already.
+    /// The frequencies stay.
+    pub fn set_kind(&mut self, kind: PlotKind, cx: &mut Context<Self>) {
+        if self.kind != kind {
+            self.kind = kind;
+            self.view.y = self.fitted_view().y;
+            cx.notify();
+        }
+    }
+
     /// Zooms to the shown curves.
     fn fit_to_data(&mut self, cx: &mut Context<Self>) {
         let before = self.view.x;
@@ -231,7 +250,11 @@ impl Plot {
             })
         };
         let menu = PopupMenu::build(window, cx, move |mut menu, _, _| {
-            if kind.is_frequency() {
+            if kind.is_room() {
+                menu = menu.item(item("All bands (63 Hz – 8 kHz)", |plot, _, cx| {
+                    plot.reset_view(cx)
+                }));
+            } else if kind.is_frequency() {
                 menu = menu
                     .item(item("Full range (20 Hz – 20 kHz)", |plot, _, cx| {
                         plot.reset_view(cx)
@@ -282,6 +305,7 @@ impl Plot {
             PlotKind::Magnitude => ("Frequency", "Hz", "Level", "dB"),
             PlotKind::Phase => ("Frequency", "Hz", "Phase", "°"),
             PlotKind::Impulse => ("Time", "ms", "Amplitude", ""),
+            PlotKind::Room(parameter) => ("Frequency", "Hz", parameter.label(), parameter.unit()),
         };
         let plot = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _, cx| {
@@ -429,6 +453,26 @@ impl Plot {
                 x: self.data_x,
                 y: default_view(self.kind).y,
             },
+            PlotKind::Room(parameter) => {
+                let (low, high) = self
+                    .fitted()
+                    .filter_map(|trace| match &trace.series {
+                        Series::Points(points) => Some(points.iter()),
+                        Series::Frequency(_) => None,
+                    })
+                    .flatten()
+                    .map(|p| p.1)
+                    .filter(|y| y.is_finite())
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), y| {
+                        (a.min(y), b.max(y))
+                    });
+                let y = if low <= high {
+                    parameter.fitted_range(low, high)
+                } else {
+                    default_view(self.kind).y
+                };
+                View { x: self.data_x, y }
+            }
             PlotKind::Impulse => {
                 let (mut first, mut last, mut peak) = (f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
                 for trace in self.fitted() {
@@ -615,6 +659,7 @@ impl Render for Plot {
                 PlotKind::Magnitude => "magnitude-plot",
                 PlotKind::Phase => "phase-plot",
                 PlotKind::Impulse => "impulse-plot",
+                PlotKind::Room(_) => "room-plot",
             })
             .size_full()
             .bg(palette::editor(cx))
@@ -842,6 +887,7 @@ impl Scene {
                 };
                 for piece in self.trace_points(trace, &transform) {
                     stroke(window, &piece, color, LINE_WIDTH, &transform);
+                    self.paint_markers(&piece, color, px(3.0), &transform, window, cx);
                 }
             }
             // hidden ones under the mouse in the list dashed, shown ones solid
@@ -852,6 +898,7 @@ impl Scene {
                     } else {
                         stroke(window, &piece, trace.color, HIGHLIGHT_WIDTH, &transform);
                     }
+                    self.paint_markers(&piece, trace.color, px(4.0), &transform, window, cx);
                 }
             }
             if let Some((start, current)) = self.zoom_box {
@@ -883,6 +930,37 @@ impl Scene {
         let at = window.mouse_position();
         if self.hover.is_some() && area.contains(&at) && !cx.has_active_drag() {
             self.paint_readout(at, area, &transform, window, cx);
+        }
+    }
+
+    /// A dot on each point of a room acoustics plot: the values are per band, the lines
+    /// between them only guide the eye.
+    fn paint_markers(
+        &self,
+        points: &[(f64, f64)],
+        color: Hsla,
+        radius: Pixels,
+        transform: &Transform,
+        window: &mut Window,
+        cx: &App,
+    ) {
+        if !self.kind.is_room() {
+            return;
+        }
+        for &p in points {
+            let center = transform.to_screen(p);
+            window.paint_quad(
+                fill(
+                    Bounds::new(
+                        point(center.x - radius, center.y - radius),
+                        size(radius * 2.0, radius * 2.0),
+                    ),
+                    color,
+                )
+                .corner_radii(radius)
+                .border_widths(px(1.0))
+                .border_color(palette::editor(cx)),
+            );
         }
     }
 
@@ -928,7 +1006,12 @@ impl Scene {
                     runs
                 }
             }
-            Series::Points(points) => vec![decimate(points, self.view.x, transform.width)],
+            // in pieces, with gaps where a value is missing, e.g. a band without a decay time
+            Series::Points(points) => decimate(points, self.view.x, transform.width)
+                .split(|p| !p.1.is_finite())
+                .filter(|piece| !piece.is_empty())
+                .map(<[_]>::to_vec)
+                .collect(),
         }
     }
 
@@ -1203,8 +1286,16 @@ fn default_view(kind: PlotKind) -> View {
             x: (0.0, 500.0),
             y: (-1.0, 1.0),
         },
+        PlotKind::Room(parameter) => View {
+            x: OCTAVE_RANGE,
+            y: parameter.default_range(),
+        },
     }
 }
+
+/// The octave bands from 63 Hz to 8 kHz, with half an octave to spare on each side, in log10
+/// Hz.
+pub const OCTAVE_RANGE: (f64, f64) = (1.645_365_019_512_085, 4.053_604_984_823_934);
 
 /// Strokes the polyline through `points` (plot units).
 fn stroke(
