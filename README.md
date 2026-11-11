@@ -121,7 +121,7 @@ Play a sweep on a speaker, record it with a microphone and deconvolve. Several s
 mics work the same way, see `examples/measure_impulse_response.rs`. For live measurements with
 noise, see `examples/live_noise.rs`.
 
-```rust,no_run
+```rust
 use audio_lab::signal::measure::{SequenceConfig, Step};
 use audio_lab::signal::playback::{DeviceConfig, play_and_record};
 use audio_lab::{dsp, signal};
