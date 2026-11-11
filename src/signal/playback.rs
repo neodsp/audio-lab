@@ -28,6 +28,8 @@ pub enum PlaybackError {
     Stream(#[from] StreamError),
     #[error("The audio device stopped calling back before the recording finished")]
     Timeout,
+    #[error("The recording was stopped")]
+    Cancelled,
 }
 
 /// Which devices to use and how to open the stream.
@@ -129,6 +131,18 @@ pub fn play_and_record(
     config: &SequenceConfig,
     device: &DeviceConfig,
 ) -> Result<Vec<TimeSignal>, PlaybackError> {
+    play_and_record_cancellable(steps, config, device, &AtomicBool::new(false))
+}
+
+/// Like [`play_and_record`], but stops early with [`PlaybackError::Cancelled`] once `cancel`
+/// is set, e.g. from another thread when the user stops the measurement. The stream is
+/// stopped within a few tens of milliseconds, and no further attempt is made.
+pub fn play_and_record_cancellable(
+    steps: Vec<Step>,
+    config: &SequenceConfig,
+    device: &DeviceConfig,
+    cancel: &AtomicBool,
+) -> Result<Vec<TimeSignal>, PlaybackError> {
     // validated before opening a device
     let sequence = Sequence::new(steps.clone(), config)?;
     let stream_config = device.stream_config(
@@ -144,7 +158,7 @@ pub fn play_and_record(
             Some(sequence) => sequence,
             None => Sequence::new(steps.clone(), config)?,
         };
-        match record_once(next, stream_config.clone(), device) {
+        match record_once(next, stream_config.clone(), device, cancel) {
             Err(PlaybackError::Dropouts(_)) if attempt < device.attempts => attempt += 1,
             result => return result.map(Sequence::into_recordings),
         }
@@ -157,6 +171,7 @@ fn record_once(
     sequence: Sequence,
     stream_config: Config,
     device: &DeviceConfig,
+    cancel: &AtomicBool,
 ) -> Result<Sequence, PlaybackError> {
     let duration = Duration::from_secs_f64(sequence.total_frames() as f64 / sequence.sample_rate());
     let mut host = device.open()?;
@@ -186,8 +201,15 @@ fn record_once(
     // dropouts while the device starts up don't touch the recording. Counted before the
     // measurement starts, so a dropout right at the start counts rather than being missed.
     let settled = Instant::now() + device.settle;
-    while Instant::now() < settled && host.status().error.is_none() {
+    while Instant::now() < settled
+        && host.status().error.is_none()
+        && !cancel.load(Ordering::Relaxed)
+    {
         std::thread::sleep(Duration::from_millis(10).min(settled - Instant::now()));
+    }
+    if cancel.load(Ordering::Relaxed) {
+        host.stop()?;
+        return Err(PlaybackError::Cancelled);
     }
     let xruns_before = host.status().xruns;
     start.store(true, Ordering::Release);
@@ -201,6 +223,9 @@ fn record_once(
                 break Err(PlaybackError::Timeout);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                if cancel.load(Ordering::Relaxed) {
+                    break Err(PlaybackError::Cancelled);
+                }
                 if let Some(error) = host.status().error {
                     break Err(error.into());
                 }

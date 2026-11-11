@@ -2,15 +2,19 @@
 
 use std::f64::consts::TAU;
 use std::ops::Range;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use audio_lab::dsp::{ConvolveMode, DeconvolutionConfig, convolve, deconvolve, window_and_trim};
 use audio_lab::signal::measure::{SequenceConfig, Step};
 use audio_lab::signal::ndarray::{Array2, Axis};
-use audio_lab::signal::playback::{DeviceConfig, play_and_record};
+use audio_lab::signal::playback::{DeviceConfig, play_and_record_cancellable};
 use audio_lab::signal::{FreqSignal, SweepConfig, SweepType, TimeSignal, generate_sweep};
+use chrono::{DateTime, Local};
 use num::complex::Complex64;
+
+use crate::live::LiveRequest;
 
 /// Silence before the first sweep.
 const WARMUP: Duration = Duration::from_millis(300);
@@ -26,6 +30,8 @@ pub struct Channel {
 
 /// Everything the setup panel lets you choose.
 pub struct Settings {
+    /// Measure live with noise instead of with sweeps.
+    pub live: bool,
     /// Name of the next measurement.
     pub name: String,
     /// Measure a simulated room instead of a device, to try the app without hardware.
@@ -48,11 +54,14 @@ pub struct Settings {
     pub tail_ms: f64,
     /// How much of each impulse response is kept, after its start.
     pub ir_length_ms: f64,
+    /// Noise periods averaged per live update.
+    pub periods: usize,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            live: false,
             name: "Measurement 1".into(),
             simulated: false,
             output_device: None,
@@ -66,6 +75,7 @@ impl Default for Settings {
             freq_high: 20_000.0,
             tail_ms: 1500.0,
             ir_length_ms: 500.0,
+            periods: 4,
         }
     }
 }
@@ -90,8 +100,22 @@ impl Settings {
         if !self.inputs.iter().any(|c| c.enabled) {
             return Some("Choose at least one microphone.".into());
         }
+        // the curves and folders are named after them
+        for (channels, kind) in [(&self.outputs, "speaker"), (&self.inputs, "microphone")] {
+            if channels
+                .iter()
+                .any(|c| c.enabled && c.name.trim().is_empty())
+            {
+                return Some(format!("Give every {kind} a name."));
+            }
+            if let Some(name) = duplicate_name(channels) {
+                return Some(format!("Two {kind}s are called “{name}”."));
+            }
+        }
         let nyquist = f64::from(self.sample_rate) / 2.0;
-        if !(self.freq_low > 0.0 && self.freq_low < self.freq_high && self.freq_high <= nyquist) {
+        if !self.live
+            && !(self.freq_low > 0.0 && self.freq_low < self.freq_high && self.freq_high <= nyquist)
+        {
             return Some(format!(
                 "The frequency range must lie between 0 and {nyquist:.0} Hz."
             ));
@@ -99,22 +123,19 @@ impl Settings {
         None
     }
 
-    /// What to measure, for the background thread.
+    /// `None` for the simulated device.
+    fn device(&self) -> Option<DeviceConfig> {
+        (!self.simulated).then(|| DeviceConfig {
+            input_device: self.input_device.clone(),
+            output_device: self.output_device.clone(),
+            ..Default::default()
+        })
+    }
+
+    /// What to measure with sweeps, for the background thread.
     pub fn request(&self) -> Request {
-        let enabled = |channels: &[Channel]| {
-            channels
-                .iter()
-                .enumerate()
-                .filter(|(_, channel)| channel.enabled)
-                .map(|(index, channel)| (index as u16, channel.name.clone()))
-                .collect()
-        };
         Request {
-            device: (!self.simulated).then(|| DeviceConfig {
-                input_device: self.input_device.clone(),
-                output_device: self.output_device.clone(),
-                ..Default::default()
-            }),
+            device: self.device(),
             speakers: enabled(&self.outputs),
             mics: enabled(&self.inputs),
             sample_rate: f64::from(self.sample_rate),
@@ -125,6 +146,72 @@ impl Settings {
             ir_length: self.ir_length_ms / 1000.0,
         }
     }
+
+    /// What to measure live.
+    pub fn live_request(&self) -> LiveRequest {
+        LiveRequest {
+            device: self.device(),
+            speakers: enabled(&self.outputs),
+            mics: enabled(&self.inputs),
+            sample_rate: f64::from(self.sample_rate),
+            level_db: self.level_db,
+            periods: self.periods,
+        }
+    }
+}
+
+/// Whether two names are the same to a reader: whatever the case and the spaces around them.
+pub fn same_name(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
+}
+
+/// A name that two of the channels taking part share, if there is one.
+fn duplicate_name(channels: &[Channel]) -> Option<String> {
+    let enabled: Vec<&Channel> = channels.iter().filter(|c| c.enabled).collect();
+    enabled.iter().enumerate().find_map(|(index, channel)| {
+        enabled[index + 1..]
+            .iter()
+            .any(|other| same_name(&channel.name, &other.name))
+            .then(|| channel.name.trim().to_string())
+    })
+}
+
+/// Whether the `index`th channel takes part and another one that does has its name.
+pub fn is_duplicate(channels: &[Channel], index: usize) -> bool {
+    let Some(channel) = channels.get(index).filter(|c| c.enabled) else {
+        return false;
+    };
+    channels
+        .iter()
+        .enumerate()
+        .any(|(other, c)| other != index && c.enabled && same_name(&c.name, &channel.name))
+}
+
+/// Whether to mark the `index`th channel as having a taken name. Of the channels taking part
+/// that share a name, one is marked, so that the field being edited isn't lost among red
+/// ones: the one `edited` last, or else those after the first.
+pub fn is_marked(channels: &[Channel], index: usize, edited: Option<usize>) -> bool {
+    if !is_duplicate(channels, index) {
+        return false;
+    }
+    let name = &channels[index].name;
+    let sharing: Vec<usize> = (0..channels.len())
+        .filter(|&i| channels[i].enabled && same_name(&channels[i].name, name))
+        .collect();
+    match edited {
+        Some(edited) if sharing.contains(&edited) => edited == index,
+        _ => index != sharing[0],
+    }
+}
+
+/// The channels that take part: their number and name.
+fn enabled(channels: &[Channel]) -> Vec<(u16, String)> {
+    channels
+        .iter()
+        .enumerate()
+        .filter(|(_, channel)| channel.enabled)
+        .map(|(index, channel)| (index as u16, channel.name.clone()))
+        .collect()
 }
 
 fn resize(channels: &mut Vec<Channel>, len: u16, prefix: &str) {
@@ -157,6 +244,10 @@ pub struct Request {
 }
 
 impl Request {
+    pub fn is_simulated(&self) -> bool {
+        self.device.is_none()
+    }
+
     /// About how long the measurement takes.
     pub fn duration(&self) -> Duration {
         let Some(device) = &self.device else {
@@ -165,9 +256,44 @@ impl Request {
         let sweep = Duration::from_secs_f64(self.sweep_len as f64 / self.sample_rate);
         device.settle + WARMUP + (sweep + self.tail) * self.speakers.len() as u32
     }
+
+    /// How it measures, a line each, for the info of the measurement.
+    pub fn describe(&self) -> Vec<String> {
+        vec![
+            format!(
+                "Sweep of {:.1} s, {:.0}–{:.0} Hz, {:.0} dBFS",
+                self.sweep_len as f64 / self.sample_rate,
+                self.range.start,
+                self.range.end,
+                self.level_db
+            ),
+            format!(
+                "Tail {:.0} ms, IR window {:.0} ms",
+                self.tail.as_secs_f64() * 1000.0,
+                self.ir_length * 1000.0
+            ),
+            describe_device(self.device.as_ref(), self.sample_rate),
+        ]
+    }
 }
 
-/// The response from one speaker to one mic.
+/// The devices and the sample rate, for the info of a measurement.
+pub fn describe_device(device: Option<&DeviceConfig>, sample_rate: f64) -> String {
+    let rate = format!("{:.0} Hz", sample_rate);
+    let Some(device) = device else {
+        return format!("Simulated device, {rate}");
+    };
+    let name = |name: &Option<String>| name.clone().unwrap_or_else(|| "system default".into());
+    format!(
+        "{} → {}, {rate}",
+        name(&device.output_device),
+        name(&device.input_device)
+    )
+}
+
+/// The response from one speaker to one mic, from a sweep or live noise. With noise on several
+/// speakers at once, `speaker` names all of them.
+#[derive(Clone)]
 pub struct Response {
     pub speaker: String,
     pub mic: String,
@@ -177,6 +303,9 @@ pub struct Response {
     pub start: usize,
     /// The frequency response, with the phase relative to the impulse response's peak.
     pub frequency_response: FreqSignal,
+    /// How far each frequency can be trusted, from 0 to 1 (in the real part), for a live
+    /// measurement: where it is low, room noise or distortion dominate. `None` for a sweep.
+    pub coherence: Option<FreqSignal>,
     /// Peak level of the recording in dBFS.
     pub peak_db: f64,
 }
@@ -187,37 +316,26 @@ pub struct Outcome {
     pub warnings: Vec<String>,
 }
 
-/// A measurement running on a background thread.
+/// A measurement that is running: what it measures and how far along it is. The work itself
+/// runs as a background task of the app.
 pub struct Job {
-    rx: Receiver<Result<Outcome, String>>,
     started: Instant,
+    /// Set to stop it: the device stops within a few tens of milliseconds.
+    cancel: Arc<AtomicBool>,
+    /// When it started, by the clock.
+    pub started_at: DateTime<Local>,
     expected: Duration,
     pub request: Request,
 }
 
 impl Job {
-    pub fn start(request: Request, ctx: &eframe::egui::Context) -> Self {
-        let (tx, rx) = mpsc::channel();
-        let ctx = ctx.clone();
-        let job_request = request.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(run(&job_request));
-            ctx.request_repaint();
-        });
+    pub fn new(request: Request) -> Self {
         Self {
-            rx,
             started: Instant::now(),
+            cancel: Arc::default(),
+            started_at: Local::now(),
             expected: request.duration(),
             request,
-        }
-    }
-
-    /// The result once the measurement is done.
-    pub fn poll(&self) -> Option<Result<Outcome, String>> {
-        match self.rx.try_recv() {
-            Ok(result) => Some(result),
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some(Err("the measurement thread crashed".into())),
         }
     }
 
@@ -229,12 +347,29 @@ impl Job {
         (self.started.elapsed().as_secs_f32() / self.expected.as_secs_f32()).min(0.99)
     }
 
+    /// Stops it: [`run`] returns early, and what it found is thrown away.
+    pub fn stop(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// For [`run`], to tell it to stop.
+    pub fn cancel(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel)
+    }
+
     pub fn remaining(&self) -> Duration {
         self.expected.saturating_sub(self.started.elapsed())
     }
 }
 
-fn run(request: &Request) -> Result<Outcome, String> {
+/// Plays the sweeps and records, or simulates that, and finds the responses. Blocks until done,
+/// or until `cancel` is set.
+pub fn run(request: &Request, cancel: &AtomicBool) -> Result<Outcome, String> {
+    let stopped = || cancel.load(Ordering::Relaxed);
     let sample_rate = request.sample_rate;
     let sweep = generate_sweep(
         request.sweep_len,
@@ -264,9 +399,10 @@ fn run(request: &Request) -> Result<Outcome, String> {
                 .iter()
                 .map(|(output, _)| Step::new(vec![*output], sweep.clone()))
                 .collect();
-            play_and_record(steps, &config, device).map_err(|error| error.to_string())?
+            play_and_record_cancellable(steps, &config, device, cancel)
+                .map_err(|error| error.to_string())?
         }
-        None => simulate(&sweep, request)?,
+        None => simulate(&sweep, request, cancel)?,
     };
 
     let deconvolution = DeconvolutionConfig::default().with_frequency_range(request.range.clone());
@@ -276,6 +412,9 @@ fn run(request: &Request) -> Result<Outcome, String> {
     };
     for ((_, speaker), recording) in request.speakers.iter().zip(&recordings) {
         for (index, (_, mic)) in request.mics.iter().enumerate() {
+            if stopped() {
+                return Err(STOPPED.into());
+            }
             let label = format!("{speaker} → {mic}");
             let recorded = channel(recording, index);
             let peak = recorded
@@ -301,6 +440,7 @@ fn run(request: &Request) -> Result<Outcome, String> {
                 speaker: speaker.clone(),
                 mic: mic.clone(),
                 frequency_response: response_from_peak(&impulse_response),
+                coherence: None,
                 impulse_response,
                 start: starts[0],
                 peak_db: 20.0 * peak.log10(),
@@ -352,9 +492,16 @@ fn channel(signal: &TimeSignal, index: usize) -> TimeSignal {
     TimeSignal::new(data, signal.sample_rate()).expect("valid sample rate")
 }
 
+/// Why [`run`] returned early.
+const STOPPED: &str = "The measurement was stopped.";
+
 /// Recordings like `play_and_record` returns them, from a made-up room: each speaker reaches
 /// each mic with its own delay, a speaker-like band limit, a few reflections and reverb.
-fn simulate(sweep: &TimeSignal, request: &Request) -> Result<Vec<TimeSignal>, String> {
+fn simulate(
+    sweep: &TimeSignal,
+    request: &Request,
+    cancel: &AtomicBool,
+) -> Result<Vec<TimeSignal>, String> {
     let sample_rate = request.sample_rate;
     let len = request.sweep_len + (request.tail.as_secs_f64() * sample_rate) as usize;
     let mut noise = Lcg(1);
@@ -364,6 +511,9 @@ fn simulate(sweep: &TimeSignal, request: &Request) -> Result<Vec<TimeSignal>, St
         .map(|&(speaker, _)| {
             let mut recording = Array2::zeros((request.mics.len(), len));
             for (index, &(mic, _)) in request.mics.iter().enumerate() {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(STOPPED.to_string());
+                }
                 let ir = simulated_room(speaker, mic, sample_rate, &mut noise);
                 let heard = convolve(sweep, &ir, ConvolveMode::Full).map_err(|e| e.to_string())?;
                 for (dst, src) in recording
@@ -381,7 +531,7 @@ fn simulate(sweep: &TimeSignal, request: &Request) -> Result<Vec<TimeSignal>, St
 }
 
 /// A made-up impulse response from `speaker` to `mic`.
-fn simulated_room(speaker: u16, mic: u16, sample_rate: f64, noise: &mut Lcg) -> TimeSignal {
+pub fn simulated_room(speaker: u16, mic: u16, sample_rate: f64, noise: &mut Lcg) -> TimeSignal {
     let samples = |ms: f64| (ms / 1000.0 * sample_rate) as usize;
     let mut ir = vec![0.0; samples(400.0)];
     // device latency plus the distance, different for every pair
@@ -419,10 +569,10 @@ fn simulated_room(speaker: u16, mic: u16, sample_rate: f64, noise: &mut Lcg) -> 
 }
 
 /// Repeatable noise between -1 and 1.
-struct Lcg(u64);
+pub struct Lcg(pub u64);
 
 impl Lcg {
-    fn next(&mut self) -> f64 {
+    pub fn next(&mut self) -> f64 {
         self.0 = self
             .0
             .wrapping_mul(6_364_136_223_846_793_005)
@@ -444,7 +594,7 @@ mod tests {
         settings.sync_channels(SIMULATED_CHANNELS, SIMULATED_CHANNELS);
         settings.outputs[1].enabled = true;
         settings.inputs[2].enabled = true;
-        let outcome = run(&settings.request()).unwrap();
+        let outcome = run(&settings.request(), &AtomicBool::new(false)).unwrap();
         assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
         assert_eq!(outcome.responses.len(), 4);
         let names: Vec<_> = outcome
@@ -464,6 +614,57 @@ mod tests {
         // the latency of the simulated room
         let start_ms = outcome.responses[0].start as f64 / 48.0;
         assert!((115.0..121.0).contains(&start_ms), "{start_ms}");
+    }
+
+    #[test]
+    fn speakers_and_mics_need_names_of_their_own() {
+        let mut settings = Settings::default();
+        settings.sync_channels(2, 2);
+        for channel in settings.outputs.iter_mut().chain(&mut settings.inputs) {
+            channel.enabled = true;
+        }
+        assert_eq!(settings.problem(), None);
+
+        settings.outputs[1].name = " speaker 1 ".into();
+        assert_eq!(
+            settings.problem().as_deref(),
+            Some("Two speakers are called “Speaker 1”.")
+        );
+        assert!(is_duplicate(&settings.outputs, 0) && is_duplicate(&settings.outputs, 1));
+        // a speaker that doesn't take part may share its name
+        settings.outputs[1].enabled = false;
+        assert_eq!(settings.problem(), None);
+        assert!(!is_duplicate(&settings.outputs, 0));
+
+        // of those sharing a name, the one edited is marked, else the later ones
+        settings.outputs[1].enabled = true;
+        assert!(is_marked(&settings.outputs, 0, Some(0)));
+        assert!(!is_marked(&settings.outputs, 1, Some(0)));
+        assert!(!is_marked(&settings.outputs, 0, None));
+        assert!(is_marked(&settings.outputs, 1, None));
+        settings.outputs[1].enabled = false;
+
+        settings.inputs[0].name = "  ".into();
+        assert_eq!(
+            settings.problem().as_deref(),
+            Some("Give every microphone a name.")
+        );
+    }
+
+    #[test]
+    fn a_stopped_measurement_finds_nothing() {
+        let mut settings = Settings {
+            simulated: true,
+            ..Default::default()
+        };
+        settings.sync_channels(SIMULATED_CHANNELS, SIMULATED_CHANNELS);
+        let job = Job::new(settings.request());
+        job.stop();
+        assert!(job.is_stopped());
+        assert_eq!(
+            run(&job.request, &job.cancel()).err().as_deref(),
+            Some(STOPPED)
+        );
     }
 
     #[test]

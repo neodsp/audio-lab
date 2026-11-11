@@ -165,3 +165,15 @@ All of these are enabled by default, except `serde`:
 - `serde`: `Serialize` and `Deserialize` for the signal types.
 
 <!-- cargo-rdme end -->
+
+## Measurement app
+
+`apps/measurement` is a desktop app, built on `audio-lab` with GPUI, for measuring impulse and
+frequency responses with sweeps or live noise and comparing them. A simulated device lets you
+try it without audio hardware.
+
+```sh
+cargo run --release -p measurement-app
+```
+
+![The measurement app showing the smoothed magnitude responses of two speakers](apps/measurement/screenshot.png)
