@@ -13,6 +13,7 @@ pub mod filter_bank;
 pub mod fractional_octave;
 pub mod frequency;
 pub mod pad;
+pub mod room_acoustics;
 pub mod stft;
 pub mod time;
 pub mod transfer_function;
@@ -26,6 +27,7 @@ pub use fractional_octave::{
 };
 pub use frequency::{FrequencyError, group_delay};
 pub use pad::{PadMode, pad_zeros};
+pub use room_acoustics::{EnergyDecay, EnergyDecayConfig, RoomAcousticsError, energy_decay_curve};
 pub use stft::{StftConfig, StftError, stft};
 pub use time::{
     TimeError, TimeShiftMode, apply_gain, apply_gain_db, find_impulse_response_start, resample,

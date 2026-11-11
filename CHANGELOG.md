@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measurement-app`): a side bar of all measurements, grouped by run, a setup panel for devices,
   speakers, mics and the sweep, and tabs for magnitude, phase and impulse responses. A simulated
   device lets you try it without hardware.
+- `dsp::energy_decay_curve`: the Schroeder energy decay curve of an impulse response. It stops
+  where the decay meets the noise floor, so the noise doesn't flatten the end of the curve.
 - `FractionalOctaveSmoothingMode::Complex`: smooths the real and imaginary parts, so the phase
   is smoothed too.
 - `signal::audio_blocks`: re-export of `audio-blocks`, whose block types `Sequence` processes.
