@@ -34,7 +34,7 @@ jobs:
 
       - name: Check that the tag matches the version in Cargo.toml
         run: |
-          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "audio-lab") | .version')
           if [ "$version" != "$GITHUB_REF_NAME" ]; then
             echo "::error::Tag $GITHUB_REF_NAME doesn't match the Cargo.toml version $version"
             exit 1
