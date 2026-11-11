@@ -1,7 +1,13 @@
-/// Plot a synthetic transfer function before and after third-octave smoothing.
-///
-/// The original response contains narrow peaks, dips, and ripple so the
-/// smoothing effect is easy to see in the frequency plot.
+//! Fractional-octave smoothing of a frequency response.
+//!
+//! Builds a synthetic transfer function with narrow peaks, dips and ripple, smooths it to 1/3
+//! octave with `smooth_fractional_octave`, and plots both. It prints the requested and the
+//! actual smoothing width.
+//!
+//! ```sh
+//! cargo run --example fractional_octave_smoothing
+//! ```
+
 use audio_lab::dsp::{FractionalOctaveSmoothingConfig, smooth_fractional_octave};
 
 use audio_lab::signal::FreqSignal;

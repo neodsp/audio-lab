@@ -1,3 +1,12 @@
+//! The built-in test signals.
+//!
+//! Generates pink noise, a 440 Hz sine and an exponential sweep from 20 Hz to 20 kHz, 4096
+//! samples each, and plots them over time.
+//!
+//! ```sh
+//! cargo run --example show_test_signals
+//! ```
+
 use audio_lab::plot::show_time;
 use audio_lab::signal::{
     NoiseConfig, SineConfig, Spectrum, SweepConfig, SweepType, generate_noise, generate_sine,
