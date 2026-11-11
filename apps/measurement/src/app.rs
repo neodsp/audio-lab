@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use chrono::{DateTime, Local};
 use gpui_kit::base::FocusableExt as _;
+use gpui_kit::base::Selectable as _;
 use gpui_kit::base::actions::{SelectDown, SelectUp};
-use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
@@ -29,12 +30,19 @@ use crate::measure::same_name;
 use crate::measure::{self, Job, Outcome, Response};
 use crate::panes::{Panes, Side, Target};
 use crate::plot::{FrequencyChanged, Plot, PlotKind, Series, Trace};
+use crate::room::{self, Parameter};
 use crate::setup::{Setup, SetupEvent, hint, name_clash, next_name};
 use crate::theme::{self, ShownThemes, ThemeList, palette, trace_color};
 
 actions!(
     measurement,
-    [NewMeasurement, ShowMagnitude, ShowPhase, ShowImpulse]
+    [
+        NewMeasurement,
+        ShowMagnitude,
+        ShowPhase,
+        ShowImpulse,
+        ShowRoom
+    ]
 );
 
 pub fn bind_keys(cx: &mut App) {
@@ -43,6 +51,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("alt-1", ShowMagnitude, None),
         KeyBinding::new("alt-2", ShowPhase, None),
         KeyBinding::new("alt-3", ShowImpulse, None),
+        KeyBinding::new("alt-4", ShowRoom, None),
     ]);
 }
 
@@ -57,17 +66,24 @@ enum Tab {
     Magnitude,
     Phase,
     Impulse,
+    /// A room acoustics parameter per octave band.
+    Room,
 }
 
 impl Tab {
-    const ALL: [Tab; 3] = [Tab::Magnitude, Tab::Phase, Tab::Impulse];
+    const ALL: [Tab; 4] = [Tab::Magnitude, Tab::Phase, Tab::Impulse, Tab::Room];
 
     fn title(self) -> &'static str {
         match self {
             Tab::Magnitude => "Magnitude",
             Tab::Phase => "Phase",
             Tab::Impulse => "Impulse response",
+            Tab::Room => "Room acoustics",
         }
+    }
+
+    fn is_frequency(self) -> bool {
+        matches!(self, Tab::Magnitude | Tab::Phase)
     }
 }
 
@@ -254,12 +270,15 @@ pub struct MeasurementApp {
     /// 1/N octave.
     smoothing: f64,
     smoothing_slider: Entity<SliderState>,
+    /// What the room acoustics tab shows.
+    room_parameter: Parameter,
     theme_select: Entity<SelectState<ThemeList>>,
     shown_themes: ShownThemes,
     setup: Entity<Setup>,
     magnitude: Entity<Plot>,
     phase: Entity<Plot>,
     impulse: Entity<Plot>,
+    room: Entity<Plot>,
     job: Option<Job>,
     _job_task: Option<Task<()>>,
     live: Option<LiveRun>,
@@ -368,12 +387,14 @@ impl MeasurementApp {
             smoothing_enabled: true,
             smoothing,
             smoothing_slider,
+            room_parameter: Parameter::T30,
             theme_select,
             shown_themes,
             setup,
             magnitude,
             phase,
             impulse: cx.new(|_| Plot::new(PlotKind::Impulse)),
+            room: cx.new(|_| Plot::new(PlotKind::Room(Parameter::T30))),
             job: None,
             _job_task: None,
             live: None,
@@ -1052,7 +1073,7 @@ impl MeasurementApp {
             return;
         };
         self.highlight = highlight.clone();
-        for plot in [&self.magnitude, &self.phase, &self.impulse] {
+        for plot in [&self.magnitude, &self.phase, &self.impulse, &self.room] {
             plot.update(cx, |plot, cx| plot.set_highlight(highlight.clone(), cx));
         }
         // hidden ones among them are shown while the mouse is over them
@@ -1139,9 +1160,10 @@ impl MeasurementApp {
     }
 
     fn refresh_plot(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        let room_parameter = self.room_parameter;
         let smoothing = self.smoothing();
         let min_coherence = self.min_coherence;
-        let frequency = tab != Tab::Impulse;
+        let frequency = tab.is_frequency();
         let mut range = (f64::INFINITY, 0.0f64);
         let mut traces = Vec::new();
         // the live curves last, so on top
@@ -1155,7 +1177,13 @@ impl MeasurementApp {
                 if !preview {
                     range = (range.0.min(m.range.0), range.1.max(m.range.1));
                 }
-                let series = if frequency {
+                let series = if tab == Tab::Room {
+                    // only sweep measurements have room acoustics
+                    let Some(acoustics) = &m.response.room else {
+                        continue;
+                    };
+                    Series::Points(Rc::new(room_parameter.points(acoustics)))
+                } else if frequency {
                     if m.curves.as_ref().is_none_or(|c| c.smoothing != smoothing) {
                         m.curves = Some(Rc::new(Curves::new(
                             &m.response.frequency_response,
@@ -1181,8 +1209,17 @@ impl MeasurementApp {
         if !range.0.is_finite() {
             range = (20.0, 20_000.0);
         }
-        self.plot(tab)
-            .update(cx, |plot, cx| plot.set_traces(traces, range, cx));
+        if tab == Tab::Room {
+            // the octave bands, with half an octave to spare
+            let (low, high) = (room::BANDS[0], room::BANDS[room::BANDS.len() - 1]);
+            range = (low / 2f64.sqrt(), high * 2f64.sqrt());
+        }
+        self.plot(tab).update(cx, |plot, cx| {
+            plot.set_traces(traces, range, cx);
+            if tab == Tab::Room {
+                plot.set_kind(PlotKind::Room(room_parameter), cx);
+            }
+        });
     }
 
     fn plot(&self, tab: Tab) -> &Entity<Plot> {
@@ -1190,6 +1227,7 @@ impl MeasurementApp {
             Tab::Magnitude => &self.magnitude,
             Tab::Phase => &self.phase,
             Tab::Impulse => &self.impulse,
+            Tab::Room => &self.room,
         }
     }
 
@@ -2008,7 +2046,8 @@ impl MeasurementApp {
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let frequency = self.panes.visible().any(|tab| tab != Tab::Impulse);
+        let frequency = self.panes.visible().any(Tab::is_frequency);
+        let room = self.panes.visible().any(|tab| tab == Tab::Room);
         // only live measurements and their snapshots know their coherence
         let coherence = frequency
             && self
@@ -2050,6 +2089,7 @@ impl MeasurementApp {
                         .child(format!("1/{:.0} octave", self.smoothing)),
                 )
             })
+            .when(room, |this| this.child(self.render_room_parameters(cx)))
             .when(coherence, |this| {
                 this.child(
                     div()
@@ -2114,6 +2154,31 @@ impl MeasurementApp {
                 .into_any_element();
         }
         self.plot(tab).clone().into_any_element()
+    }
+
+    /// Which parameter the room acoustics table shows.
+    fn render_room_parameters(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        Parameter::ALL
+            .into_iter()
+            .enumerate()
+            .fold(
+                ButtonGroup::new("room-parameter").xsmall().outline(),
+                |group, (ix, parameter)| {
+                    group.child(
+                        Button::new(("room-parameter", ix))
+                            .label(parameter.label())
+                            .selected(parameter == self.room_parameter)
+                            .tooltip(parameter.description()),
+                    )
+                },
+            )
+            .on_click(cx.listener(|this, clicked: &Vec<usize>, _, cx| {
+                if let Some(&ix) = clicked.first() {
+                    this.room_parameter = Parameter::ALL[ix];
+                    this.refresh_plot(Tab::Room, cx);
+                    cx.notify();
+                }
+            }))
     }
 
     fn render_status_bar(&self, cx: &App) -> impl IntoElement {
@@ -2219,6 +2284,7 @@ impl Render for MeasurementApp {
             )
             .on_action(cx.listener(|this, _: &ShowPhase, _, cx| this.set_tab(Tab::Phase, cx)))
             .on_action(cx.listener(|this, _: &ShowImpulse, _, cx| this.set_tab(Tab::Impulse, cx)))
+            .on_action(cx.listener(|this, _: &ShowRoom, _, cx| this.set_tab(Tab::Room, cx)))
             .size_full()
             .bg(palette::editor(cx))
             .text_color(palette::text(cx))
@@ -2465,6 +2531,25 @@ fn details(response: &Response) -> Vec<SharedString> {
         lines.push(format!("IR start: {:.2} ms (with latency)", ms(response.start)).into());
     }
     lines.push(format!("IR peak: {:.2} ms (with latency)", ms(peak)).into());
+    if let Some(broadband) = response
+        .room
+        .as_ref()
+        .and_then(|room| room.broadband.as_ref())
+    {
+        let values = |parameters: &[Parameter]| {
+            parameters
+                .iter()
+                .map(|p| {
+                    let value = p.value(broadband).map_or("–".into(), |v| p.format(v));
+                    format!("{} {value}", p.label())
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let [t20, t30, edt, c50, c80, d50] = Parameter::ALL;
+        lines.push(format!("Broadband: {}", values(&[t20, t30, edt])).into());
+        lines.push(format!("Broadband: {}", values(&[c50, c80, d50])).into());
+    }
     lines
 }
 
