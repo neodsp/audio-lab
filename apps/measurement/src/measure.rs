@@ -15,6 +15,7 @@ use chrono::{DateTime, Local};
 use num::complex::Complex64;
 
 use crate::live::LiveRequest;
+use crate::room::{self, RoomAcoustics};
 
 /// Silence before the first sweep.
 const WARMUP: Duration = Duration::from_millis(300);
@@ -308,6 +309,9 @@ pub struct Response {
     pub coherence: Option<FreqSignal>,
     /// Peak level of the recording in dBFS.
     pub peak_db: f64,
+    /// The room acoustics, from the impulse response without its window. `None` for a live
+    /// measurement: its impulse response is only as long as a noise period.
+    pub room: Option<RoomAcoustics>,
 }
 
 pub struct Outcome {
@@ -406,6 +410,7 @@ pub fn run(request: &Request, cancel: &AtomicBool) -> Result<Outcome, String> {
     };
 
     let deconvolution = DeconvolutionConfig::default().with_frequency_range(request.range.clone());
+    let filters = room::Filters::new(sample_rate);
     let mut outcome = Outcome {
         responses: Vec::new(),
         warnings: Vec::new(),
@@ -436,6 +441,11 @@ pub fn run(request: &Request, cancel: &AtomicBool) -> Result<Outcome, String> {
                     continue;
                 }
             };
+            // the reverb and its noise, before the window cuts them off
+            let tail_len = recorded.num_time_steps().saturating_sub(request.sweep_len);
+            let room = filters
+                .as_ref()
+                .map(|filters| room::analyze(&room::decay_part(&ir, starts[0], tail_len), filters));
             outcome.responses.push(Response {
                 speaker: speaker.clone(),
                 mic: mic.clone(),
@@ -444,6 +454,7 @@ pub fn run(request: &Request, cancel: &AtomicBool) -> Result<Outcome, String> {
                 impulse_response,
                 start: starts[0],
                 peak_db: 20.0 * peak.log10(),
+                room,
             });
         }
     }
@@ -533,7 +544,9 @@ fn simulate(
 /// A made-up impulse response from `speaker` to `mic`.
 pub fn simulated_room(speaker: u16, mic: u16, sample_rate: f64, noise: &mut Lcg) -> TimeSignal {
     let samples = |ms: f64| (ms / 1000.0 * sample_rate) as usize;
-    let mut ir = vec![0.0; samples(400.0)];
+    // long enough for the reverb to fall far below the noise, so its decay can be measured,
+    // and short enough for the live simulation, which takes it as up to two noise periods
+    let mut ir = vec![0.0; samples(650.0)];
     // device latency plus the distance, different for every pair
     let direct = samples(120.0 + 2.5 * f64::from(speaker) + 1.1 * f64::from(mic));
     ir[direct] = 0.5;
@@ -541,9 +554,10 @@ pub fn simulated_room(speaker: u16, mic: u16, sample_rate: f64, noise: &mut Lcg)
         let at = direct + samples(delay_ms * (1.0 + 0.2 * f64::from(speaker)));
         ir[at] += gain;
     }
-    // reverb: decaying noise, about 0.35 s to fall by 60 dB
+    // reverb: decaying noise, about 0.35 s to fall by 60 dB, with about as much energy as the
+    // direct sound, like a few meters from the speaker in a living room
     let decay = (-6.9 / (0.35 * sample_rate)).exp();
-    let mut envelope = 0.005;
+    let mut envelope = 0.015;
     for sample in &mut ir[direct + samples(3.0)..] {
         *sample += envelope * noise.next();
         envelope *= decay;
@@ -614,6 +628,12 @@ mod tests {
         // the latency of the simulated room
         let start_ms = outcome.responses[0].start as f64 / 48.0;
         assert!((115.0..121.0).contains(&start_ms), "{start_ms}");
+        // and its reverb, about 0.35 s
+        for response in &outcome.responses {
+            let room = response.room.as_ref().unwrap();
+            let t30 = room.broadband.as_ref().and_then(|p| p.t30).unwrap().seconds;
+            assert!((0.3..0.4).contains(&t30), "{t30}");
+        }
     }
 
     #[test]
