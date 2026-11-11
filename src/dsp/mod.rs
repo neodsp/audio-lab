@@ -27,7 +27,11 @@ pub use fractional_octave::{
 };
 pub use frequency::{FrequencyError, group_delay};
 pub use pad::{PadMode, pad_zeros};
-pub use room_acoustics::{EnergyDecay, EnergyDecayConfig, RoomAcousticsError, energy_decay_curve};
+pub use room_acoustics::{
+    BandRoomParameters, DecayTime, EnergyDecay, EnergyDecayConfig, RoomAcousticsError,
+    RoomParameters, RoomParametersConfig, energy_decay_curve, room_parameters,
+    room_parameters_in_bands,
+};
 pub use stft::{StftConfig, StftError, stft};
 pub use time::{
     TimeError, TimeShiftMode, apply_gain, apply_gain_db, find_impulse_response_start, resample,
