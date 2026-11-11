@@ -1,3 +1,7 @@
+![The measurement app showing the smoothed magnitude responses of two speakers](apps/measurement/screenshot.png)
+
+*The [measurement app](#measurement-app), built on audio-lab.*
+
 <!-- cargo-rdme start -->
 
 # audio-lab
@@ -175,5 +179,3 @@ try it without audio hardware.
 ```sh
 cargo run --release -p measurement-app
 ```
-
-![The measurement app showing the smoothed magnitude responses of two speakers](apps/measurement/screenshot.png)
