@@ -29,7 +29,7 @@ pub use frequency::{FrequencyError, group_delay};
 pub use pad::{PadMode, pad_zeros};
 pub use room_acoustics::{
     BandRoomParameters, DecayTime, EnergyDecay, EnergyDecayConfig, RoomAcousticsError,
-    RoomParameters, RoomParametersConfig, energy_decay_curve, room_parameters,
+    RoomParameters, RoomParametersConfig, Truncation, energy_decay_curve, room_parameters,
     room_parameters_in_bands,
 };
 pub use stft::{StftConfig, StftError, stft};

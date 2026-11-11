@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   device lets you try it without hardware.
 - `dsp::energy_decay_curve`: the Schroeder energy decay curve of an impulse response. It stops
   where the decay meets the noise floor, so the noise doesn't flatten the end of the curve.
+  By default the stopping point is found with Lundeby's iterative method, which also subtracts
+  the noise and adds back the energy of the decay after that point (`Truncation::Lundeby`);
+  `Truncation::FixedMargin` stops a fixed margin above the noise floor instead.
 - `dsp::room_parameters`: the ISO 3382-1 parameters of an impulse response: reverberation times
   T20 and T30, early decay time, clarity C50 and C80 and definition D50. T20 and T30 are only
   given if the dynamic range allows them. `dsp::room_parameters_in_bands` gives them per

@@ -44,22 +44,52 @@ pub enum RoomAcousticsError {
     Signal(#[from] SignalError),
 }
 
+/// How [`energy_decay_curve`] finds where the decay meets the noise floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Truncation {
+    /// Lundeby et al. (1995), "Uncertainties of measurements in room acoustics": fits a line to
+    /// the late decay, refines the noise floor and the point where the line meets it (the
+    /// crosspoint) a few times, and adds the energy the fitted decay would have had after the
+    /// crosspoint. That compensation keeps the end of the curve straight, so the T30 isn't
+    /// shortened when the dynamic range is tight. The noise floor is subtracted from the
+    /// squared impulse response before it is integrated, and from the levels the line is
+    /// fitted to, so the noise before the crosspoint doesn't lengthen the decay either. Then
+    /// the curve can rise by a sample's noise power where the noise happens to be quiet.
+    /// Falls back to
+    /// [`FixedMargin`](Self::FixedMargin) if no decay can be fitted.
+    #[default]
+    Lundeby,
+    /// Stops at the first block after the peak within
+    /// [`noise_margin_db`](EnergyDecayConfig::noise_margin_db) of the noise floor, which is the
+    /// mean power of the last [`noise_floor_fraction`](EnergyDecayConfig::noise_floor_fraction).
+    /// Nothing is added for the energy after that point, which bends the very end of the curve
+    /// down slightly.
+    FixedMargin,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnergyDecayConfig {
+    /// How the end of the integration is found.
+    pub truncation: Truncation,
     /// The last part of the impulse response, as a fraction of its length, that holds only
     /// noise. Its mean power is the noise floor. ISO 3382-1 and Lundeby use the last 10 %.
+    /// [`Lundeby`](Truncation::Lundeby) starts from it and then measures the noise from
+    /// shortly after the crosspoint, but never over less than this fraction.
     pub noise_floor_fraction: f64,
-    /// The integration stops at the first block after the peak whose mean power is at most
-    /// this much above the noise floor.
+    /// [`FixedMargin`](Truncation::FixedMargin) stops at the first block whose mean power is
+    /// at most this much above the noise floor. [`Lundeby`](Truncation::Lundeby) fits the
+    /// late decay down to this much above the floor.
     pub noise_margin_db: f64,
     /// Length of the blocks the squared impulse response is averaged over to find where the
-    /// decay meets the noise floor. 10 to 50 ms is common.
+    /// decay meets the noise floor. 10 to 50 ms is common. [`Lundeby`](Truncation::Lundeby)
+    /// starts with it and then picks a length from the decay rate.
     pub block_duration: Duration,
 }
 
 impl Default for EnergyDecayConfig {
     fn default() -> Self {
         Self {
+            truncation: Truncation::default(),
             noise_floor_fraction: 0.1,
             noise_margin_db: 5.0,
             block_duration: Duration::from_millis(10),
@@ -68,6 +98,11 @@ impl Default for EnergyDecayConfig {
 }
 
 impl EnergyDecayConfig {
+    pub fn with_truncation(mut self, truncation: Truncation) -> Self {
+        self.truncation = truncation;
+        self
+    }
+
     pub fn with_noise_floor_fraction(mut self, noise_floor_fraction: f64) -> Self {
         self.noise_floor_fraction = noise_floor_fraction;
         self
@@ -114,6 +149,9 @@ pub struct EnergyDecay {
     /// Per channel, the noise floor in dB relative to the peak power of the impulse response
     /// (its peak-to-noise ratio, negated). `-inf` for a noise-free impulse response.
     pub noise_floor_db: Vec<f64>,
+    /// Per channel, the energy added for the decay after the truncation point, as a fraction
+    /// of the curve's total energy. Only [`Lundeby`](Truncation::Lundeby) adds any.
+    pub compensation: Vec<f64>,
 }
 
 impl EnergyDecay {
@@ -132,13 +170,11 @@ impl EnergyDecay {
 /// e.g. with [`find_impulse_response_start`].
 ///
 /// Integrating the noise after the decay would flatten the end of the curve and lengthen
-/// reverberation times. So the noise floor is the mean power of the last
-/// [`noise_floor_fraction`](EnergyDecayConfig::noise_floor_fraction) of the impulse response,
-/// and the integration stops at the first block after the peak that is within
-/// [`noise_margin_db`](EnergyDecayConfig::noise_margin_db) of it. The energy that the decay
-/// would have had after that point is left out, which bends the very end of the curve down
-/// slightly. The end is taken as noise even if it is still part of the decay (e.g. a
-/// synthetic impulse response), so make it long enough for the decay to reach the floor.
+/// reverberation times, so the integration stops where the decay meets the noise floor, found
+/// as [`truncation`](EnergyDecayConfig::truncation) says. Both methods start from the noise
+/// in the last [`noise_floor_fraction`](EnergyDecayConfig::noise_floor_fraction) of the
+/// impulse response, even if it is still part of the decay (e.g. a synthetic impulse
+/// response), so make it long enough for the decay to reach the floor.
 pub fn energy_decay_curve(
     impulse_response: &TimeSignal,
     config: &EnergyDecayConfig,
@@ -151,12 +187,11 @@ pub fn energy_decay_curve(
     }
 
     let noise_len = ((len as f64 * config.noise_floor_fraction).ceil() as usize).clamp(1, len);
-    let noise_start = len - noise_len;
-    let margin = 10.0_f64.powf(config.noise_margin_db / 10.0);
 
     let mut curve = TimeSignal::zeros(impulse_response.num_channels(), len, sample_rate)?;
     let mut truncation = Vec::with_capacity(impulse_response.num_channels());
     let mut noise_floor_db = Vec::with_capacity(impulse_response.num_channels());
+    let mut compensation = Vec::with_capacity(impulse_response.num_channels());
 
     for (channel, (ir, mut edc)) in impulse_response
         .channel_iter()
@@ -173,30 +208,211 @@ pub fn energy_decay_curve(
             return Err(RoomAcousticsError::SilentChannel { channel });
         }
 
-        let noise_power = power[noise_start..].iter().sum::<f64>() / noise_len as f64;
-        let threshold = noise_power * margin;
-        let end = power
-            .chunks(block_len)
-            .enumerate()
-            .skip(peak_index / block_len + 1)
-            .find(|(_, block)| block.iter().sum::<f64>() / block.len() as f64 <= threshold)
-            .map_or(len, |(block, _)| block * block_len);
+        let lundeby = match config.truncation {
+            Truncation::Lundeby => lundeby(&power, peak_index, block_len, noise_len, config),
+            Truncation::FixedMargin => None,
+        };
+        let end = lundeby.unwrap_or_else(|| {
+            fixed_margin(
+                &power,
+                peak_index,
+                block_len,
+                noise_len,
+                config.noise_margin_db,
+            )
+        });
 
-        let mut energy = 0.0;
-        for (e, p) in edc.iter_mut().zip(&power).take(end).rev() {
-            energy += p;
-            *e = energy;
+        let mut energy = end.tail_energy;
+        for (e, p) in edc.iter_mut().zip(&power).take(end.end).rev() {
+            energy += p - end.subtracted_noise;
+            *e = energy.max(0.0);
         }
-        edc.iter_mut().take(end).for_each(|e| *e /= energy);
+        edc.iter_mut().take(end.end).for_each(|e| *e /= energy);
 
-        truncation.push(end);
-        noise_floor_db.push(power_to_db(noise_power / peak_power));
+        truncation.push(end.end);
+        noise_floor_db.push(power_to_db(end.noise_power / peak_power));
+        compensation.push(end.tail_energy / energy);
     }
 
     Ok(EnergyDecay {
         curve,
         truncation,
         noise_floor_db,
+        compensation,
+    })
+}
+
+/// Where the integration stops, the energy to add for the decay after that, and the noise.
+struct DecayEnd {
+    end: usize,
+    tail_energy: f64,
+    noise_power: f64,
+    /// Subtracted from every sample's power before integrating.
+    subtracted_noise: f64,
+}
+
+fn mean(values: &[f64]) -> f64 {
+    values.iter().sum::<f64>() / values.len() as f64
+}
+
+fn fixed_margin(
+    power: &[f64],
+    peak_index: usize,
+    block_len: usize,
+    noise_len: usize,
+    margin_db: f64,
+) -> DecayEnd {
+    let noise_power = mean(&power[power.len() - noise_len..]);
+    let threshold = noise_power * 10.0_f64.powf(margin_db / 10.0);
+    let end = power
+        .chunks(block_len)
+        .enumerate()
+        .skip(peak_index / block_len + 1)
+        .find(|(_, block)| mean(block) <= threshold)
+        .map_or(power.len(), |(block, _)| block * block_len);
+    DecayEnd {
+        end,
+        tail_energy: 0.0,
+        noise_power,
+        subtracted_noise: 0.0,
+    }
+}
+
+/// Blocks per 10 dB of decay once Lundeby knows the decay rate. The paper suggests 3 to 10.
+const LUNDEBY_BLOCKS_PER_10_DB: f64 = 5.0;
+/// The range of the late decay Lundeby fits, above the noise floor plus the margin. The paper
+/// suggests 10 to 20 dB.
+const LUNDEBY_FIT_RANGE_DB: f64 = 20.0;
+/// How far after the crosspoint the noise is measured, in dB of decay. The paper suggests 5
+/// to 10 dB.
+const LUNDEBY_NOISE_SAFETY_DB: f64 = 10.0;
+const LUNDEBY_MAX_ITERATIONS: usize = 5;
+
+/// A line `level_db = slope · n + offset`, `n` in samples.
+#[derive(Clone, Copy)]
+struct Line {
+    slope: f64,
+    offset: f64,
+}
+
+impl Line {
+    /// The sample where the line reaches `level_db`.
+    fn time_of(self, level_db: f64) -> f64 {
+        (level_db - self.offset) / self.slope
+    }
+}
+
+/// The mean power of blocks of `block_len` samples from the peak on, minus `noise_power`, in
+/// dB, at the block centres. Without the noise, the levels just above the floor don't bend
+/// the fitted line up.
+fn smoothed_decay(
+    power: &[f64],
+    peak_index: usize,
+    block_len: usize,
+    noise_power: f64,
+) -> Vec<(f64, f64)> {
+    let first = peak_index / block_len * block_len;
+    power[first..]
+        .chunks(block_len)
+        .enumerate()
+        .map(|(block, samples)| {
+            let centre = (first + block * block_len) as f64 + (samples.len() as f64 - 1.0) / 2.0;
+            (centre, power_to_db((mean(samples) - noise_power).max(0.0)))
+        })
+        .collect()
+}
+
+/// A least-squares line through the smoothed decay, from the first block at or below `upper`
+/// to the last block before the first one at or below `lower`.
+fn fit_smoothed(decay: &[(f64, f64)], upper: f64, lower: f64) -> Option<Line> {
+    let first = decay.iter().position(|(_, l)| *l <= upper)?;
+    let stop = decay[first..]
+        .iter()
+        .position(|(_, l)| *l <= lower)
+        .map_or(decay.len(), |i| first + i);
+    let points = &decay[first..stop];
+    if points.len() < 2 {
+        return None;
+    }
+    let count = points.len() as f64;
+    let mean_n = points.iter().map(|p| p.0).sum::<f64>() / count;
+    let mean_l = points.iter().map(|p| p.1).sum::<f64>() / count;
+    let cov: f64 = points.iter().map(|p| (p.0 - mean_n) * (p.1 - mean_l)).sum();
+    let var: f64 = points.iter().map(|p| (p.0 - mean_n).powi(2)).sum();
+    let slope = cov / var;
+    (slope < 0.0 && slope.is_finite()).then_some(Line {
+        slope,
+        offset: mean_l - slope * mean_n,
+    })
+}
+
+/// Lundeby's method. `None` if there is no noise or no decay to fit.
+fn lundeby(
+    power: &[f64],
+    peak_index: usize,
+    block_len: usize,
+    noise_len: usize,
+    config: &EnergyDecayConfig,
+) -> Option<DecayEnd> {
+    let len = power.len();
+    let margin_db = config.noise_margin_db;
+
+    // 1. to 4.: a first line from the peak down to the noise floor of the last part, and the
+    // point where it meets that floor.
+    let mut noise_power = mean(&power[len - noise_len..]);
+    if noise_power <= 0.0 {
+        return None;
+    }
+    let decay = smoothed_decay(power, peak_index, block_len, noise_power);
+    let mut line = fit_smoothed(&decay, f64::INFINITY, power_to_db(noise_power) + margin_db)?;
+    let mut crosspoint = line.time_of(power_to_db(noise_power));
+
+    for _ in 0..LUNDEBY_MAX_ITERATIONS {
+        // 5. and 6.: blocks short enough for several per 10 dB of decay.
+        let samples_per_10_db = -10.0 / line.slope;
+        let block_len = ((samples_per_10_db / LUNDEBY_BLOCKS_PER_10_DB).round() as usize).max(1);
+
+        // 7.: the noise from a bit after the crosspoint, over at least `noise_len` samples.
+        let safety = LUNDEBY_NOISE_SAFETY_DB / -line.slope;
+        let noise_start = ((crosspoint + safety).max(0.0) as usize).min(len - noise_len);
+        noise_power = mean(&power[noise_start..]);
+        if noise_power <= 0.0 {
+            return None;
+        }
+        let noise_db = power_to_db(noise_power);
+        let decay = smoothed_decay(power, peak_index, block_len, noise_power);
+
+        // 8. and 9.: a line through the late decay, and where it meets the noise.
+        let Some(late) = fit_smoothed(
+            &decay,
+            noise_db + margin_db + LUNDEBY_FIT_RANGE_DB,
+            noise_db + margin_db,
+        ) else {
+            break;
+        };
+        line = late;
+        let previous = crosspoint;
+        crosspoint = line.time_of(noise_db);
+        if (crosspoint - previous).abs() <= 1e-3 * previous.abs() {
+            break;
+        }
+    }
+
+    if !crosspoint.is_finite() || crosspoint <= peak_index as f64 {
+        return None;
+    }
+    let end = (crosspoint.round() as usize).min(len);
+
+    // The energy of the fitted decay from `end` on: a geometric series of the power at `end`.
+    let power_at_end = 10.0_f64.powf((line.slope * end as f64 + line.offset) / 10.0);
+    let decay_per_sample = 10.0_f64.powf(line.slope / 10.0);
+    let tail_energy = power_at_end / (1.0 - decay_per_sample);
+
+    Some(DecayEnd {
+        end,
+        tail_energy,
+        noise_power,
+        subtracted_noise: noise_power,
     })
 }
 
@@ -524,14 +740,31 @@ pub(crate) mod tests {
 
     #[test]
     fn curve_starts_at_one_and_decreases() {
+        let ir = decaying_noise(0.5, 1.0, Some(-60.0), 1);
+        for truncation in [Truncation::Lundeby, Truncation::FixedMargin] {
+            let config = EnergyDecayConfig::default().with_truncation(truncation);
+            let decay = energy_decay_curve(&ir, &config).unwrap();
+            let curve = decay.curve.channel(0);
+            assert_abs_diff_eq!(curve[0], 1.0, epsilon = 1e-12);
+            // Lundeby subtracts the noise, so the curve can rise by a sample's noise power.
+            let noise = 10.0_f64.powf(-6.0);
+            assert!(curve.windows(2).into_iter().all(|w| w[1] <= w[0] + noise));
+            assert!(curve.iter().all(|e| *e >= 0.0));
+        }
+    }
+
+    fn fixed_margin() -> EnergyDecayConfig {
+        EnergyDecayConfig::default().with_truncation(Truncation::FixedMargin)
+    }
+
+    #[test]
+    fn fixed_margin_without_noise_stops_at_the_noise_part() {
         let ir = decaying_noise(0.5, 1.0, None, 1);
-        let decay = energy_decay_curve(&ir, &EnergyDecayConfig::default()).unwrap();
-        let curve = decay.curve.channel(0);
-        assert_abs_diff_eq!(curve[0], 1.0, epsilon = 1e-12);
-        assert!(curve.windows(2).into_iter().all(|w| w[1] <= w[0]));
+        let decay = energy_decay_curve(&ir, &fixed_margin()).unwrap();
         // The last 10 % is taken as noise even though there is none, so the decay there is
         // well within the margin of the "floor" and the curve stops where that part starts.
         assert_eq!(decay.truncation, vec![ir.num_time_steps() * 9 / 10]);
+        assert_eq!(decay.compensation, vec![0.0]);
     }
 
     #[test]
@@ -545,10 +778,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn truncates_at_the_noise_floor() {
+    fn fixed_margin_truncates_at_the_noise_floor() {
         let t60 = 0.5;
         let ir = decaying_noise(t60, 1.5, Some(-60.0), 3);
-        let decay = energy_decay_curve(&ir, &EnergyDecayConfig::default()).unwrap();
+        let decay = energy_decay_curve(&ir, &fixed_margin()).unwrap();
 
         // The decay is 5 dB above the floor at -55 dB, i.e. after 55/60 of the T60.
         let expected = 55.0 / 60.0 * t60;
@@ -574,6 +807,7 @@ pub(crate) mod tests {
         assert_abs_diff_eq!(truncated, t60, epsilon = 0.05 * t60);
 
         let untruncated = EnergyDecayConfig {
+            truncation: Truncation::FixedMargin,
             noise_floor_fraction: 0.01,
             noise_margin_db: 0.0,
             block_duration: Duration::from_secs(10),
@@ -581,6 +815,56 @@ pub(crate) mod tests {
         let flattened =
             t60_from_curve(&energy_decay_curve(&ir, &untruncated).unwrap(), -5.0, -25.0);
         assert!(flattened > 1.1 * t60, "{flattened}");
+    }
+
+    #[test]
+    fn lundeby_finds_the_crosspoint_and_the_noise_floor() {
+        let t60 = 0.5;
+        let ir = decaying_noise(t60, 1.5, Some(-60.0), 3);
+        let decay = energy_decay_curve(&ir, &EnergyDecayConfig::default()).unwrap();
+
+        // The decay meets the floor at -60 dB, after one T60.
+        let crosspoint = decay.truncation[0] as f64 / SAMPLE_RATE;
+        assert_abs_diff_eq!(crosspoint, t60, epsilon = 0.03);
+        assert_abs_diff_eq!(decay.noise_floor_db[0], -64.8, epsilon = 0.5);
+        // The decay after the crosspoint is about as loud as the floor, 60 dB down.
+        assert!(
+            (1e-7..1e-5).contains(&decay.compensation[0]),
+            "{:?}",
+            decay.compensation
+        );
+
+        let measured = t60_from_curve(&decay, -5.0, -35.0);
+        assert_abs_diff_eq!(measured, t60, epsilon = 0.02 * t60);
+    }
+
+    #[test]
+    fn lundeby_keeps_the_end_of_the_curve_straight() {
+        // With only 35 dB of dynamic range, the curve ends right after the T30 range. Without
+        // compensation it bends down there and the T30 comes out short.
+        for t60 in [0.3, 1.0] {
+            let ir = decaying_noise(t60, 3.0 * t60, Some(-35.0), 16);
+            let t30 = |config: &EnergyDecayConfig| {
+                t60_from_curve(&energy_decay_curve(&ir, config).unwrap(), -5.0, -35.0)
+            };
+            let lundeby = t30(&EnergyDecayConfig::default());
+            let fixed = t30(&fixed_margin());
+            assert_abs_diff_eq!(lundeby, t60, epsilon = 0.02 * t60);
+            assert!(fixed < 0.96 * t60, "{fixed}");
+        }
+    }
+
+    #[test]
+    fn lundeby_falls_back_without_noise() {
+        // A decay that ends in exact zeros has no noise to find, so the curve is integrated
+        // up to the zeros, like with a fixed margin.
+        let mut ir = decaying_noise(0.3, 1.0, None, 17);
+        let len = ir.num_time_steps();
+        ir.channel_mut(0).slice_mut(s![len / 2..]).fill(0.0);
+        let decay = energy_decay_curve(&ir, &EnergyDecayConfig::default()).unwrap();
+        assert_eq!(decay, energy_decay_curve(&ir, &fixed_margin()).unwrap());
+        assert_eq!(decay.compensation, vec![0.0]);
+        assert_eq!(decay.noise_floor_db, vec![f64::NEG_INFINITY]);
     }
 
     #[test]
