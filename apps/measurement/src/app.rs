@@ -29,7 +29,7 @@ use crate::live::{self, Analysis, Live, LiveRequest, Status};
 use crate::measure::same_name;
 use crate::measure::{self, Job, Outcome, Response};
 use crate::panes::{Panes, Side, Target};
-use crate::plot::{FrequencyChanged, Plot, PlotKind, Series, Trace};
+use crate::plot::{FrequencyChanged, Links, Plot, PlotKind, Series, ToggleLink, Trace};
 use crate::room::{self, Parameter};
 use crate::setup::{Setup, SetupEvent, hint, name_clash, next_name};
 use crate::theme::{self, ShownThemes, ThemeList, palette, trace_color};
@@ -83,7 +83,34 @@ impl Tab {
     }
 
     fn is_frequency(self) -> bool {
-        matches!(self, Tab::Magnitude | Tab::Phase)
+        self.frequency_index().is_some()
+    }
+
+    /// Which of the two frequency plots it is, for their settings: magnitude 0, phase 1.
+    fn frequency_index(self) -> Option<usize> {
+        match self {
+            Tab::Magnitude => Some(0),
+            Tab::Phase => Some(1),
+            Tab::Impulse | Tab::Room => None,
+        }
+    }
+}
+
+/// The tabs whose plots run over frequency, whose axes can be linked.
+const FREQUENCY_AXIS_TABS: [Tab; 3] = [Tab::Magnitude, Tab::Phase, Tab::Room];
+
+/// How a frequency plot is smoothed.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Smoothing {
+    enabled: bool,
+    /// 1/N octave.
+    fractions: f64,
+}
+
+impl Smoothing {
+    /// The 1/N octave to smooth with, or `None` for no smoothing.
+    fn get(self) -> Option<f64> {
+        self.enabled.then_some(self.fractions)
     }
 }
 
@@ -179,8 +206,9 @@ struct Measurement {
     preview_color: Option<Hsla>,
     /// Whether its color picker is open: then its curve stands out.
     picking: bool,
-    /// The frequency curves for the current smoothing, computed when first shown.
-    curves: Option<Rc<Curves>>,
+    /// The frequency curves for the smoothings of the frequency plots, computed when first
+    /// shown: one, or two if the plots are smoothed differently.
+    curves: Vec<Rc<Curves>>,
     impulse: Rc<Vec<(f64, f64)>>,
     _subscriptions: [Subscription; 2],
 }
@@ -266,10 +294,22 @@ pub struct MeasurementApp {
     splits: u32,
     /// The measurements under the mouse in the list, highlighted in the plots.
     highlight: Rc<[u64]>,
-    smoothing_enabled: bool,
-    /// 1/N octave.
-    smoothing: f64,
-    smoothing_slider: Entity<SliderState>,
+    /// The smoothing of the magnitude and of the phase plot, by
+    /// [`Tab::frequency_index`].
+    smoothing: [Smoothing; 2],
+    /// Whether the magnitude and phase plot are smoothed alike.
+    link_smoothing: bool,
+    /// The frequency plot whose smoothing was changed last, by [`Tab::frequency_index`]:
+    /// linking smooths the other one like it.
+    last_smoothing_plot: usize,
+    /// Whether the plots over frequency (magnitude, phase, room acoustics) show the same
+    /// frequencies.
+    link_frequency: bool,
+    /// The plot over frequency that was moved or zoomed last: linking shows its frequencies
+    /// in the others.
+    last_frequency_plot: Tab,
+    /// One per frequency plot, in its toolbar.
+    smoothing_sliders: [Entity<SliderState>; 2],
     /// What the room acoustics tab shows.
     room_parameter: Parameter,
     theme_select: Entity<SelectState<ThemeList>>,
@@ -287,7 +327,9 @@ pub struct MeasurementApp {
     live_runs: u64,
     /// Below this coherence, live measurements and their snapshots aren't drawn.
     min_coherence: f64,
-    coherence_slider: Entity<SliderState>,
+    /// One per frequency plot, like [`smoothing_sliders`](Self::smoothing_sliders); they
+    /// always show the same value.
+    coherence_sliders: [Entity<SliderState>; 2],
     _ticker: Option<Task<()>>,
     /// Problems with single responses of the last measurement.
     warnings: Vec<String>,
@@ -298,21 +340,25 @@ impl MeasurementApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let setup = cx.new(|cx| Setup::new(window, cx));
         let smoothing = 6.0;
-        let smoothing_slider = cx.new(|_| {
-            SliderState::new()
-                .min(1.0)
-                .max(48.0)
-                .step(1.0)
-                .scale(SliderScale::Logarithmic)
-                .default_value(smoothing as f32)
+        let smoothing_sliders = [(); 2].map(|_| {
+            cx.new(|_| {
+                SliderState::new()
+                    .min(1.0)
+                    .max(48.0)
+                    .step(1.0)
+                    .scale(SliderScale::Logarithmic)
+                    .default_value(smoothing as f32)
+            })
         });
         let min_coherence = 0.5;
-        let coherence_slider = cx.new(|_| {
-            SliderState::new()
-                .min(0.0)
-                .max(1.0)
-                .step(0.05)
-                .default_value(min_coherence as f32)
+        let coherence_sliders = [(); 2].map(|_| {
+            cx.new(|_| {
+                SliderState::new()
+                    .min(0.0)
+                    .max(1.0)
+                    .step(0.05)
+                    .default_value(min_coherence as f32)
+            })
         });
         let themes = theme::choices(cx);
         let current = themes
@@ -324,16 +370,8 @@ impl MeasurementApp {
         });
         let magnitude = cx.new(|_| Plot::new(PlotKind::Magnitude));
         let phase = cx.new(|_| Plot::new(PlotKind::Phase));
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             // magnitude and phase always show the same frequencies
-            cx.subscribe(&magnitude, |this, _, FrequencyChanged(x), cx| {
-                this.phase
-                    .update(cx, |phase, cx| phase.link_frequency(*x, cx))
-            }),
-            cx.subscribe(&phase, |this, _, FrequencyChanged(x), cx| {
-                this.magnitude
-                    .update(cx, |magnitude, cx| magnitude.link_frequency(*x, cx))
-            }),
             cx.subscribe(&theme_select, |_, _, event: &SelectEvent<_>, cx| {
                 if let SelectEvent::Confirm(Some(name)) = event {
                     theme::select(name, cx);
@@ -355,25 +393,76 @@ impl MeasurementApp {
                     }
                 },
             ),
-            cx.subscribe(&coherence_slider, |this, _, event: &SliderEvent, cx| {
-                let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
-                let value = f64::from(value.start());
-                if value != this.min_coherence {
-                    this.min_coherence = value;
-                    this.refresh_plots(cx);
-                }
-            }),
-            cx.subscribe(&smoothing_slider, |this, _, event: &SliderEvent, cx| {
-                let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
-                let value = f64::from(value.start()).round();
-                if value != this.smoothing {
-                    this.smoothing = value;
-                    this.refresh_plots(cx);
-                }
-            }),
         ];
+        let room = cx.new(|_| Plot::new(PlotKind::Room(Parameter::T30)));
+        // the axes start linked, so all start at the frequencies of the magnitude
+        let x = magnitude.read(cx).frequency();
+        room.update(cx, |room, cx| room.link_frequency(x, cx));
+        for (tab, plot) in [
+            (Tab::Magnitude, &magnitude),
+            (Tab::Phase, &phase),
+            (Tab::Room, &room),
+        ] {
+            subscriptions.push(cx.subscribe(plot, move |this, _, FrequencyChanged(x), cx| {
+                this.frequency_changed(tab, *x, cx)
+            }));
+            // the links are set in each one's right-click menu
+            subscriptions.push(cx.subscribe_in(
+                plot,
+                window,
+                |this, _, event: &ToggleLink, window, cx| match event {
+                    ToggleLink::Frequency => this.set_link_frequency(!this.link_frequency, cx),
+                    ToggleLink::Smoothing => {
+                        this.set_link_smoothing(!this.link_smoothing, window, cx)
+                    }
+                },
+            ));
+        }
+        for plot in 0..2 {
+            let other = 1 - plot;
+            subscriptions.push(cx.subscribe_in(
+                &coherence_sliders[plot],
+                window,
+                move |this, _, event: &SliderEvent, window, cx| {
+                    let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
+                    let value = f64::from(value.start());
+                    if value != this.min_coherence {
+                        this.min_coherence = value;
+                        this.coherence_sliders[other]
+                            .update(cx, |slider, cx| slider.set_value(value as f32, window, cx));
+                        this.refresh_plots(cx);
+                    }
+                },
+            ));
+            subscriptions.push(cx.subscribe_in(
+                &smoothing_sliders[plot],
+                window,
+                move |this, _, event: &SliderEvent, window, cx| {
+                    let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
+                    let value = f64::from(value.start()).round();
+                    if value != this.smoothing[plot].fractions {
+                        this.smoothing[plot].fractions = value;
+                        this.last_smoothing_plot = plot;
+                        if this.link_smoothing {
+                            this.smoothing[other].fractions = value;
+                            this.smoothing_sliders[other].update(cx, |slider, cx| {
+                                slider.set_value(value as f32, window, cx)
+                            });
+                        }
+                        this.refresh_plots(cx);
+                    }
+                },
+            ));
+        }
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
+        let (link_frequency, link_smoothing) = (true, true);
+        Self::show_links(
+            [&magnitude, &phase, &room],
+            link_frequency,
+            link_smoothing,
+            cx,
+        );
         Self {
             focus_handle,
             groups: Vec::new(),
@@ -384,9 +473,15 @@ impl MeasurementApp {
             content_drop: None,
             splits: 0,
             highlight: Rc::new([]),
-            smoothing_enabled: true,
-            smoothing,
-            smoothing_slider,
+            smoothing: [Smoothing {
+                enabled: true,
+                fractions: smoothing,
+            }; 2],
+            link_smoothing,
+            last_smoothing_plot: 0,
+            link_frequency,
+            last_frequency_plot: Tab::Magnitude,
+            smoothing_sliders,
             room_parameter: Parameter::T30,
             theme_select,
             shown_themes,
@@ -394,22 +489,108 @@ impl MeasurementApp {
             magnitude,
             phase,
             impulse: cx.new(|_| Plot::new(PlotKind::Impulse)),
-            room: cx.new(|_| Plot::new(PlotKind::Room(Parameter::T30))),
+            room,
             job: None,
             _job_task: None,
             live: None,
             renaming: None,
             live_runs: 0,
             min_coherence,
-            coherence_slider,
+            coherence_sliders,
             _ticker: None,
             warnings: Vec::new(),
             _subscriptions: subscriptions,
         }
     }
 
-    fn smoothing(&self) -> Option<f64> {
-        self.smoothing_enabled.then_some(self.smoothing)
+    /// The smoothing of the frequency plot `tab`; `None` for no smoothing, and for the other
+    /// tabs.
+    fn smoothing(&self, tab: Tab) -> Option<f64> {
+        tab.frequency_index()
+            .and_then(|index| self.smoothing[index].get())
+    }
+
+    /// The smoothings of the frequency plots: one if they agree, else two.
+    fn smoothings(&self) -> Vec<Option<f64>> {
+        let [magnitude, phase] = self.smoothing.map(Smoothing::get);
+        if magnitude == phase {
+            vec![magnitude]
+        } else {
+            vec![magnitude, phase]
+        }
+    }
+
+    /// Shows in the right-click menus of the plots over frequency what is linked: magnitude,
+    /// phase and room acoustics in that order. Only magnitude and phase are smoothed.
+    fn show_links(
+        plots: [&Entity<Plot>; 3],
+        frequency: bool,
+        smoothing: bool,
+        cx: &mut Context<Self>,
+    ) {
+        for (plot, smoothed) in plots.into_iter().zip([true, true, false]) {
+            let links = Links {
+                frequency,
+                smoothing: smoothed.then_some(smoothing),
+            };
+            plot.update(cx, |plot, cx| plot.set_links(links, cx));
+        }
+    }
+
+    fn update_links(&self, cx: &mut Context<Self>) {
+        Self::show_links(
+            [&self.magnitude, &self.phase, &self.room],
+            self.link_frequency,
+            self.link_smoothing,
+            cx,
+        );
+    }
+
+    /// Links or unlinks the smoothing of the magnitude and phase plot. Linking smooths both
+    /// like the one changed last.
+    fn set_link_smoothing(&mut self, link: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.link_smoothing = link;
+        self.update_links(cx);
+        if link {
+            let from = self.last_smoothing_plot;
+            let other = 1 - from;
+            self.smoothing[other] = self.smoothing[from];
+            let value = self.smoothing[from].fractions as f32;
+            self.smoothing_sliders[other]
+                .update(cx, |slider, cx| slider.set_value(value, window, cx));
+            self.refresh_plots(cx);
+        }
+        cx.notify();
+    }
+
+    /// Links or unlinks the frequency axes of the plots over frequency. Linking shows the
+    /// frequencies of the one moved last in all.
+    fn set_link_frequency(&mut self, link: bool, cx: &mut Context<Self>) {
+        self.link_frequency = link;
+        self.update_links(cx);
+        if link {
+            let from = self.last_frequency_plot;
+            let x = self.plot(from).read(cx).frequency();
+            self.follow_frequency(from, x, cx);
+        }
+        cx.notify();
+    }
+
+    /// The plot `from` was moved to the frequencies `x` (log10 Hz): it is the one to follow,
+    /// and while the axes are linked, the other plots over frequency show them too.
+    fn frequency_changed(&mut self, from: Tab, x: (f64, f64), cx: &mut Context<Self>) {
+        self.last_frequency_plot = from;
+        if self.link_frequency {
+            self.follow_frequency(from, x, cx);
+        }
+    }
+
+    /// Shows the frequencies `x` in the plots over frequency other than `from`.
+    fn follow_frequency(&self, from: Tab, x: (f64, f64), cx: &mut Context<Self>) {
+        for tab in FREQUENCY_AXIS_TABS.into_iter().filter(|&tab| tab != from) {
+            self.plot(tab)
+                .update(cx, |plot, cx| plot.link_frequency(x, cx));
+        }
     }
 
     /// The live folder while live runs, then the others.
@@ -630,7 +811,7 @@ impl MeasurementApp {
             color_picker,
             preview_color: None,
             picking: false,
-            curves: None,
+            curves: Vec::new(),
             _subscriptions: [subscription, preview],
         };
         measurement.follow_response(group);
@@ -725,7 +906,7 @@ impl MeasurementApp {
 
     /// Starts analyzing the latest recording, unless the last analysis still runs.
     fn live_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let smoothing = self.smoothing();
+        let smoothings = self.smoothings();
         let Some(run) = &mut self.live else { return };
         run.status = run.live.status();
         if let Some(error) = run.status.error.take() {
@@ -736,7 +917,7 @@ impl MeasurementApp {
         if run.analyzing {
             return;
         }
-        let Some(recording) = run.live.take(smoothing) else {
+        let Some(recording) = run.live.take(smoothings) else {
             return;
         };
         run.analyzing = true;
@@ -798,9 +979,9 @@ impl MeasurementApp {
             {
                 m.response = response;
                 m.follow_response("Live");
-                // made with the smoothing of the time; if that changed meanwhile, they're
+                // made with the smoothings of the time; if they changed meanwhile, they're
                 // made again
-                m.curves = Some(Rc::new(curves));
+                m.curves = curves.into_iter().map(Rc::new).collect();
             }
         }
         self.refresh_plots(cx);
@@ -1161,7 +1342,9 @@ impl MeasurementApp {
 
     fn refresh_plot(&mut self, tab: Tab, cx: &mut Context<Self>) {
         let room_parameter = self.room_parameter;
-        let smoothing = self.smoothing();
+        let smoothing = self.smoothing(tab);
+        // the smoothings still in use, whose curves are kept
+        let smoothings = self.smoothings();
         let min_coherence = self.min_coherence;
         let frequency = tab.is_frequency();
         let mut range = (f64::INFINITY, 0.0f64);
@@ -1184,15 +1367,21 @@ impl MeasurementApp {
                     };
                     Series::Points(Rc::new(room_parameter.points(acoustics)))
                 } else if frequency {
-                    if m.curves.as_ref().is_none_or(|c| c.smoothing != smoothing) {
-                        m.curves = Some(Rc::new(Curves::new(
-                            &m.response.frequency_response,
-                            m.response.coherence.as_ref(),
-                            m.range,
-                            smoothing,
-                        )));
-                    }
-                    Series::Frequency(m.curves.clone().expect("just computed"))
+                    m.curves.retain(|c| smoothings.contains(&c.smoothing));
+                    let curves = match m.curves.iter().find(|c| c.smoothing == smoothing) {
+                        Some(curves) => curves.clone(),
+                        None => {
+                            let curves = Rc::new(Curves::new(
+                                &m.response.frequency_response,
+                                m.response.coherence.as_ref(),
+                                m.range,
+                                smoothing,
+                            ));
+                            m.curves.push(curves.clone());
+                            curves
+                        }
+                    };
+                    Series::Frequency(curves)
                 } else {
                     Series::Points(m.impulse.clone())
                 };
@@ -2027,6 +2216,7 @@ impl MeasurementApp {
         v_flex()
             .size_full()
             .child(self.render_tab_bar(ix, cx))
+            .children(self.render_toolbar(tab, ix, cx))
             .child(
                 div()
                     .relative()
@@ -2045,55 +2235,70 @@ impl MeasurementApp {
             )
     }
 
-    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let frequency = self.panes.visible().any(Tab::is_frequency);
-        let room = self.panes.visible().any(|tab| tab == Tab::Room);
-        // only live measurements and their snapshots know their coherence
-        let coherence = frequency
-            && self
-                .all_groups()
-                .flat_map(|g| &g.measurements)
-                .any(|m| m.visible && m.response.coherence.is_some());
-        h_flex()
+    /// The settings for `tab`, shown in the `pane`th pane under its tab bar, or `None` if the
+    /// tab has none.
+    fn render_toolbar(&self, tab: Tab, pane: usize, cx: &mut Context<Self>) -> Option<Div> {
+        let toolbar = h_flex()
             .h(px(36.0))
             .flex_shrink_0()
             .px_3()
             .gap_3()
             .bg(palette::editor(cx))
             .border_b_1()
-            .border_color(palette::border(cx))
-            .when(frequency, |this| {
-                this.child(
-                    Checkbox::new("smoothing")
-                        .small()
-                        .label("Smoothing")
-                        .checked(self.smoothing_enabled)
-                        .on_change(cx.listener(|this, checked: &bool, _, cx| {
-                            this.smoothing_enabled = *checked;
-                            this.refresh_plots(cx);
-                        })),
-                )
-                .child(
-                    div().w(px(160.0)).child(
-                        Slider::new(&self.smoothing_slider).disabled(!self.smoothing_enabled),
+            .border_color(palette::border(cx));
+        if tab == Tab::Room {
+            return Some(
+                toolbar.child(
+                    h_flex()
+                        .gap_1()
+                        .child(self.render_room_parameters(cx))
+                        .child(self.render_room_parameter_info(cx)),
+                ),
+            );
+        }
+        let plot = tab.frequency_index()?;
+        let smoothing = self.smoothing[plot];
+        // only live measurements and their snapshots know their coherence
+        let coherence = self
+            .all_groups()
+            .flat_map(|g| &g.measurements)
+            .any(|m| m.visible && m.response.coherence.is_some());
+        let toolbar = toolbar
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(
+                        Checkbox::new(("smoothing", pane))
+                            .small()
+                            .label("Smoothing")
+                            .checked(smoothing.enabled)
+                            .on_change(cx.listener(move |this, checked: &bool, _, cx| {
+                                this.smoothing[plot].enabled = *checked;
+                                this.last_smoothing_plot = plot;
+                                if this.link_smoothing {
+                                    this.smoothing[1 - plot].enabled = *checked;
+                                }
+                                this.refresh_plots(cx);
+                            })),
+                    )
+                    .child(div().w(px(160.0)).child(
+                        Slider::new(&self.smoothing_sliders[plot]).disabled(!smoothing.enabled),
+                    ))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(if smoothing.enabled {
+                                palette::text_muted(cx)
+                            } else {
+                                palette::text_placeholder(cx)
+                            })
+                            .child(format!("1/{:.0} octave", smoothing.fractions)),
                     ),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(if self.smoothing_enabled {
-                            palette::text_muted(cx)
-                        } else {
-                            palette::text_placeholder(cx)
-                        })
-                        .child(format!("1/{:.0} octave", self.smoothing)),
-                )
-            })
-            .when(room, |this| this.child(self.render_room_parameters(cx)))
+            )
             .when(coherence, |this| {
                 this.child(
                     div()
-                        .id("min-coherence-label")
+                        .id(("min-coherence-label", pane))
                         .text_sm()
                         .text_color(palette::text_muted(cx))
                         .child("Min. coherence")
@@ -2108,7 +2313,7 @@ impl MeasurementApp {
                 .child(
                     div()
                         .w(px(100.0))
-                        .child(Slider::new(&self.coherence_slider)),
+                        .child(Slider::new(&self.coherence_sliders[plot])),
                 )
                 .child(
                     div()
@@ -2116,7 +2321,8 @@ impl MeasurementApp {
                         .text_color(palette::text_muted(cx))
                         .child(format!("{:.2}", self.min_coherence)),
                 )
-            })
+            });
+        Some(toolbar)
     }
 
     /// The plot of `tab`, shown in the `pane`th pane. With all measurements hidden it is
@@ -2156,7 +2362,7 @@ impl MeasurementApp {
         self.plot(tab).clone().into_any_element()
     }
 
-    /// Which parameter the room acoustics table shows.
+    /// Which parameter the room acoustics plot shows.
     fn render_room_parameters(&self, cx: &mut Context<Self>) -> impl IntoElement {
         Parameter::ALL
             .into_iter()
@@ -2168,7 +2374,7 @@ impl MeasurementApp {
                         Button::new(("room-parameter", ix))
                             .label(parameter.label())
                             .selected(parameter == self.room_parameter)
-                            .tooltip(parameter.description()),
+                            .tooltip(parameter.name()),
                     )
                 },
             )
@@ -2179,6 +2385,45 @@ impl MeasurementApp {
                     cx.notify();
                 }
             }))
+    }
+
+    /// A button that opens what the selected room parameter shows and when to use it.
+    fn render_room_parameter_info(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let parameter = self.room_parameter;
+        let trigger = Button::new("room-parameter-info-button")
+            .ghost()
+            .xsmall()
+            .icon(Icon::new(IconName::Info).text_color(palette::text_placeholder(cx)))
+            .tooltip(format!("About {}", parameter.label()));
+        let section = |title: &'static str, text: &'static str, cx: &App| {
+            v_flex()
+                .gap_0p5()
+                .child(
+                    div()
+                        .font_medium()
+                        .text_color(palette::text(cx))
+                        .child(title),
+                )
+                .child(div().child(text))
+        };
+        Popover::new("room-parameter-info")
+            .trigger(trigger)
+            .content(move |_, _, cx| {
+                v_flex()
+                    .w(px(340.0))
+                    .gap_2()
+                    .text_xs()
+                    .text_color(palette::text_muted(cx))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_medium()
+                            .text_color(palette::text(cx))
+                            .child(format!("{} · {}", parameter.label(), parameter.name())),
+                    )
+                    .child(section("What it shows", parameter.description(), cx))
+                    .child(section("When to use it", parameter.when_to_use(), cx))
+            })
     }
 
     fn render_status_bar(&self, cx: &App) -> impl IntoElement {
@@ -2306,12 +2551,7 @@ impl Render for MeasurementApp {
                                 ),
                         )
                         .child(
-                            resizable_panel().child(
-                                v_flex()
-                                    .size_full()
-                                    .child(self.render_toolbar(cx))
-                                    .child(div().flex_1().min_h_0().child(self.render_panes(cx))),
-                            ),
+                            resizable_panel().child(div().size_full().child(self.render_panes(cx))),
                         ),
                 ),
             )

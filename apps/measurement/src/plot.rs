@@ -15,6 +15,7 @@ use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use lyon_tessellation::LineJoin;
 
 use crate::curves::{Curves, draw_positions, split_at_wraps};
 use crate::room::Parameter;
@@ -168,6 +169,21 @@ enum Drag {
 /// Magnitude and phase pass it on to each other, so they always show the same frequencies.
 pub struct FrequencyChanged(pub (f64, f64));
 
+/// What a plot over frequency shares with the others, shown in its right-click menu.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Links {
+    /// Whether the plots over frequency show the same frequencies.
+    pub frequency: bool,
+    /// Whether magnitude and phase are smoothed alike; `None` for a plot without smoothing.
+    pub smoothing: Option<bool>,
+}
+
+/// The user turned a link on or off in a plot's right-click menu.
+pub enum ToggleLink {
+    Frequency,
+    Smoothing,
+}
+
 pub struct Plot {
     kind: PlotKind,
     traces: Vec<Trace>,
@@ -182,6 +198,8 @@ pub struct Plot {
     drag: Option<Drag>,
     /// The view menu, open after a right-click, where it opened, and what closes it.
     menu: Option<(Entity<PopupMenu>, Point<Pixels>, Subscription)>,
+    /// What it shares with the other plots over frequency; `None` for the others.
+    links: Option<Links>,
 }
 
 impl Plot {
@@ -196,6 +214,15 @@ impl Plot {
             hover: None,
             drag: None,
             menu: None,
+            links: None,
+        }
+    }
+
+    /// Shows in the right-click menu what the plot shares with the others.
+    pub fn set_links(&mut self, links: Links, cx: &mut Context<Self>) {
+        if self.links != Some(links) {
+            self.links = Some(links);
+            cx.notify();
         }
     }
 
@@ -239,10 +266,20 @@ impl Plot {
         self.user_changed(before, cx);
     }
 
-    /// The menu a right-click opens: views to jump to.
+    /// The menu a right-click opens: views to jump to, and what is linked with the other
+    /// plots.
     fn open_menu(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let plot = cx.entity().downgrade();
         let kind = self.kind;
+        let links = self.links;
+        let toggle = |label: &str, checked: bool, link: fn() -> ToggleLink| {
+            let plot = plot.clone();
+            PopupMenuItem::new(label.to_string())
+                .checked(checked)
+                .on_click(move |_, _, cx| {
+                    plot.update(cx, |_, cx| cx.emit(link())).ok();
+                })
+        };
         let item = |label: &str, f: fn(&mut Plot, &mut Window, &mut Context<Plot>)| {
             let plot = plot.clone();
             PopupMenuItem::new(label.to_string()).on_click(move |_, window, cx| {
@@ -271,11 +308,23 @@ impl Plot {
                     plot.reset_view(cx)
                 }));
             }
-            menu.item(item("Fit to data", |plot, _, cx| plot.fit_to_data(cx)))
+            menu = menu
+                .item(item("Fit to data", |plot, _, cx| plot.fit_to_data(cx)))
                 .separator()
                 .item(item("Custom range…", |plot, window, cx| {
                     plot.open_custom_range(window, cx)
-                }))
+                }));
+            if let Some(links) = links {
+                menu = menu.separator().label("Link plots").item(toggle(
+                    "Frequency axes",
+                    links.frequency,
+                    || ToggleLink::Frequency,
+                ));
+                if let Some(smoothing) = links.smoothing {
+                    menu = menu.item(toggle("Smoothing", smoothing, || ToggleLink::Smoothing));
+                }
+            }
+            menu
         });
         menu.focus_handle(cx).focus(window, cx);
         let subscription = cx.subscribe(&menu, |plot, _, _: &DismissEvent, cx| {
@@ -393,6 +442,11 @@ impl Plot {
             self.highlight = ids;
             cx.notify();
         }
+    }
+
+    /// The frequencies on show, log10 Hz.
+    pub fn frequency(&self) -> (f64, f64) {
+        self.view.x
     }
 
     /// Shows the frequencies `x` (log10 Hz) another plot was moved to.
@@ -636,6 +690,7 @@ impl Plot {
 }
 
 impl EventEmitter<FrequencyChanged> for Plot {}
+impl EventEmitter<ToggleLink> for Plot {}
 
 impl Render for Plot {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1297,6 +1352,19 @@ fn default_view(kind: PlotKind) -> View {
 /// Hz.
 pub const OCTAVE_RANGE: (f64, f64) = (1.645_365_019_512_085, 4.053_604_984_823_934);
 
+/// How curves are stroked, `width` pixels wide. Bevel joins, because a peak of a dense curve
+/// turns back almost on itself: lyon's default miter join then folds the tip down to a sliver
+/// that hardly covers a pixel, and how much of the peak shows changes as the view moves.
+fn stroke_options(width: f32) -> StrokeOptions {
+    StrokeOptions::default()
+        .with_line_width(width)
+        .with_line_join(LineJoin::Bevel)
+}
+
+fn stroke_builder(width: f32) -> PathBuilder {
+    PathBuilder::stroke(px(width)).with_style(PathStyle::Stroke(stroke_options(width)))
+}
+
 /// Strokes the polyline through `points` (plot units).
 fn stroke(
     window: &mut Window,
@@ -1311,7 +1379,7 @@ fn stroke(
     let mut start = 0;
     while start + 1 < points.len() {
         let end = (start + POINTS_PER_PATH).min(points.len());
-        let mut path = PathBuilder::stroke(px(width));
+        let mut path = stroke_builder(width);
         path.move_to(transform.to_screen(points[start]));
         for &p in &points[start + 1..end] {
             path.line_to(transform.to_screen(p));
@@ -1340,7 +1408,7 @@ fn stroke_dashed(
             (p.x.as_f32(), p.y.as_f32())
         })
         .collect();
-    let mut path = PathBuilder::stroke(px(width));
+    let mut path = stroke_builder(width);
     let mut vertices = 0;
     // whether the pen draws, how far until it switches, and whether a dash is open
     let (mut on, mut left, mut open) = (true, DASH, false);
@@ -1370,7 +1438,7 @@ fn stroke_dashed(
         }
         // a path's vertex indices are 16 bit: long curves in pieces
         if vertices >= POINTS_PER_PATH {
-            if let Ok(full) = std::mem::replace(&mut path, PathBuilder::stroke(px(width))).build() {
+            if let Ok(full) = std::mem::replace(&mut path, stroke_builder(width)).build() {
                 window.paint_path(full, color);
             }
             vertices = 0;
@@ -1529,6 +1597,78 @@ mod tests {
         let drawn = decimate(&points, (10.5, 20.5), 100.0);
         assert_eq!(drawn.first().unwrap().0, 10.0);
         assert_eq!(drawn.last().unwrap().0, 21.0);
+    }
+
+    /// Whether `(x, y)` is in one of the triangles.
+    fn covered(vertices: &[[f32; 2]], indices: &[u16], (x, y): (f32, f32)) -> bool {
+        indices.chunks(3).any(|t| {
+            let [a, b, c] = [0, 1, 2].map(|i| vertices[usize::from(t[i])]);
+            let edge =
+                |p: [f32; 2], q: [f32; 2]| (q[0] - p[0]) * (y - p[1]) - (q[1] - p[1]) * (x - p[0]);
+            let (d0, d1, d2) = (edge(a, b), edge(b, c), edge(c, a));
+            (d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0) || (d0 <= 0.0 && d1 <= 0.0 && d2 <= 0.0)
+        })
+    }
+
+    #[test]
+    fn decimated_peaks_are_drawn_to_the_top_wherever_the_view_is() {
+        use lyon_tessellation::path::Path;
+        use lyon_tessellation::{BuffersBuilder, StrokeTessellator, StrokeVertex, VertexBuffers};
+        // 500 ms at 48 kHz, quiet but for a peak at 100 ms that swings straight back
+        let mut points: Vec<(f64, f64)> = (0..24_000)
+            .map(|i| {
+                (
+                    i as f64 / 48.0,
+                    0.02 * ((i * 7919 % 101) as f64 / 50.0 - 1.0),
+                )
+            })
+            .collect();
+        points[4_800].1 = 1.0;
+        points[4_801].1 = -0.7;
+        let (width, height) = (600.0, 300.0);
+        for step in 0..12 {
+            // panned by a fraction of a pixel at a time
+            let pan = f64::from(step) * 0.37;
+            let visible = (pan, 500.0 + pan);
+            let to_screen = |(x, y): (f64, f64)| {
+                let x = (x - visible.0) / (visible.1 - visible.0) * width;
+                let y = (1.0 - (y + 1.2) / 2.4) * height;
+                lyon_tessellation::math::point(x as f32, y as f32)
+            };
+            let drawn = decimate(&points, visible, width);
+            let mut path = Path::builder();
+            path.begin(to_screen(drawn[0]));
+            for &p in &drawn[1..] {
+                path.line_to(to_screen(p));
+            }
+            path.end(false);
+            let mut buffers: VertexBuffers<[f32; 2], u16> = VertexBuffers::new();
+            StrokeTessellator::new()
+                .tessellate_path(
+                    &path.build(),
+                    &stroke_options(LINE_WIDTH),
+                    &mut BuffersBuilder::new(&mut buffers, |v: StrokeVertex| {
+                        v.position().to_array()
+                    }),
+                )
+                .unwrap();
+            // the pixel row just below the peak is mostly covered, as on a straight line
+            let peak = to_screen((100.0, 1.0));
+            let samples = 20;
+            let hits = (0..samples * samples)
+                .filter(|i| {
+                    let x = peak.x - 2.0 + 4.0 * (i % samples) as f32 / samples as f32;
+                    let y = peak.y + 1.0 + (i / samples) as f32 / samples as f32;
+                    covered(&buffers.vertices, &buffers.indices, (x, y))
+                })
+                .count();
+            // a vertical line 1.5 px wide covers 1.5 of the 4 px sampled
+            let coverage = hits as f32 / (samples * samples) as f32 * 4.0;
+            assert!(
+                coverage > 1.0,
+                "pan {pan} ms: only {coverage} px of the tip drawn"
+            );
+        }
     }
 
     #[test]
