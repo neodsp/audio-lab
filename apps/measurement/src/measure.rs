@@ -302,13 +302,17 @@ pub struct Response {
     pub impulse_response: TimeSignal,
     /// Where `impulse_response` starts in the recording, in samples. Includes the latency.
     pub start: usize,
-    /// The frequency response, with the phase relative to the impulse response's peak.
+    /// The frequency response, with the phase relative to the impulse response's peak, or
+    /// for a live one to the delay found or given.
     pub frequency_response: FreqSignal,
+    /// The delay taken out of the phase of `frequency_response`, in samples from the start of
+    /// `impulse_response`: with it, the frequency response follows from the impulse response.
+    pub delay: f64,
     /// How far each frequency can be trusted, from 0 to 1 (in the real part), for a live
     /// measurement: where it is low, room noise or distortion dominate. `None` for a sweep.
     pub coherence: Option<FreqSignal>,
-    /// Peak level of the recording in dBFS.
-    pub peak_db: f64,
+    /// Peak level of the recording in dBFS. `None` for an imported impulse response.
+    pub peak_db: Option<f64>,
     /// The room acoustics, from the impulse response without its window. `None` for a live
     /// measurement: its impulse response is only as long as a noise period.
     pub room: Option<RoomAcoustics>,
@@ -446,14 +450,16 @@ pub fn run(request: &Request, cancel: &AtomicBool) -> Result<Outcome, String> {
             let room = filters
                 .as_ref()
                 .map(|filters| room::analyze(&room::decay_part(&ir, starts[0], tail_len), filters));
+            let delay = peak_index(&impulse_response) as f64;
             outcome.responses.push(Response {
                 speaker: speaker.clone(),
                 mic: mic.clone(),
-                frequency_response: response_from_peak(&impulse_response),
+                frequency_response: response_without_delay(&impulse_response, delay),
+                delay,
                 coherence: None,
                 impulse_response,
                 start: starts[0],
-                peak_db: 20.0 * peak.log10(),
+                peak_db: Some(20.0 * peak.log10()),
                 room,
             });
         }
@@ -469,17 +475,66 @@ pub fn run(request: &Request, cancel: &AtomicBool) -> Result<Outcome, String> {
     Ok(outcome)
 }
 
-/// The frequency response of `ir`, with the phase relative to the impulse response's peak: the
-/// delay up to it would turn the phase so quickly that it wraps every few Hz.
-fn response_from_peak(ir: &TimeSignal) -> FreqSignal {
-    let peak = peak_index(ir);
+/// The frequency response of `ir`, with a delay of `delay` samples taken out of the phase,
+/// usually up to the impulse response's peak: that delay would turn the phase so quickly that
+/// it wraps every few Hz.
+pub fn response_without_delay(ir: &TimeSignal, delay: f64) -> FreqSignal {
     let mut response = ir.to_freq();
     let freqs = response.freq_bins().to_owned();
     let sample_rate = ir.sample_rate();
     for (h, f) in response.channel_mut(0).iter_mut().zip(freqs) {
-        *h *= Complex64::from_polar(1.0, TAU * f * peak as f64 / sample_rate);
+        *h *= Complex64::from_polar(1.0, TAU * f * delay / sample_rate);
     }
     response
+}
+
+/// The responses in an impulse response read from a file, one per channel, treated like a
+/// measured one: from its start, windowed to `ir_length` seconds, with the room acoustics of
+/// all of it. Each is named after `name`, with the channel if there are several. Channels
+/// without an impulse response in them are left out, with a warning.
+pub fn import(ir: &TimeSignal, name: &str, ir_length: f64) -> Outcome {
+    let filters = room::Filters::new(ir.sample_rate());
+    let mut outcome = Outcome {
+        responses: Vec::new(),
+        warnings: Vec::new(),
+    };
+    let num_channels = ir.num_channels();
+    for index in 0..num_channels {
+        let label = if num_channels == 1 {
+            String::new()
+        } else {
+            format!("Channel {}", index + 1)
+        };
+        let single = channel(ir, index);
+        let (impulse_response, starts) = match window_and_trim(&single, ir_length) {
+            Ok(trimmed) => trimmed,
+            Err(error) => {
+                let which = if label.is_empty() { name } else { &label };
+                outcome
+                    .warnings
+                    .push(format!("{which}: no impulse response found ({error})"));
+                continue;
+            }
+        };
+        let start = starts[0];
+        let room = filters.as_ref().map(|filters| {
+            let len = single.num_time_steps().saturating_sub(start);
+            room::analyze(&room::decay_part(&single, start, len), filters)
+        });
+        let delay = peak_index(&impulse_response) as f64;
+        outcome.responses.push(Response {
+            speaker: name.to_string(),
+            mic: label,
+            frequency_response: response_without_delay(&impulse_response, delay),
+            delay,
+            coherence: None,
+            impulse_response,
+            start,
+            peak_db: None,
+            room,
+        });
+    }
+    outcome
 }
 
 /// Index of the largest sample of the first channel.

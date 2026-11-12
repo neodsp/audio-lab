@@ -1,5 +1,6 @@
 //! The window: measurements on the left, the plots in tabs on the right.
 
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -11,7 +12,8 @@ use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariant, ButtonVari
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::scroll::ScrollableElement as _;
@@ -31,6 +33,7 @@ use crate::measure::{self, Job, Outcome, Response};
 use crate::panes::{Panes, Side, Target};
 use crate::plot::{FrequencyChanged, Links, Plot, PlotKind, Series, ToggleLink, Trace};
 use crate::room::{self, Parameter};
+use crate::session::{self, Imported};
 use crate::setup::{Setup, SetupEvent, hint, name_clash, next_name};
 use crate::theme::{self, ShownThemes, ThemeList, palette, trace_color};
 
@@ -41,7 +44,11 @@ actions!(
         ShowMagnitude,
         ShowPhase,
         ShowImpulse,
-        ShowRoom
+        ShowRoom,
+        OpenSession,
+        SaveSession,
+        SaveSessionAs,
+        ImportImpulseResponses
     ]
 );
 
@@ -52,6 +59,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("alt-2", ShowPhase, None),
         KeyBinding::new("alt-3", ShowImpulse, None),
         KeyBinding::new("alt-4", ShowRoom, None),
+        KeyBinding::new("ctrl-o", OpenSession, None),
+        KeyBinding::new("ctrl-s", SaveSession, None),
+        KeyBinding::new("ctrl-shift-s", SaveSessionAs, None),
+        KeyBinding::new("ctrl-i", ImportImpulseResponses, None),
     ]);
 }
 
@@ -217,8 +228,18 @@ impl Measurement {
     /// Names it after its response, in the folder `group`, and takes the impulse response to
     /// draw from it: after it was made, and whenever a live response changes.
     fn follow_response(&mut self, group: &str) {
-        let short = format!("{} → {}", self.response.speaker, self.response.mic);
-        self.full_name = format!("{group} · {short}").into();
+        // an imported impulse response of one channel has no mic
+        let short = if self.response.mic.is_empty() {
+            self.response.speaker.clone()
+        } else {
+            format!("{} → {}", self.response.speaker, self.response.mic)
+        };
+        self.full_name = if short == group {
+            short.clone()
+        } else {
+            format!("{group} · {short}")
+        }
+        .into();
         self.name = short.into();
         self.impulse = Rc::new(impulse_points(
             &self.response.impulse_response,
@@ -239,6 +260,27 @@ enum Action {
         id: u64,
         to: Option<u64>,
     },
+}
+
+/// What of a measurement to export.
+#[derive(Clone, Copy)]
+enum Export {
+    /// WAV.
+    ImpulseResponse,
+    /// FRD text.
+    FrequencyResponse,
+    /// CSV.
+    RoomAcoustics,
+}
+
+impl Export {
+    fn extension(self) -> &'static str {
+        match self {
+            Export::ImpulseResponse => "wav",
+            Export::FrequencyResponse => "frd",
+            Export::RoomAcoustics => "csv",
+        }
+    }
 }
 
 /// The id of the live folder; the others count from 1.
@@ -333,6 +375,8 @@ pub struct MeasurementApp {
     _ticker: Option<Task<()>>,
     /// Problems with single responses of the last measurement.
     warnings: Vec<String>,
+    /// The folder the session was opened from or saved to last.
+    session: Option<PathBuf>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -499,6 +543,7 @@ impl MeasurementApp {
             coherence_sliders,
             _ticker: None,
             warnings: Vec::new(),
+            session: None,
             _subscriptions: subscriptions,
         }
     }
@@ -740,7 +785,7 @@ impl MeasurementApp {
         };
         let measurements = responses
             .into_iter()
-            .map(|response| self.new_measurement_of(response, &name, &how, window, cx))
+            .map(|response| self.new_measurement_of(response, &name, &how, None, "", window, cx))
             .collect();
         self.groups.push(Group {
             id: self.next_group_id,
@@ -752,19 +797,22 @@ impl MeasurementApp {
         self.next_group_id += 1;
     }
 
-    /// A measurement of `response` in the folder `group`, measured as `how` tells, with a
-    /// color of its own.
+    /// A measurement of `response` in the folder `group`, measured as `how` tells, with
+    /// `notes`, in `color` or one of its own.
+    #[allow(clippy::too_many_arguments)]
     fn new_measurement_of(
         &mut self,
         response: Response,
         group: &str,
         how: &Measured,
+        color: Option<Hsla>,
+        notes: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Measurement {
         let id = self.next_measurement_id;
         self.next_measurement_id += 1;
-        let color = trace_color(id as usize - 1);
+        let color = color.unwrap_or_else(|| trace_color(id as usize - 1));
         let color_picker = cx.new(|cx| ColorPickerState::new(window, cx).default_value(color));
         let subscription = cx.subscribe(
             &color_picker,
@@ -801,7 +849,7 @@ impl MeasurementApp {
             measured: how.at,
             about: how.about.clone(),
             range: how.range,
-            notes: Notes::new("", window, cx),
+            notes: Notes::new(notes, window, cx),
             full_name: SharedString::default(),
             name: SharedString::default(),
             impulse: Rc::default(),
@@ -964,7 +1012,9 @@ impl MeasurementApp {
             let measurements = analysis
                 .responses
                 .into_iter()
-                .map(|response| self.new_measurement_of(response, "Live", &how, window, cx))
+                .map(|response| {
+                    self.new_measurement_of(response, "Live", &how, None, "", window, cx)
+                })
                 .collect();
             if let Some(run) = &mut self.live {
                 run.group.measurements = measurements;
@@ -1039,6 +1089,362 @@ impl MeasurementApp {
 
     fn group_names(&self) -> Vec<SharedString> {
         self.groups.iter().map(|group| group.name.clone()).collect()
+    }
+
+    /// `name`, or if a folder has it, the first `name 2`, `name 3`… that none has.
+    fn unique_group_name(&self, name: &str) -> String {
+        let taken = self.group_names();
+        let free = |candidate: &str| !taken.iter().any(|t| same_name(t, candidate));
+        if free(name) {
+            return name.to_string();
+        }
+        (2..)
+            .map(|n| format!("{name} {n}"))
+            .find(|candidate| free(candidate))
+            .expect("some number is free")
+    }
+
+    /// The name of the session: its folder's.
+    fn session_name(&self) -> Option<String> {
+        let path = self.session.as_ref()?;
+        Some(path.file_name()?.to_string_lossy().into_owned())
+    }
+
+    /// Where file dialogs start: next to the session, else the home folder.
+    fn dialog_dir(&self) -> PathBuf {
+        self.session
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .unwrap_or_default()
+    }
+
+    /// The folders as they are saved; the live one isn't.
+    fn saved_folders(&self, cx: &App) -> Vec<session::Folder> {
+        self.groups
+            .iter()
+            .map(|group| session::Folder {
+                name: group.name.to_string(),
+                notes: group.notes.text(cx).to_string(),
+                expanded: group.expanded,
+                measurements: group
+                    .measurements
+                    .iter()
+                    .map(|m| session::Saved {
+                        response: m.response.clone(),
+                        measured: m.measured,
+                        about: m.about.iter().map(ToString::to_string).collect(),
+                        range: m.range,
+                        notes: m.notes.text(cx).to_string(),
+                        visible: m.visible,
+                        color: m.color,
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Saves to the session's folder, or asks for one the first time.
+    fn save_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.session.clone() {
+            Some(dir) => self.save_session_to(dir, window, cx),
+            None => self.save_session_as(window, cx),
+        }
+    }
+
+    /// Asks for a new folder to save the session in.
+    fn save_session_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.session_name().unwrap_or_else(|| "Session".into());
+        let chosen = cx.prompt_for_new_path(&self.dialog_dir(), Some(&name));
+        cx.spawn_in(window, async move |this, cx| {
+            let path = chosen.await;
+            this.update_in(cx, |this, window, cx| match path {
+                Ok(Ok(Some(path))) => this.save_session_to(path, window, cx),
+                Ok(Err(error)) => notify_error(format!("No file dialog: {error}"), window, cx),
+                _ => {}
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn save_session_to(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let folders = self.saved_folders(cx);
+        let target = dir.clone();
+        let saving = cx.background_spawn(async move { session::save(&target, &folders) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = saving.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(()) => {
+                    this.session = Some(dir);
+                    let name = this.session_name().unwrap_or_default();
+                    window.push_notification(Notification::success(format!("Saved “{name}”.")), cx);
+                    cx.notify();
+                }
+                Err(error) => notify_error(error, window, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Asks for a session folder to open instead of the measurements in the list.
+    fn open_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.job.is_some() {
+            notify_error("Wait for the measurement to finish.".into(), window, cx);
+            return;
+        }
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Open".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let paths = chosen.await;
+            this.update_in(cx, |this, window, cx| match paths {
+                Ok(Ok(Some(paths))) => {
+                    if let Some(path) = paths.into_iter().next() {
+                        this.confirm_open(path, window, cx)
+                    }
+                }
+                Ok(Err(error)) => notify_error(format!("No file dialog: {error}"), window, cx),
+                _ => {}
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Opens the session at `path`, after asking if it replaces measurements.
+    fn confirm_open(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.num_measurements();
+        if count == 0 {
+            self.load_session(path, window, cx);
+            return;
+        }
+        let dir = session::session_dir(&path);
+        let name = dir.file_name().map_or_else(
+            || dir.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let description = format!(
+            "The {count} measurement{} in the list will be replaced. Save them first to keep them.",
+            if count == 1 { "" } else { "s" }
+        );
+        let app = cx.entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let (app, path) = (app.clone(), path.clone());
+            alert
+                .title(format!("Open “{name}”?"))
+                .description(description.clone())
+                .confirm()
+                .ok_text("Open")
+                .on_ok(move |_, window, cx| {
+                    let path = path.clone();
+                    app.update(cx, |this, cx| this.load_session(path, window, cx));
+                    true
+                })
+        });
+    }
+
+    fn load_session(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = session::session_dir(&path);
+        let source = dir.clone();
+        let loading = cx.background_spawn(async move { session::load(&source) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = loading.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(folders) => this.replace_session(dir, folders, window, cx),
+                Err(error) => notify_error(error, window, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Shows the session `folders`, saved in `dir`, instead of the measurements in the list.
+    fn replace_session(
+        &mut self,
+        dir: PathBuf,
+        folders: Vec<session::Folder>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.job.is_some() {
+            notify_error("Wait for the measurement to finish.".into(), window, cx);
+            return;
+        }
+        self.stop_live(cx);
+        self.groups.clear();
+        self.warnings.clear();
+        for folder in folders {
+            let mut measurements = Vec::new();
+            for saved in folder.measurements {
+                let how = Measured {
+                    at: saved.measured,
+                    about: saved.about.into_iter().map(Into::into).collect(),
+                    range: saved.range,
+                };
+                let mut m = self.new_measurement_of(
+                    saved.response,
+                    &folder.name,
+                    &how,
+                    Some(saved.color),
+                    &saved.notes,
+                    window,
+                    cx,
+                );
+                m.visible = saved.visible;
+                measurements.push(m);
+            }
+            self.groups.push(Group {
+                id: self.next_group_id,
+                name: folder.name.into(),
+                notes: Notes::new(&folder.notes, window, cx),
+                expanded: folder.expanded,
+                measurements,
+            });
+            self.next_group_id += 1;
+        }
+        self.session = Some(dir);
+        self.side_bar = SideBar::Measurements;
+        // the setup checks new names against them
+        let taken = self.group_names();
+        self.setup.update(cx, |setup, cx| {
+            setup.renumber(taken.iter().map(|n| n.as_ref()), window, cx)
+        });
+        self.refresh_plots(cx);
+    }
+
+    /// Asks for impulse response files and adds a folder for each.
+    fn import_impulse_responses(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Import".into()),
+        });
+        let ir_length = self.setup.read(cx).ir_length();
+        cx.spawn_in(window, async move |this, cx| {
+            let paths = match chosen.await {
+                Ok(Ok(Some(paths))) => paths,
+                Ok(Err(error)) => {
+                    this.update_in(cx, |_, window, cx| {
+                        notify_error(format!("No file dialog: {error}"), window, cx)
+                    })
+                    .ok();
+                    return;
+                }
+                _ => return,
+            };
+            let imported = cx
+                .background_spawn(async move {
+                    paths
+                        .iter()
+                        .map(|path| session::import_file(path, ir_length))
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.add_imported(imported, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn add_imported(
+        &mut self,
+        imported: Vec<Result<Imported, String>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut warnings = Vec::new();
+        for file in imported {
+            let file = match file {
+                Ok(file) => file,
+                Err(error) => {
+                    warnings.push(error);
+                    continue;
+                }
+            };
+            warnings.extend(file.outcome.warnings);
+            if file.outcome.responses.is_empty() {
+                warnings.push(format!("{}: no impulse response found", file.name));
+                continue;
+            }
+            let name = self.unique_group_name(&file.name);
+            self.add_group(
+                name,
+                file.range,
+                file.about,
+                file.measured,
+                "",
+                file.outcome.responses,
+                window,
+                cx,
+            );
+        }
+        self.warnings = warnings;
+        self.side_bar = SideBar::Measurements;
+        let taken = self.group_names();
+        self.setup.update(cx, |setup, cx| {
+            setup.renumber(taken.iter().map(|n| n.as_ref()), window, cx)
+        });
+        self.refresh_plots(cx);
+    }
+
+    /// Asks where to and exports `what` of the measurement `id`.
+    fn export(&mut self, id: u64, what: Export, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(m) = self
+            .all_groups()
+            .flat_map(|g| &g.measurements)
+            .find(|m| m.id == id)
+        else {
+            return;
+        };
+        let (response, title, range) = (m.response.clone(), m.full_name.to_string(), m.range);
+        let name = format!("{}.{}", session::file_name(&title), what.extension());
+        let chosen = cx.prompt_for_new_path(&self.dialog_dir(), Some(&name));
+        cx.spawn_in(window, async move |this, cx| {
+            let path = match chosen.await {
+                Ok(Ok(Some(path))) => path,
+                Ok(Err(error)) => {
+                    this.update_in(cx, |_, window, cx| {
+                        notify_error(format!("No file dialog: {error}"), window, cx)
+                    })
+                    .ok();
+                    return;
+                }
+                _ => return,
+            };
+            let target = path.clone();
+            let result = cx
+                .background_spawn(async move {
+                    match what {
+                        Export::ImpulseResponse => {
+                            session::export_impulse_response(&response, &target)
+                        }
+                        Export::FrequencyResponse => {
+                            session::export_frequency_response(&response, &title, range, &target)
+                        }
+                        Export::RoomAcoustics => session::export_room_acoustics(&response, &target),
+                    }
+                })
+                .await;
+            this.update_in(cx, |_, window, cx| match result {
+                Ok(()) => {
+                    let file = path.file_name().unwrap_or_default().to_string_lossy();
+                    window
+                        .push_notification(Notification::success(format!("Exported “{file}”.")), cx)
+                }
+                Err(error) => notify_error(error, window, cx),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn apply(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
@@ -1435,7 +1841,7 @@ impl MeasurementApp {
                         div()
                             .text_sm()
                             .text_color(palette::text_muted(cx))
-                            .child("Measurements"),
+                            .child(self.session_name().unwrap_or_else(|| "Measurements".into())),
                     ),
             ),
         )
@@ -1553,12 +1959,19 @@ impl MeasurementApp {
                             .child("MEASUREMENTS"),
                     )
                     .child(
-                        Button::new("new")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Plus)
-                            .tooltip("New measurement (Ctrl+N)")
-                            .on_click(cx.listener(|this, _, _, cx| this.new_measurement(cx))),
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("new")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Plus)
+                                    .tooltip("New measurement (Ctrl+N)")
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.new_measurement(cx)),
+                                    ),
+                            )
+                            .child(self.render_session_menu()),
                     ),
             )
             .when_some(self.live.as_ref(), |this, run| {
@@ -1594,6 +2007,16 @@ impl MeasurementApp {
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.new_measurement(cx)
                                                 })),
+                                        )
+                                        .child(
+                                            Button::new("open-first")
+                                                .small()
+                                                .ghost()
+                                                .icon(gpui_kit::assets::IconName::FolderOpen)
+                                                .label("Open session…")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.open_session(window, cx)
+                                                })),
                                         ),
                                 )
                             } else {
@@ -1602,6 +2025,29 @@ impl MeasurementApp {
                         }),
                 ),
             )
+    }
+
+    /// The menu next to the list's title: saving and opening sessions, importing.
+    fn render_session_menu(&self) -> impl IntoElement {
+        let focus = self.focus_handle.clone();
+        Button::new("session-menu")
+            .ghost()
+            .xsmall()
+            .icon(Icon::new(gpui_kit::assets::IconName::EllipsisVertical))
+            .tooltip("Session")
+            .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
+                use gpui_kit::assets::IconName as Icons;
+                menu.action_context(focus.clone())
+                    .menu_with_icon("Open session…", Icons::FolderOpen, Box::new(OpenSession))
+                    .menu_with_icon("Save session", Icons::Save, Box::new(SaveSession))
+                    .menu_with_icon("Save session as…", Icons::SavePen, Box::new(SaveSessionAs))
+                    .separator()
+                    .menu_with_icon(
+                        "Import impulse responses…",
+                        Icons::Import,
+                        Box::new(ImportImpulseResponses),
+                    )
+            })
     }
 
     /// The controls of a running live measurement: which speakers play, the level, the
@@ -1681,7 +2127,7 @@ impl MeasurementApp {
             )
             // what the mics hear
             .children(run.group.measurements.iter().enumerate().map(|(index, m)| {
-                let peak = m.response.peak_db;
+                let peak = m.response.peak_db.unwrap_or(f64::NEG_INFINITY);
                 let clipping = peak >= -0.1;
                 let delay = delays.and_then(|delays| delays.get(index));
                 h_flex()
@@ -1992,6 +2438,7 @@ impl MeasurementApp {
             .collect();
         let app = cx.entity();
         let ids: Rc<[u64]> = Rc::new([id]);
+        let has_room = m.response.room.is_some();
         h_flex()
             .id(("measurement", id))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -2060,12 +2507,39 @@ impl MeasurementApp {
                 for line in &details {
                     menu = menu.label(line.clone());
                 }
+                let exporter = app.clone();
                 menu = menu
                     .separator()
                     .item(
                         PopupMenuItem::new("Show only this").on_click(move |_, window, cx| {
                             solo.update(cx, |this, cx| this.apply(Action::Solo(id), window, cx));
                         }),
+                    )
+                    .submenu_with_icon(
+                        Some(gpui_kit::assets::IconName::FileOutput.into()),
+                        "Export",
+                        window,
+                        cx,
+                        move |mut menu, _, _| {
+                            let mut kinds = vec![
+                                ("Impulse response (WAV)…", Export::ImpulseResponse),
+                                ("Frequency response (FRD)…", Export::FrequencyResponse),
+                            ];
+                            if has_room {
+                                kinds.push(("Room acoustics (CSV)…", Export::RoomAcoustics));
+                            }
+                            for (label, what) in kinds {
+                                let exporter = exporter.clone();
+                                menu = menu.item(PopupMenuItem::new(label).on_click(
+                                    move |_, window, cx| {
+                                        exporter.update(cx, |this, cx| {
+                                            this.export(id, what, window, cx)
+                                        });
+                                    },
+                                ));
+                            }
+                            menu
+                        },
                     );
                 if live {
                     return menu;
@@ -2530,6 +3004,18 @@ impl Render for MeasurementApp {
             .on_action(cx.listener(|this, _: &ShowPhase, _, cx| this.set_tab(Tab::Phase, cx)))
             .on_action(cx.listener(|this, _: &ShowImpulse, _, cx| this.set_tab(Tab::Impulse, cx)))
             .on_action(cx.listener(|this, _: &ShowRoom, _, cx| this.set_tab(Tab::Room, cx)))
+            .on_action(
+                cx.listener(|this, _: &OpenSession, window, cx| this.open_session(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SaveSession, window, cx| this.save_session(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SaveSessionAs, window, cx| this.save_session_as(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ImportImpulseResponses, window, cx| {
+                this.import_impulse_responses(window, cx)
+            }))
             .size_full()
             .bg(palette::editor(cx))
             .text_color(palette::text(cx))
@@ -2557,6 +3043,11 @@ impl Render for MeasurementApp {
             )
             .child(self.render_status_bar(cx))
     }
+}
+
+/// Tells about something that went wrong with a file.
+fn notify_error(message: String, window: &mut Window, cx: &mut App) {
+    window.push_notification(Notification::error(message), cx);
 }
 
 /// Covers a small checkbox with a filled box and a dash, for "some of them": GPUI Kit's
@@ -2766,7 +3257,9 @@ fn details(response: &Response) -> Vec<SharedString> {
     if response.coherence.is_some() {
         lines.push("Measured live, with pink noise".into());
     }
-    lines.push(format!("Recording peak: {:.1} dBFS", response.peak_db).into());
+    if let Some(peak_db) = response.peak_db {
+        lines.push(format!("Recording peak: {peak_db:.1} dBFS").into());
+    }
     if response.coherence.is_none() {
         lines.push(format!("IR start: {:.2} ms (with latency)", ms(response.start)).into());
     }

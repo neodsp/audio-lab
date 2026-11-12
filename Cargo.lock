@@ -4491,6 +4491,8 @@ dependencies = [
  "gpui-kit",
  "lyon_tessellation",
  "num",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

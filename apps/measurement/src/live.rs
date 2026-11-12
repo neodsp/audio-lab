@@ -353,8 +353,9 @@ pub fn analyze(recording: Recording) -> Result<Analysis, String> {
             impulse_response,
             start: 0,
             frequency_response,
+            delay: delay_ms / 1000.0 * sample_rate,
             coherence: Some(coherence),
-            peak_db: 20.0 * peak.log10(),
+            peak_db: Some(20.0 * peak.log10()),
             room: None,
         });
         analysis.delays_ms.push(delay_ms);
