@@ -269,6 +269,11 @@ impl Setup {
         self.settings.name.trim().to_string()
     }
 
+    /// How much of each impulse response is kept, after its start, in seconds.
+    pub fn ir_length(&self) -> f64 {
+        self.settings.ir_length_ms / 1000.0
+    }
+
     /// The notes for the measurement that just started or finished; the field is cleared for
     /// the next one.
     pub fn take_notes(&mut self, window: &mut Window, cx: &mut Context<Self>) -> String {

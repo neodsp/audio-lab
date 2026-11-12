@@ -14,6 +14,12 @@
 //! tab (Alt+4) plots a reverberation time, the clarity or the definition (ISO 3382-1) of each
 //! sweep measurement per octave band; the broadband values are in its info.
 //!
+//! The menu next to "New measurement" saves the measurements as a session (Ctrl+S, Ctrl+Shift+S)
+//! and opens one again (Ctrl+O): a folder with a `session.json` and a WAV file per impulse
+//! response. It also imports impulse responses from audio files (Ctrl+I), one folder per file,
+//! analyzed like a sweep measurement. A measurement's right-click menu exports its impulse
+//! response (WAV), frequency response (FRD) or room acoustics (CSV).
+//!
 //! "Simulated device" in the setup measures a made-up room instead, to try the app without
 //! audio hardware.
 //!
@@ -29,6 +35,7 @@ mod measure;
 mod panes;
 mod plot;
 mod room;
+mod session;
 mod setup;
 mod theme;
 

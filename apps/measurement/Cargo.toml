@@ -8,8 +8,14 @@ version = "0.1.0"
 
 [dependencies]
 audio-host = { version = "0.2.0", default-features = false, features = ["cpal"] }
-audio-lab = { path = "../..", default-features = false, features = ["playback"] }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+audio-lab = { path = "../..", default-features = false, features = [
+  "audio-file",
+  "numpy",
+  "playback",
+] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 gpui-kit = "0.9"
 lyon_tessellation = "1"
 num = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
