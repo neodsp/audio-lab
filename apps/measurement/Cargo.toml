@@ -11,4 +11,5 @@ audio-host = { version = "0.2.0", default-features = false, features = ["cpal"] 
 audio-lab = { path = "../..", default-features = false, features = ["playback"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 gpui-kit = "0.9"
+lyon_tessellation = "1"
 num = "0.4"

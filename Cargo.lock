@@ -4489,6 +4489,7 @@ dependencies = [
  "audio-lab",
  "chrono",
  "gpui-kit",
+ "lyon_tessellation",
  "num",
 ]
 
