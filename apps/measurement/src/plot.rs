@@ -395,6 +395,11 @@ impl Plot {
         }
     }
 
+    /// The frequencies on show, log10 Hz.
+    pub fn frequency(&self) -> (f64, f64) {
+        self.view.x
+    }
+
     /// Shows the frequencies `x` (log10 Hz) another plot was moved to.
     pub fn link_frequency(&mut self, x: (f64, f64), cx: &mut Context<Self>) {
         if self.view.x == x {

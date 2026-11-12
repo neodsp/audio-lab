@@ -124,29 +124,83 @@ impl Parameter {
         }
     }
 
+    /// The name written out.
+    pub fn name(self) -> &'static str {
+        match self {
+            Parameter::T20 => "Reverberation time, from 20 dB of decay",
+            Parameter::T30 => "Reverberation time, from 30 dB of decay",
+            Parameter::Edt => "Early decay time",
+            Parameter::C50 => "Clarity for speech",
+            Parameter::C80 => "Clarity for music",
+            Parameter::D50 => "Definition",
+        }
+    }
+
+    /// What the plot shows.
     pub fn description(self) -> &'static str {
         match self {
             Parameter::T20 => {
-                "Reverberation time: how long the sound takes to fall by 60 dB, from the decay \
-                 between -5 and -25 dB. Needs 35 dB above the noise."
+                "How long the sound takes to fall by 60 dB after the source stops, per octave \
+                 band. Fitted to the decay from -5 to -25 dB and extrapolated to 60 dB."
             }
             Parameter::T30 => {
-                "Reverberation time: how long the sound takes to fall by 60 dB, from the decay \
-                 between -5 and -35 dB. Needs 45 dB above the noise."
+                "How long the sound takes to fall by 60 dB after the source stops, per octave \
+                 band. Fitted to the decay from -5 to -35 dB and extrapolated to 60 dB."
             }
             Parameter::Edt => {
-                "Early decay time: the reverberation time from the first 10 dB of the decay, \
-                 closer to how reverberant the room sounds."
+                "The reverberation time from the first 10 dB of the decay, extrapolated to \
+                 60 dB. The early decay is what the ear mostly hears, so EDT follows how \
+                 reverberant the room sounds at this position."
             }
             Parameter::C50 => {
-                "Clarity for speech: the energy in the first 50 ms over the rest. Higher is \
-                 clearer."
+                "The energy arriving in the first 50 ms over the energy arriving later, in dB. \
+                 Early sound helps understanding speech, late sound blurs it. Higher is clearer."
             }
             Parameter::C80 => {
-                "Clarity for music: the energy in the first 80 ms over the rest. Higher is \
-                 clearer."
+                "The energy arriving in the first 80 ms over the energy arriving later, in dB. \
+                 Music tolerates more reverb than speech, hence the longer window. Higher is \
+                 clearer, lower fuller and more reverberant."
             }
-            Parameter::D50 => "Definition: the share of the energy in the first 50 ms.",
+            Parameter::D50 => {
+                "The share of all the energy that arrives in the first 50 ms, in percent. The \
+                 same information as C50 on a 0 to 100 % scale."
+            }
+        }
+    }
+
+    /// When to look at this parameter rather than the others.
+    pub fn when_to_use(self) -> &'static str {
+        match self {
+            Parameter::T20 => {
+                "Use when T30 is missing or noisy: T20 needs only 35 dB of decay above the noise \
+                 floor (T30 needs 45 dB), so it works in noisy rooms and at low and high \
+                 frequencies. If the decay is straight, T20 and T30 agree."
+            }
+            Parameter::T30 => {
+                "The standard reverberation time: use it to compare a room against targets or \
+                 other rooms, e.g. about 0.2 to 0.4 s for control rooms, 0.4 to 0.8 s for \
+                 classrooms and offices, 1.5 to 2.2 s for concert halls. Needs 45 dB of decay \
+                 above the noise; switch to T20 where bands are missing."
+            }
+            Parameter::Edt => {
+                "Use to judge the perceived reverb, or to compare listening positions: unlike \
+                 T20 and T30 it changes across the room. If EDT is much shorter than T30, strong \
+                 early reflections dominate; if longer, the decay is curved, e.g. coupled rooms."
+            }
+            Parameter::C50 => {
+                "Use for rooms for speech: classrooms, meeting rooms, lecture halls, \
+                 conference calls. Above 0 dB speech is clear, +3 dB and more is good; below \
+                 -2 dB it gets hard to follow."
+            }
+            Parameter::C80 => {
+                "Use for rooms for music: concert halls, rehearsal and listening rooms. About \
+                 -2 to +2 dB suits orchestral music, higher values suit fast, detailed music \
+                 and amplified sound."
+            }
+            Parameter::D50 => {
+                "Use for speech like C50, when a percentage is easier to read or report. Above \
+                 50 % is good for speech, i.e. C50 above 0 dB."
+            }
         }
     }
 

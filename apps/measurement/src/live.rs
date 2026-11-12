@@ -213,7 +213,8 @@ impl Live {
 
     /// The latest recording to analyze: as many whole periods as were recorded since the
     /// speakers last changed, up to the request's. `None` while there isn't one yet.
-    pub fn take(&mut self, smoothing: Option<f64>) -> Option<Recording> {
+    /// The curves are computed for each of `smoothings`.
+    pub fn take(&mut self, smoothings: Vec<Option<f64>>) -> Option<Recording> {
         let fresh = self.changed.elapsed().saturating_sub(SETTLE).as_secs_f64();
         let fresh_frames = (fresh * self.request.sample_rate) as usize;
         let periods = self.request.periods.min(fresh_frames / self.period);
@@ -240,7 +241,7 @@ impl Live {
                 .collect(),
             delays_ms: self.delays_ms.clone(),
             range: self.request.range(),
-            smoothing,
+            smoothings,
         })
     }
 
@@ -285,15 +286,16 @@ pub struct Recording {
     mics: Vec<String>,
     delays_ms: Option<Vec<f64>>,
     range: (f64, f64),
-    smoothing: Option<f64>,
+    /// The smoothings to compute the curves for, one per frequency plot unless they agree.
+    smoothings: Vec<Option<f64>>,
 }
 
 /// One response per mic, and the delays that were taken out of the phase.
 pub struct Analysis {
     pub responses: Vec<Response>,
-    /// The curves of the responses for the smoothing the recording was taken with, computed
+    /// The curves of each response for each smoothing the recording was taken with, computed
     /// here so the UI thread doesn't have to.
-    pub curves: Vec<Curves>,
+    pub curves: Vec<Vec<Curves>>,
     pub delays_ms: Vec<f64>,
     /// Whether the delays were found in this recording, rather than given.
     pub found_delays: bool,
@@ -331,12 +333,20 @@ pub fn analyze(recording: Recording) -> Result<Analysis, String> {
             .fold(1e-12f64, |m, s| m.max(s.abs()));
         let frequency_response = without_delay(&single, delay_ms);
         let coherence = freq_channel(&coherence, index);
-        analysis.curves.push(Curves::new(
-            &frequency_response,
-            Some(&coherence),
-            recording.range,
-            recording.smoothing,
-        ));
+        analysis.curves.push(
+            recording
+                .smoothings
+                .iter()
+                .map(|&smoothing| {
+                    Curves::new(
+                        &frequency_response,
+                        Some(&coherence),
+                        recording.range,
+                        smoothing,
+                    )
+                })
+                .collect(),
+        );
         analysis.responses.push(Response {
             speaker: recording.speakers.clone(),
             mic: mic.clone(),
@@ -558,10 +568,10 @@ mod tests {
     #[test]
     fn waits_for_a_whole_period_after_a_change() {
         let mut live = running(request(&[0, 1]), 5.0);
-        assert!(live.take(None).is_some());
+        assert!(live.take(vec![None]).is_some());
         live.set_playing(1, false);
         assert!(
-            live.take(None).is_none(),
+            live.take(vec![None]).is_none(),
             "the recording is of both speakers"
         );
         assert_eq!(live.playing_names(), "Speaker 1");
@@ -570,7 +580,7 @@ mod tests {
     #[test]
     fn finds_each_mics_response_and_delay() {
         let mut live = running(request(&[0]), 5.0);
-        let analysis = analyze(live.take(Some(6.0)).unwrap()).unwrap();
+        let analysis = analyze(live.take(vec![Some(6.0)]).unwrap()).unwrap();
         assert_eq!(analysis.responses.len(), 2);
         let response = &analysis.responses[1];
         assert_eq!(
@@ -584,7 +594,7 @@ mod tests {
             analysis.delays_ms
         );
         // a clean simulation: trusted almost everywhere
-        let curves = &analysis.curves[1];
+        let curves = &analysis.curves[1][0];
         for hz in [100.0, 1000.0, 10_000.0] {
             assert!(curves.trusted(hz, 0.9), "{hz} Hz");
         }
@@ -599,7 +609,7 @@ mod tests {
             for (speaker, on) in playing.into_iter().enumerate() {
                 live.playing[speaker].store(on, Ordering::Relaxed);
             }
-            let analysis = analyze(live.take(None).unwrap()).unwrap();
+            let analysis = analyze(live.take(vec![None]).unwrap()).unwrap();
             analysis.responses[0].frequency_response.clone()
         };
         let (first, second, both) = (
