@@ -11,7 +11,7 @@ use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariant, ButtonVari
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::scroll::ScrollableElement as _;
@@ -29,7 +29,7 @@ use crate::live::{self, Analysis, Live, LiveRequest, Status};
 use crate::measure::same_name;
 use crate::measure::{self, Job, Outcome, Response};
 use crate::panes::{Panes, Side, Target};
-use crate::plot::{FrequencyChanged, Plot, PlotKind, Series, Trace};
+use crate::plot::{FrequencyChanged, Links, Plot, PlotKind, Series, ToggleLink, Trace};
 use crate::room::{self, Parameter};
 use crate::setup::{Setup, SetupEvent, hint, name_clash, next_name};
 use crate::theme::{self, ShownThemes, ThemeList, palette, trace_color};
@@ -406,6 +406,17 @@ impl MeasurementApp {
             subscriptions.push(cx.subscribe(plot, move |this, _, FrequencyChanged(x), cx| {
                 this.frequency_changed(tab, *x, cx)
             }));
+            // the links are set in each one's right-click menu
+            subscriptions.push(cx.subscribe_in(
+                plot,
+                window,
+                |this, _, event: &ToggleLink, window, cx| match event {
+                    ToggleLink::Frequency => this.set_link_frequency(!this.link_frequency, cx),
+                    ToggleLink::Smoothing => {
+                        this.set_link_smoothing(!this.link_smoothing, window, cx)
+                    }
+                },
+            ));
         }
         for plot in 0..2 {
             let other = 1 - plot;
@@ -445,6 +456,13 @@ impl MeasurementApp {
         }
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
+        let (link_frequency, link_smoothing) = (true, true);
+        Self::show_links(
+            [&magnitude, &phase, &room],
+            link_frequency,
+            link_smoothing,
+            cx,
+        );
         Self {
             focus_handle,
             groups: Vec::new(),
@@ -459,9 +477,9 @@ impl MeasurementApp {
                 enabled: true,
                 fractions: smoothing,
             }; 2],
-            link_smoothing: true,
+            link_smoothing,
             last_smoothing_plot: 0,
-            link_frequency: true,
+            link_frequency,
             last_frequency_plot: Tab::Magnitude,
             smoothing_sliders,
             room_parameter: Parameter::T30,
@@ -502,10 +520,37 @@ impl MeasurementApp {
         }
     }
 
+    /// Shows in the right-click menus of the plots over frequency what is linked: magnitude,
+    /// phase and room acoustics in that order. Only magnitude and phase are smoothed.
+    fn show_links(
+        plots: [&Entity<Plot>; 3],
+        frequency: bool,
+        smoothing: bool,
+        cx: &mut Context<Self>,
+    ) {
+        for (plot, smoothed) in plots.into_iter().zip([true, true, false]) {
+            let links = Links {
+                frequency,
+                smoothing: smoothed.then_some(smoothing),
+            };
+            plot.update(cx, |plot, cx| plot.set_links(links, cx));
+        }
+    }
+
+    fn update_links(&self, cx: &mut Context<Self>) {
+        Self::show_links(
+            [&self.magnitude, &self.phase, &self.room],
+            self.link_frequency,
+            self.link_smoothing,
+            cx,
+        );
+    }
+
     /// Links or unlinks the smoothing of the magnitude and phase plot. Linking smooths both
     /// like the one changed last.
     fn set_link_smoothing(&mut self, link: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.link_smoothing = link;
+        self.update_links(cx);
         if link {
             let from = self.last_smoothing_plot;
             let other = 1 - from;
@@ -522,6 +567,7 @@ impl MeasurementApp {
     /// frequencies of the one moved last in all.
     fn set_link_frequency(&mut self, link: bool, cx: &mut Context<Self>) {
         self.link_frequency = link;
+        self.update_links(cx);
         if link {
             let from = self.last_frequency_plot;
             let x = self.plot(from).read(cx).frequency();
@@ -1376,71 +1422,23 @@ impl MeasurementApp {
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         TitleBar::new().child(
-            h_flex()
-                .w_full()
-                .pr_2()
-                .justify_between()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Icon::new(gpui_kit::assets::IconName::AudioWaveform)
-                                .small()
-                                .text_color(palette::accent(cx)),
-                        )
-                        .child(div().text_sm().child("audio-lab"))
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(palette::text_muted(cx))
-                                .child("Measurements"),
-                        ),
-                )
-                .child(self.render_view_menu(cx)),
+            h_flex().w_full().pr_2().justify_between().child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Icon::new(gpui_kit::assets::IconName::AudioWaveform)
+                            .small()
+                            .text_color(palette::accent(cx)),
+                    )
+                    .child(div().text_sm().child("audio-lab"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(palette::text_muted(cx))
+                            .child("Measurements"),
+                    ),
+            ),
         )
-    }
-
-    /// The menu at the top right: what the plots share.
-    fn render_view_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let app = cx.entity().downgrade();
-        Button::new("view-menu")
-            .ghost()
-            .small()
-            .icon(Icon::new(gpui_kit::assets::IconName::Settings2))
-            .tooltip("View")
-            .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, cx| {
-                let Some(this) = app.upgrade() else {
-                    return menu;
-                };
-                let (link_frequency, link_smoothing) = {
-                    let this = this.read(cx);
-                    (this.link_frequency, this.link_smoothing)
-                };
-                let (frequency, smoothing) = (this.downgrade(), this.downgrade());
-                menu.label("Link plots")
-                    .item(
-                        PopupMenuItem::new("Frequency axes")
-                            .checked(link_frequency)
-                            .on_click(move |_, _, cx| {
-                                frequency
-                                    .update(cx, |this, cx| {
-                                        this.set_link_frequency(!this.link_frequency, cx)
-                                    })
-                                    .ok();
-                            }),
-                    )
-                    .item(
-                        PopupMenuItem::new("Smoothing")
-                            .checked(link_smoothing)
-                            .on_click(move |_, window, cx| {
-                                smoothing
-                                    .update(cx, |this, cx| {
-                                        this.set_link_smoothing(!this.link_smoothing, window, cx)
-                                    })
-                                    .ok();
-                            }),
-                    )
-            })
     }
 
     fn render_side_bar(&self, cx: &mut Context<Self>) -> AnyElement {

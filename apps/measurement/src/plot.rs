@@ -169,6 +169,21 @@ enum Drag {
 /// Magnitude and phase pass it on to each other, so they always show the same frequencies.
 pub struct FrequencyChanged(pub (f64, f64));
 
+/// What a plot over frequency shares with the others, shown in its right-click menu.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Links {
+    /// Whether the plots over frequency show the same frequencies.
+    pub frequency: bool,
+    /// Whether magnitude and phase are smoothed alike; `None` for a plot without smoothing.
+    pub smoothing: Option<bool>,
+}
+
+/// The user turned a link on or off in a plot's right-click menu.
+pub enum ToggleLink {
+    Frequency,
+    Smoothing,
+}
+
 pub struct Plot {
     kind: PlotKind,
     traces: Vec<Trace>,
@@ -183,6 +198,8 @@ pub struct Plot {
     drag: Option<Drag>,
     /// The view menu, open after a right-click, where it opened, and what closes it.
     menu: Option<(Entity<PopupMenu>, Point<Pixels>, Subscription)>,
+    /// What it shares with the other plots over frequency; `None` for the others.
+    links: Option<Links>,
 }
 
 impl Plot {
@@ -197,6 +214,15 @@ impl Plot {
             hover: None,
             drag: None,
             menu: None,
+            links: None,
+        }
+    }
+
+    /// Shows in the right-click menu what the plot shares with the others.
+    pub fn set_links(&mut self, links: Links, cx: &mut Context<Self>) {
+        if self.links != Some(links) {
+            self.links = Some(links);
+            cx.notify();
         }
     }
 
@@ -240,10 +266,20 @@ impl Plot {
         self.user_changed(before, cx);
     }
 
-    /// The menu a right-click opens: views to jump to.
+    /// The menu a right-click opens: views to jump to, and what is linked with the other
+    /// plots.
     fn open_menu(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let plot = cx.entity().downgrade();
         let kind = self.kind;
+        let links = self.links;
+        let toggle = |label: &str, checked: bool, link: fn() -> ToggleLink| {
+            let plot = plot.clone();
+            PopupMenuItem::new(label.to_string())
+                .checked(checked)
+                .on_click(move |_, _, cx| {
+                    plot.update(cx, |_, cx| cx.emit(link())).ok();
+                })
+        };
         let item = |label: &str, f: fn(&mut Plot, &mut Window, &mut Context<Plot>)| {
             let plot = plot.clone();
             PopupMenuItem::new(label.to_string()).on_click(move |_, window, cx| {
@@ -272,11 +308,23 @@ impl Plot {
                     plot.reset_view(cx)
                 }));
             }
-            menu.item(item("Fit to data", |plot, _, cx| plot.fit_to_data(cx)))
+            menu = menu
+                .item(item("Fit to data", |plot, _, cx| plot.fit_to_data(cx)))
                 .separator()
                 .item(item("Custom range…", |plot, window, cx| {
                     plot.open_custom_range(window, cx)
-                }))
+                }));
+            if let Some(links) = links {
+                menu = menu.separator().label("Link plots").item(toggle(
+                    "Frequency axes",
+                    links.frequency,
+                    || ToggleLink::Frequency,
+                ));
+                if let Some(smoothing) = links.smoothing {
+                    menu = menu.item(toggle("Smoothing", smoothing, || ToggleLink::Smoothing));
+                }
+            }
+            menu
         });
         menu.focus_handle(cx).focus(window, cx);
         let subscription = cx.subscribe(&menu, |plot, _, _: &DismissEvent, cx| {
@@ -642,6 +690,7 @@ impl Plot {
 }
 
 impl EventEmitter<FrequencyChanged> for Plot {}
+impl EventEmitter<ToggleLink> for Plot {}
 
 impl Render for Plot {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
