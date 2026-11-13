@@ -16,6 +16,7 @@ use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMen
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::progress::Progress;
+use gpui_kit::component::radio::Radio;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::{Select, SelectEvent, SelectItem as _, SelectState};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderScale, SliderState};
@@ -26,6 +27,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::average::{self, Method};
 use crate::curves::{Curves, impulse_points};
 use crate::live::{self, Analysis, Live, LiveRequest, Status};
 use crate::measure::same_name;
@@ -48,7 +50,8 @@ actions!(
         OpenSession,
         SaveSession,
         SaveSessionAs,
-        ImportImpulseResponses
+        ImportImpulseResponses,
+        Back
     ]
 );
 
@@ -63,6 +66,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-s", SaveSession, None),
         KeyBinding::new("ctrl-shift-s", SaveSessionAs, None),
         KeyBinding::new("ctrl-i", ImportImpulseResponses, None),
+        // out of the setup or the averaging; open menus, selects and dialogs take it first
+        KeyBinding::new("escape", Back, Some("MeasurementApp")),
     ]);
 }
 
@@ -70,6 +75,8 @@ pub fn bind_keys(cx: &mut App) {
 enum SideBar {
     Measurements,
     Setup,
+    /// The list, with the measurements to average ticked, and how to average them.
+    Average,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -262,6 +269,19 @@ enum Action {
     },
 }
 
+/// How to average the shown measurements, while the side bar shows the averaging. Which
+/// measurements are shown changes only for the averaging: closing it shows them as before.
+struct Averaging {
+    /// Which measurements were shown when the averaging opened, to show them so again.
+    shown_before: Vec<(u64, bool)>,
+    method: Method,
+    /// The folder to put the average in, or `None` for a new one called `name`.
+    target: Option<u64>,
+    name: Entity<InputState>,
+    /// The average is being computed.
+    busy: bool,
+}
+
 /// What of a measurement to export.
 #[derive(Clone, Copy)]
 enum Export {
@@ -377,6 +397,8 @@ pub struct MeasurementApp {
     warnings: Vec<String>,
     /// The folder the session was opened from or saved to last.
     session: Option<PathBuf>,
+    /// How to average, while the side bar shows the averaging.
+    averaging: Option<Averaging>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -544,6 +566,7 @@ impl MeasurementApp {
             _ticker: None,
             warnings: Vec::new(),
             session: None,
+            averaging: None,
             _subscriptions: subscriptions,
         }
     }
@@ -1137,7 +1160,7 @@ impl MeasurementApp {
                         about: m.about.iter().map(ToString::to_string).collect(),
                         range: m.range,
                         notes: m.notes.text(cx).to_string(),
-                        visible: m.visible,
+                        visible: self.shown_outside_averaging(m),
                         color: m.color,
                     })
                     .collect(),
@@ -1277,6 +1300,8 @@ impl MeasurementApp {
             return;
         }
         self.stop_live(cx);
+        // its measurements are gone
+        self.averaging = None;
         self.groups.clear();
         self.warnings.clear();
         for folder in folders {
@@ -1361,6 +1386,7 @@ impl MeasurementApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.close_averaging(cx);
         let mut warnings = Vec::new();
         for file in imported {
             let file = match file {
@@ -1393,6 +1419,214 @@ impl MeasurementApp {
         self.setup.update(cx, |setup, cx| {
             setup.renumber(taken.iter().map(|n| n.as_ref()), window, cx)
         });
+        self.refresh_plots(cx);
+    }
+
+    /// The measurements `ids`, in the order of the list.
+    fn measurements_of(&self, ids: &[u64]) -> Vec<&Measurement> {
+        self.all_groups()
+            .flat_map(|g| &g.measurements)
+            .filter(|m| ids.contains(&m.id))
+            .collect()
+    }
+
+    /// Shows the averaging in the side bar: the shown measurements are averaged.
+    fn open_averaging(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.job.is_some() {
+            return;
+        }
+        let taken = self.group_names();
+        let default = next_name("Average 1", taken.iter().map(|n| n.as_ref()));
+        let name = cx.new(|cx| InputState::new(window, cx).default_value(default));
+        let shown_before = self
+            .all_groups()
+            .flat_map(|g| &g.measurements)
+            .map(|m| (m.id, m.visible))
+            .collect();
+        self.averaging = Some(Averaging {
+            shown_before,
+            method: Method::Power,
+            target: None,
+            name,
+            busy: false,
+        });
+        self.side_bar = SideBar::Average;
+        cx.notify();
+    }
+
+    /// Escape: from the setup or the averaging back to the list. Elsewhere it is left to others.
+    fn go_back(&mut self, cx: &mut Context<Self>) {
+        // a running measurement shows its progress, which has a stop button of its own
+        if self.job.is_some() {
+            cx.propagate();
+            return;
+        }
+        match self.side_bar {
+            SideBar::Setup => {
+                self.side_bar = SideBar::Measurements;
+                cx.notify();
+            }
+            SideBar::Average => self.close_averaging(cx),
+            SideBar::Measurements => cx.propagate(),
+        }
+    }
+
+    /// Back to the list, with the measurements shown as before the averaging.
+    fn close_averaging(&mut self, cx: &mut Context<Self>) {
+        if let Some(averaging) = self.averaging.take() {
+            for (id, visible) in averaging.shown_before {
+                if let Some(m) = self.measurement_mut(id) {
+                    m.visible = visible;
+                }
+            }
+        }
+        if self.side_bar == SideBar::Average {
+            self.side_bar = SideBar::Measurements;
+        }
+        self.refresh_plots(cx);
+    }
+
+    /// Whether the measurement `m` is shown outside of the averaging, which shows its own.
+    fn shown_outside_averaging(&self, m: &Measurement) -> bool {
+        self.averaging
+            .as_ref()
+            .and_then(|a| a.shown_before.iter().find(|(id, _)| *id == m.id))
+            .map_or(m.visible, |(_, visible)| *visible)
+    }
+
+    /// The measurements shown in the plots, in the order of the list: those to average.
+    fn shown_ids(&self) -> Vec<u64> {
+        self.all_groups()
+            .flat_map(|g| &g.measurements)
+            .filter(|m| m.visible)
+            .map(|m| m.id)
+            .collect()
+    }
+
+    /// Averages the shown measurements as the averaging says, in the background.
+    fn run_averaging(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(averaging) = &self.averaging else {
+            return;
+        };
+        if averaging.busy {
+            return;
+        }
+        let (method, target) = (averaging.method, averaging.target);
+        let name = averaging.name.read(cx).value().trim().to_string();
+        let ids = self.shown_ids();
+        let chosen = self.measurements_of(&ids);
+        if chosen.len() < 2 {
+            return;
+        }
+        // where all of them were measured
+        let range = chosen
+            .iter()
+            .fold((0.0f64, f64::INFINITY), |(low, high), m| {
+                (low.max(m.range.0), high.min(m.range.1))
+            });
+        if range.0 >= range.1 {
+            notify_error(
+                "The measurements share no frequency range.".into(),
+                window,
+                cx,
+            );
+            return;
+        }
+        let responses: Vec<Response> = chosen.iter().map(|m| m.response.clone()).collect();
+        let mut about = vec![
+            format!("{} of {} measurements", method.label(), chosen.len()),
+            method.phase_note().to_string(),
+        ];
+        if method == Method::Vector {
+            about.push(format!(
+                "Peaks spread over {:.2} ms before aligning",
+                average::peak_spread_ms(&responses)
+            ));
+        }
+        about.extend(average::room_notes(&responses));
+        about.extend(chosen.iter().map(|m| format!("– {}", m.full_name)));
+        let how = Measured {
+            at: Local::now(),
+            about: about.into_iter().map(Into::into).collect(),
+            range,
+        };
+        if let Some(averaging) = &mut self.averaging {
+            averaging.busy = true;
+        }
+        cx.notify();
+        let work = cx.background_spawn(async move { average::average(&responses, method) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = work.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(response) => this.add_average(response, target, &name, &how, window, cx),
+                Err(error) => {
+                    if let Some(averaging) = &mut this.averaging {
+                        averaging.busy = false;
+                    }
+                    notify_error(error, window, cx);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Puts the average `response` into the folder `target`, or a new one called `name`, and
+    /// goes back to the list.
+    fn add_average(
+        &mut self,
+        mut response: Response,
+        target: Option<u64>,
+        name: &str,
+        how: &Measured,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match target.filter(|id| self.groups.iter().any(|g| g.id == *id)) {
+            Some(id) => {
+                let group = self.groups.iter().find(|g| g.id == id).expect("exists");
+                // a name of its own in the folder: "Power average (RMS) 2"
+                let taken: Vec<SharedString> =
+                    group.measurements.iter().map(|m| m.name.clone()).collect();
+                let free = |candidate: &str| !taken.iter().any(|t| same_name(t, candidate));
+                if !free(&response.speaker) {
+                    response.speaker = (2..)
+                        .map(|n| format!("{} {n}", response.speaker))
+                        .find(|candidate| free(candidate))
+                        .expect("some number is free");
+                }
+                let folder = group.name.to_string();
+                let m = self.new_measurement_of(response, &folder, how, None, "", window, cx);
+                if let Some(group) = self.groups.iter_mut().find(|g| g.id == id) {
+                    group.expanded = true;
+                    group.measurements.push(m);
+                }
+            }
+            None => {
+                let name = if name.is_empty() {
+                    let taken = self.group_names();
+                    next_name("Average 1", taken.iter().map(|n| n.as_ref()))
+                } else {
+                    self.unique_group_name(name)
+                };
+                self.add_group(
+                    name,
+                    how.range,
+                    how.about.iter().map(ToString::to_string).collect(),
+                    how.at,
+                    "",
+                    vec![response],
+                    window,
+                    cx,
+                );
+                let taken = self.group_names();
+                self.setup.update(cx, |setup, cx| {
+                    setup.renumber(taken.iter().map(|n| n.as_ref()), window, cx)
+                });
+            }
+        }
+        self.close_averaging(cx);
         self.refresh_plots(cx);
     }
 
@@ -1732,6 +1966,7 @@ impl MeasurementApp {
     }
 
     fn new_measurement(&mut self, cx: &mut Context<Self>) {
+        self.close_averaging(cx);
         self.side_bar = SideBar::Setup;
         cx.notify();
     }
@@ -1762,6 +1997,10 @@ impl MeasurementApp {
             // hidden ones under the mouse in the list are shown too, without fitting to them
             let shown = |m: &&mut Measurement| m.visible || highlight.contains(&m.id);
             for m in group.measurements.iter_mut().filter(shown) {
+                // power and dB averages have a magnitude only
+                if matches!(tab, Tab::Phase | Tab::Impulse) && !m.response.origin.has_phase() {
+                    continue;
+                }
                 let preview = !m.visible;
                 if !preview {
                     range = (range.0.min(m.range.0), range.1.max(m.range.1));
@@ -1854,6 +2093,7 @@ impl MeasurementApp {
         match self.side_bar {
             SideBar::Setup => self.setup.clone().into_any_element(),
             SideBar::Measurements => self.render_list(cx).into_any_element(),
+            SideBar::Average => self.render_averaging(cx).into_any_element(),
         }
     }
 
@@ -1928,9 +2168,9 @@ impl MeasurementApp {
             )
     }
 
-    fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The folders and their measurements: live on top, then the newest.
+    fn render_rows(&self, cx: &mut Context<Self>) -> Div {
         let mut list = v_flex().w_full().py_1();
-        // live on top, then the newest
         let live = self.live.iter().map(|run| &run.group);
         for group in live.chain(self.groups.iter().rev()) {
             list = list.child(self.render_group_row(group, cx));
@@ -1940,6 +2180,229 @@ impl MeasurementApp {
                 }
             }
         }
+        list
+    }
+
+    /// The averaging in the side bar: the list, where the shown measurements are those
+    /// averaged, and below it how to average them and where to put the result.
+    fn render_averaging(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(averaging) = &self.averaging else {
+            return div();
+        };
+        let shown = self.num_visible();
+        let enough = shown >= 2;
+        // a vector average is for repeats at one position: say if these don't look like it
+        let concerns = if averaging.method == Method::Vector && enough {
+            let responses: Vec<Response> = self
+                .measurements_of(&self.shown_ids())
+                .iter()
+                .map(|m| m.response.clone())
+                .collect();
+            average::vector_concerns(&responses)
+        } else {
+            Vec::new()
+        };
+        let label = |text: &'static str, cx: &App| {
+            div()
+                .text_xs()
+                .font_medium()
+                .text_color(palette::text_muted(cx))
+                .child(text)
+        };
+        let target_name: SharedString = averaging
+            .target
+            .and_then(|id| self.groups.iter().find(|g| g.id == id))
+            .map_or("New folder".into(), |g| g.name.clone());
+        // where the average can go: a new folder, or one of the others, newest first
+        let folders: Vec<(u64, SharedString)> = self
+            .groups
+            .iter()
+            .rev()
+            .map(|g| (g.id, g.name.clone()))
+            .collect();
+        let target = averaging.target;
+        let app = cx.entity().downgrade();
+        let methods: Vec<Div> = Method::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(ix, method)| {
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Radio::new(("average-method", ix))
+                            .label(method.label())
+                            .checked(averaging.method == method)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(averaging) = &mut this.averaging {
+                                    averaging.method = method;
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(explainer(
+                        ("average-method-info", ix),
+                        method.label(),
+                        "What it does",
+                        method.description(),
+                        method.when_to_use(),
+                        cx,
+                    ))
+            })
+            .collect();
+        div().size_full().child(
+            v_flex()
+                .size_full()
+                .child(
+                    h_flex()
+                        .h(px(36.0))
+                        .flex_shrink_0()
+                        .px_2()
+                        .gap_1()
+                        .border_b_1()
+                        .border_color(palette::border(cx))
+                        .child(
+                            Button::new("average-back")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::ArrowLeft)
+                                .tooltip("Back to the measurements")
+                                .on_click(cx.listener(|this, _, _, cx| this.close_averaging(cx))),
+                        )
+                        .child(div().text_sm().font_medium().child("Average measurements")),
+                )
+                .child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_xs()
+                        .text_color(palette::text_muted(cx))
+                        .border_b_1()
+                        .border_color(palette::border(cx))
+                        .child("Tick the measurements to average: those shown are averaged."),
+                )
+                .child(
+                    div().flex_1().min_h_0().child(
+                        v_flex()
+                            .id("average-list")
+                            .size_full()
+                            .overflow_y_scrollbar()
+                            .child(self.render_rows(cx)),
+                    ),
+                )
+                .child(
+                    v_flex()
+                        .flex_shrink_0()
+                        .p_3()
+                        .gap_3()
+                        .border_t_1()
+                        .border_color(palette::border(cx))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(if enough {
+                                    palette::text_muted(cx)
+                                } else {
+                                    palette::error(cx)
+                                })
+                                .child(if enough {
+                                    format!("{shown} measurements are averaged.")
+                                } else {
+                                    "Show at least two measurements to average them.".into()
+                                }),
+                        )
+                        .child(
+                            v_flex()
+                                .w_full()
+                                .gap_1()
+                                .child(label("Method", cx))
+                                .children(methods)
+                                .when(!concerns.is_empty(), |this| {
+                                    this.child(vector_warning(&concerns, cx))
+                                }),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(label("Put the average in", cx))
+                                .child(
+                                    Button::new("average-target")
+                                        .outline()
+                                        .small()
+                                        .w_full()
+                                        .icon(IconName::Folder)
+                                        .label(target_name)
+                                        .dropdown_menu(move |mut menu, _, _| {
+                                            let pick = |to: Option<u64>| {
+                                                let app = app.clone();
+                                                move |_: &ClickEvent,
+                                                      _: &mut Window,
+                                                      cx: &mut App| {
+                                                    app.update(cx, |this, cx| {
+                                                        if let Some(averaging) =
+                                                            &mut this.averaging
+                                                        {
+                                                            averaging.target = to;
+                                                        }
+                                                        cx.notify();
+                                                    })
+                                                    .ok();
+                                                }
+                                            };
+                                            menu = menu.item(
+                                                PopupMenuItem::new("New folder")
+                                                    .icon(gpui_kit::assets::IconName::FolderPlus)
+                                                    .checked(target.is_none())
+                                                    .on_click(pick(None)),
+                                            );
+                                            if !folders.is_empty() {
+                                                menu = menu.separator();
+                                            }
+                                            for (id, name) in &folders {
+                                                menu = menu.item(
+                                                    PopupMenuItem::new(name.clone())
+                                                        .checked(target == Some(*id))
+                                                        .on_click(pick(Some(*id))),
+                                                );
+                                            }
+                                            menu
+                                        }),
+                                )
+                                .when(averaging.target.is_none(), |this| {
+                                    this.child(Input::new(&averaging.name).small())
+                                }),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("average-cancel")
+                                        .flex_1()
+                                        .label("Cancel")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.close_averaging(cx)),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("average-run")
+                                        .flex_1()
+                                        .primary()
+                                        .label(if averaging.busy {
+                                            "Averaging…"
+                                        } else {
+                                            "Average"
+                                        })
+                                        .disabled(!enough || averaging.busy)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.run_averaging(window, cx)
+                                        })),
+                                ),
+                        ),
+                ),
+        )
+    }
+
+    fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let list = self.render_rows(cx);
         v_flex()
             .size_full()
             .child(
@@ -1970,6 +2433,16 @@ impl MeasurementApp {
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.new_measurement(cx)),
                                     ),
+                            )
+                            .child(
+                                Button::new("average")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(gpui_kit::assets::IconName::Sigma))
+                                    .tooltip("Average measurements")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_averaging(window, cx)
+                                    })),
                             )
                             .child(self.render_session_menu()),
                     ),
@@ -2439,6 +2912,7 @@ impl MeasurementApp {
         let app = cx.entity();
         let ids: Rc<[u64]> = Rc::new([id]);
         let has_room = m.response.room.is_some();
+        let has_phase = m.response.origin.has_phase();
         h_flex()
             .id(("measurement", id))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -2521,10 +2995,12 @@ impl MeasurementApp {
                         window,
                         cx,
                         move |mut menu, _, _| {
-                            let mut kinds = vec![
-                                ("Impulse response (WAV)…", Export::ImpulseResponse),
-                                ("Frequency response (FRD)…", Export::FrequencyResponse),
-                            ];
+                            let mut kinds = Vec::new();
+                            // power and dB averages have no impulse response of their own
+                            if has_phase {
+                                kinds.push(("Impulse response (WAV)…", Export::ImpulseResponse));
+                            }
+                            kinds.push(("Frequency response (FRD)…", Export::FrequencyResponse));
                             if has_room {
                                 kinds.push(("Room acoustics (CSV)…", Export::RoomAcoustics));
                             }
@@ -2864,40 +3340,14 @@ impl MeasurementApp {
     /// A button that opens what the selected room parameter shows and when to use it.
     fn render_room_parameter_info(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let parameter = self.room_parameter;
-        let trigger = Button::new("room-parameter-info-button")
-            .ghost()
-            .xsmall()
-            .icon(Icon::new(IconName::Info).text_color(palette::text_placeholder(cx)))
-            .tooltip(format!("About {}", parameter.label()));
-        let section = |title: &'static str, text: &'static str, cx: &App| {
-            v_flex()
-                .gap_0p5()
-                .child(
-                    div()
-                        .font_medium()
-                        .text_color(palette::text(cx))
-                        .child(title),
-                )
-                .child(div().child(text))
-        };
-        Popover::new("room-parameter-info")
-            .trigger(trigger)
-            .content(move |_, _, cx| {
-                v_flex()
-                    .w(px(340.0))
-                    .gap_2()
-                    .text_xs()
-                    .text_color(palette::text_muted(cx))
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_medium()
-                            .text_color(palette::text(cx))
-                            .child(format!("{} · {}", parameter.label(), parameter.name())),
-                    )
-                    .child(section("What it shows", parameter.description(), cx))
-                    .child(section("When to use it", parameter.when_to_use(), cx))
-            })
+        explainer(
+            "room-parameter-info",
+            format!("{} · {}", parameter.label(), parameter.name()),
+            "What it shows",
+            parameter.description(),
+            parameter.when_to_use(),
+            cx,
+        )
     }
 
     fn render_status_bar(&self, cx: &App) -> impl IntoElement {
@@ -3016,6 +3466,7 @@ impl Render for MeasurementApp {
             .on_action(cx.listener(|this, _: &ImportImpulseResponses, window, cx| {
                 this.import_impulse_responses(window, cx)
             }))
+            .on_action(cx.listener(|this, _: &Back, _, cx| this.go_back(cx)))
             .size_full()
             .bg(palette::editor(cx))
             .text_color(palette::text(cx))
@@ -3043,6 +3494,93 @@ impl Render for MeasurementApp {
             )
             .child(self.render_status_bar(cx))
     }
+}
+
+/// An info button that opens a card on `title`: what it shows or does (`description`, under
+/// `heading`), and when to use it.
+fn explainer(
+    id: impl Into<ElementId>,
+    title: impl Into<SharedString>,
+    heading: &'static str,
+    description: &'static str,
+    when_to_use: &'static str,
+    cx: &App,
+) -> impl IntoElement {
+    let id = id.into();
+    let title: SharedString = title.into();
+    let trigger = Button::new(ElementId::Name(format!("{id}-button").into()))
+        .ghost()
+        .xsmall()
+        .icon(Icon::new(IconName::Info).text_color(palette::text_placeholder(cx)))
+        .tooltip(format!("About {title}"));
+    let section = |heading: &'static str, text: &'static str, cx: &App| {
+        v_flex()
+            .gap_0p5()
+            .child(
+                div()
+                    .font_medium()
+                    .text_color(palette::text(cx))
+                    .child(heading),
+            )
+            .child(div().child(text))
+    };
+    Popover::new(id).trigger(trigger).content(move |_, _, cx| {
+        v_flex()
+            .w(px(340.0))
+            .gap_2()
+            .text_xs()
+            .text_color(palette::text_muted(cx))
+            .child(
+                div()
+                    .text_sm()
+                    .font_medium()
+                    .text_color(palette::text(cx))
+                    .child(title.clone()),
+            )
+            .child(section(heading, description, cx))
+            .child(section("When to use it", when_to_use, cx))
+    })
+}
+
+/// The warning under the averaging methods when the measurements for a vector average don't
+/// look like repeats at one position: why, a line each, wrapped to the side bar.
+fn vector_warning(concerns: &[String], cx: &App) -> impl IntoElement {
+    let line = |text: SharedString| div().w_full().whitespace_normal().child(text);
+    h_flex()
+        .w_full()
+        .items_start()
+        .gap_2()
+        .mt_1()
+        .p_2()
+        .rounded_md()
+        .border_1()
+        .border_color(palette::warning(cx))
+        .text_xs()
+        .child(
+            div().flex_shrink_0().pt(px(1.0)).child(
+                Icon::new(IconName::TriangleAlert)
+                    .xsmall()
+                    .text_color(palette::warning(cx)),
+            ),
+        )
+        .child(
+            v_flex()
+                // as wide as there is room for, so the lines wrap instead of running out
+                .flex_1()
+                .min_w_0()
+                .gap_1()
+                .child(
+                    line("These don't look like repeats at one position.".into())
+                        .font_medium()
+                        .text_color(palette::warning(cx)),
+                )
+                .children(concerns.iter().map(|concern| line(concern.clone().into())))
+                .child(line(
+                    "A vector average cancels where they differ. For different positions, use \
+                     the power average."
+                        .into(),
+                )),
+        )
 }
 
 /// Tells about something that went wrong with a file.
@@ -3260,10 +3798,13 @@ fn details(response: &Response) -> Vec<SharedString> {
     if let Some(peak_db) = response.peak_db {
         lines.push(format!("Recording peak: {peak_db:.1} dBFS").into());
     }
-    if response.coherence.is_none() {
-        lines.push(format!("IR start: {:.2} ms (with latency)", ms(response.start)).into());
+    // power and dB averages have no impulse response of their own
+    if response.origin.has_phase() {
+        if response.coherence.is_none() {
+            lines.push(format!("IR start: {:.2} ms (with latency)", ms(response.start)).into());
+        }
+        lines.push(format!("IR peak: {:.2} ms (with latency)", ms(peak)).into());
     }
-    lines.push(format!("IR peak: {:.2} ms (with latency)", ms(peak)).into());
     if let Some(broadband) = response
         .room
         .as_ref()

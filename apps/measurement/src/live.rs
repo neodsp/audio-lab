@@ -22,7 +22,7 @@ use audio_lab::signal::{FreqSignal, TimeSignal};
 use num::complex::Complex64;
 
 use crate::curves::Curves;
-use crate::measure::{Lcg, Response, peak_index, simulated_room};
+use crate::measure::{Lcg, Origin, Response, peak_index, simulated_room};
 
 /// How long after switching speakers the recording still holds the old setting: the
 /// device latency plus the sound's travel time, generously.
@@ -350,6 +350,7 @@ pub fn analyze(recording: Recording) -> Result<Analysis, String> {
         analysis.responses.push(Response {
             speaker: recording.speakers.clone(),
             mic: mic.clone(),
+            origin: Origin::Measured,
             impulse_response,
             start: 0,
             frequency_response,

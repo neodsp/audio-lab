@@ -6,7 +6,8 @@
 //!
 //! "New measurement" (Ctrl+N) opens the setup in the side bar: choose the devices, the speakers
 //! (outputs) and microphones (inputs), the sweep, and start. Each speaker plays a sweep, one
-//! after another, while all mics record.
+//! after another, while all mics record. Escape goes back to the list, from the setup and from
+//! the averaging.
 //!
 //! The tabs (Alt+1, 2, 3) show the magnitude, the phase and the impulse responses. The phase is
 //! relative to each impulse response's peak, so the delays are taken out; the impulse
@@ -20,6 +21,14 @@
 //! analyzed like a sweep measurement. A measurement's right-click menu exports its impulse
 //! response (WAV), frequency response (FRD) or room acoustics (CSV).
 //!
+//! The Σ button next to "New measurement" averages measurements. The side bar keeps the list,
+//! where the ticked measurements are those shown and averaged, and asks how to average them
+//! and which folder, new or existing, the average goes into: by power (RMS) or in dB for
+//! several positions, which gives a magnitude only (no phase or impulse response), or as
+//! vectors aligned at their peaks for repeats at one position, which keeps both. The room
+//! acoustics are the mean of the measurements' values per band; the average's
+//! info tells where fewer of them had a value. Each method's info tells when to use it.
+//!
 //! "Simulated device" in the setup measures a made-up room instead, to try the app without
 //! audio hardware.
 //!
@@ -28,6 +37,7 @@
 //! ```
 
 mod app;
+mod average;
 mod curves;
 mod devices;
 mod live;
@@ -54,7 +64,12 @@ gpui_kit::assets::icon_assets!(
         FolderInput,
         FolderPlus,
         Pencil,
-        CalendarClock
+        CalendarClock,
+        Sigma,
+        Save,
+        SavePen,
+        Import,
+        FileOutput
     ]
 );
 

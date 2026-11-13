@@ -14,6 +14,9 @@ use audio_lab::signal::{FreqSignal, SweepConfig, SweepType, TimeSignal, generate
 use chrono::{DateTime, Local};
 use num::complex::Complex64;
 
+use serde::{Deserialize, Serialize};
+
+use crate::average::Method;
 use crate::live::LiveRequest;
 use crate::room::{self, RoomAcoustics};
 
@@ -292,13 +295,37 @@ pub fn describe_device(device: Option<&DeviceConfig>, sample_rate: f64) -> Strin
     )
 }
 
+/// Where a response comes from.
+#[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    /// Measured with sweeps or live noise.
+    #[default]
+    Measured,
+    /// Read from an impulse response file.
+    Imported,
+    /// Averaged from other responses.
+    Average(Method),
+}
+
+impl Origin {
+    /// Whether it has a real phase and impulse response. Power and dB averages have a magnitude
+    /// only: an average over positions has no phase of its own.
+    pub fn has_phase(self) -> bool {
+        !matches!(self, Origin::Average(Method::Power | Method::Decibel))
+    }
+}
+
 /// The response from one speaker to one mic, from a sweep or live noise. With noise on several
 /// speakers at once, `speaker` names all of them.
 #[derive(Clone)]
 pub struct Response {
     pub speaker: String,
     pub mic: String,
-    /// The impulse response from its start, windowed.
+    pub origin: Origin,
+    /// The impulse response from its start, windowed. For a response without a phase (see
+    /// [`Origin::has_phase`]) a minimum phase stand-in that only stores the magnitude: it isn't
+    /// shown, exported or vector averaged.
     pub impulse_response: TimeSignal,
     /// Where `impulse_response` starts in the recording, in samples. Includes the latency.
     pub start: usize,
@@ -454,6 +481,7 @@ pub fn run(request: &Request, cancel: &AtomicBool) -> Result<Outcome, String> {
             outcome.responses.push(Response {
                 speaker: speaker.clone(),
                 mic: mic.clone(),
+                origin: Origin::Measured,
                 frequency_response: response_without_delay(&impulse_response, delay),
                 delay,
                 coherence: None,
@@ -525,6 +553,7 @@ pub fn import(ir: &TimeSignal, name: &str, ir_length: f64) -> Outcome {
         outcome.responses.push(Response {
             speaker: name.to_string(),
             mic: label,
+            origin: Origin::Imported,
             frequency_response: response_without_delay(&impulse_response, delay),
             delay,
             coherence: None,
