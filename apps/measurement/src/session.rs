@@ -27,7 +27,7 @@ use chrono::{DateTime, Local};
 use gpui_kit::Hsla;
 use serde::{Deserialize, Serialize};
 
-use crate::measure::{Response, response_without_delay};
+use crate::measure::{Origin, Response, response_without_delay};
 use crate::room::{BANDS, Parameter, RoomAcoustics};
 
 /// The file in a session folder that lists what is in it.
@@ -76,6 +76,9 @@ struct FolderFile {
 struct MeasurementFile {
     speaker: String,
     mic: String,
+    /// Measured, imported, or an average and how.
+    #[serde(default)]
+    origin: Origin,
     measured: DateTime<Local>,
     about: Vec<String>,
     range_hz: [f64; 2],
@@ -221,6 +224,7 @@ pub fn save(dir: &Path, folders: &[Folder]) -> Result<(), String> {
             measurements.push(MeasurementFile {
                 speaker: response.speaker.clone(),
                 mic: response.mic.clone(),
+                origin: response.origin,
                 measured: saved.measured,
                 about: saved.about.clone(),
                 range_hz: [saved.range.0, saved.range.1],
@@ -349,6 +353,7 @@ fn load_measurement(dir: &Path, m: MeasurementFile) -> Result<Saved, String> {
     let response = Response {
         speaker: m.speaker,
         mic: m.mic,
+        origin: m.origin,
         frequency_response: response_without_delay(&impulse_response, m.delay),
         delay: m.delay,
         impulse_response,
@@ -393,7 +398,8 @@ pub fn export_impulse_response(response: &Response, path: &Path) -> Result<(), S
 
 /// Writes the frequency response of `response` within `range` (Hz) as an FRD text file:
 /// frequency in Hz, magnitude in dB and phase in degrees per line, unsmoothed. The phase is
-/// relative to the impulse response's peak, like the app shows it.
+/// relative to the impulse response's peak, like the app shows it. A response without a phase
+/// gets no phase column: crossover tools would take one as measured.
 pub fn export_frequency_response(
     response: &Response,
     title: &str,
@@ -404,12 +410,21 @@ pub fn export_frequency_response(
 }
 
 fn frd(response: &Response, title: &str, range: (f64, f64)) -> String {
-    let mut text = format!("* {title}\n* Frequency (Hz), magnitude (dB), phase (degrees)\n");
+    let phase = response.origin.has_phase();
+    let mut text = if phase {
+        format!("* {title}\n* Frequency (Hz), magnitude (dB), phase (degrees)\n")
+    } else {
+        format!("* {title}\n* Frequency (Hz), magnitude (dB); an average without a phase\n")
+    };
     let signal = &response.frequency_response;
     for (&hz, h) in signal.freq_bins().iter().zip(signal.channel(0)) {
         if hz > 0.0 && (range.0..=range.1).contains(&hz) {
             let db = 20.0 * h.norm().max(1e-15).log10();
-            writeln!(text, "{hz:.4} {db:.4} {:.4}", h.arg().to_degrees()).unwrap();
+            if phase {
+                writeln!(text, "{hz:.4} {db:.4} {:.4}", h.arg().to_degrees()).unwrap();
+            } else {
+                writeln!(text, "{hz:.4} {db:.4}").unwrap();
+            }
         }
     }
     text
@@ -564,7 +579,9 @@ mod tests {
         live.coherence = Some(live.frequency_response.clone());
         live.room = None;
         live.peak_db = None;
+        live.origin = Origin::Average(crate::average::Method::Power);
         responses.push(live);
+        responses[1].origin = Origin::Imported;
         let folders = vec![
             Folder {
                 name: "Living room".into(),
@@ -599,6 +616,7 @@ mod tests {
         {
             let (a, b) = (&before.response, &after.response);
             assert_eq!((&a.speaker, &a.mic), (&b.speaker, &b.mic));
+            assert_eq!(a.origin, b.origin);
             assert_eq!(a.start, b.start);
             assert_eq!(a.peak_db, b.peak_db);
             assert_eq!(before.notes, after.notes);
@@ -667,6 +685,16 @@ mod tests {
             .collect();
         assert_eq!(first.len(), 3);
         assert!(first[0] >= 20.0 && last[0] <= 20_000.0);
+
+        // a power average has no phase: no phase column, which tools would take as measured
+        let mut average = response.clone();
+        average.origin = Origin::Average(crate::average::Method::Power);
+        let text = frd(&average, "Average", (20.0, 20_000.0));
+        assert!(
+            text.lines()
+                .filter(|l| !l.starts_with('*'))
+                .all(|l| l.split(' ').count() == 2)
+        );
 
         let csv = room_csv(response.room.as_ref().unwrap());
         let rows: Vec<&str> = csv.lines().collect();
