@@ -1,14 +1,16 @@
-//! A response's magnitude and phase, ready to be drawn at any resolution.
+//! A response's magnitude, phase and group delay, ready to be drawn at any resolution.
 
 use audio_lab::dsp::{
     FractionalOctaveSmoothingConfig, FractionalOctaveSmoothingMode, smooth_fractional_octave,
 };
 use audio_lab::signal::{FreqSignal, TimeSignal};
 
+use crate::plot::PlotKind;
+
 const DB_FLOOR: f64 = -150.0;
 
-/// A response's smoothed magnitude and phase per bin, from which the curves are drawn at the
-/// resolution of the screen.
+/// A response's smoothed magnitude, phase and group delay per bin, from which the curves are
+/// drawn at the resolution of the screen.
 pub struct Curves {
     /// What they were computed with: the smoothing (1/N octave) or `None`.
     pub smoothing: Option<f64>,
@@ -20,6 +22,8 @@ pub struct Curves {
     /// The phase as complex values, which interpolate across its wraps.
     re: Vec<f64>,
     im: Vec<f64>,
+    /// The group delay in ms, from the smoothed phase, relative to the delay taken out of it.
+    group_delay_ms: Vec<f64>,
     /// The coherence of a live measurement, smoothed like the magnitude. Where it is below the
     /// chosen limit, the curves aren't drawn.
     coherence: Option<Vec<f64>>,
@@ -60,18 +64,22 @@ impl Curves {
         let lowest_bin = freq_bins.iter().copied().find(|&f| f > 0.0).unwrap_or(1.0);
         let low = range.0.max(lowest_bin);
         let high = range.1.min(highest_bin).max(low);
+        let bin_width = freq_bins.get(1).map_or(1.0, |f| f - first_bin);
+        let re: Vec<f64> = phase.channel(0).iter().map(|h| h.re).collect();
+        let im: Vec<f64> = phase.channel(0).iter().map(|h| h.im).collect();
         Self {
             smoothing,
             log_range: (low.log10(), high.log10()),
             first_bin,
-            bin_width: freq_bins.get(1).map_or(1.0, |f| f - first_bin),
+            bin_width,
+            group_delay_ms: group_delay_ms(&re, &im, bin_width),
             magnitude_db: magnitude
                 .channel(0)
                 .iter()
                 .map(|h| (20.0 * h.norm().log10()).max(DB_FLOOR))
                 .collect(),
-            re: phase.channel(0).iter().map(|h| h.re).collect(),
-            im: phase.channel(0).iter().map(|h| h.im).collect(),
+            re,
+            im,
             coherence,
         }
     }
@@ -103,18 +111,76 @@ impl Curves {
             .to_degrees()
     }
 
+    /// What the plot `kind` shows at `hz`: the phase, the group delay, else the magnitude.
+    pub fn value(&self, kind: PlotKind, hz: f64) -> f64 {
+        match kind {
+            PlotKind::Phase => self.phase_degrees(hz),
+            PlotKind::GroupDelay => self.group_delay_ms(hz),
+            _ => self.magnitude_db(hz),
+        }
+    }
+
+    /// In ms, relative to the delay taken out of the phase: up to the impulse response's peak.
+    pub fn group_delay_ms(&self, hz: f64) -> f64 {
+        interpolate(&self.group_delay_ms, self.position(hz))
+    }
+
     /// The lowest and highest magnitude within the drawn range where it is
     /// [`trusted`](Self::trusted), in dB.
     pub fn magnitude_extent(&self, min_coherence: f64) -> (f64, f64) {
-        let (low, high) = self.log_range;
-        (0..=200)
-            .map(|i| 10f64.powf(low + (high - low) * i as f64 / 200.0))
-            .filter(|&hz| self.trusted(hz, min_coherence))
-            .map(|hz| self.magnitude_db(hz))
+        self.sampled(min_coherence, |hz| self.magnitude_db(hz))
             .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), db| {
                 (min.min(db), max.max(db))
             })
     }
+
+    /// Where most of the group delay lies within the drawn range where it is
+    /// [`trusted`](Self::trusted), in ms: without the few spikes at deep notches, which would
+    /// squeeze the rest.
+    pub fn group_delay_extent(&self, min_coherence: f64) -> (f64, f64) {
+        let mut values: Vec<f64> = self
+            .sampled(min_coherence, |hz| self.group_delay_ms(hz))
+            .filter(|v| v.is_finite())
+            .collect();
+        if values.is_empty() {
+            return (f64::INFINITY, f64::NEG_INFINITY);
+        }
+        values.sort_by(f64::total_cmp);
+        let at = |q: f64| values[((values.len() - 1) as f64 * q).round() as usize];
+        (at(0.02), at(0.98))
+    }
+
+    /// `value` at points evenly spaced on the log axis of the drawn range, where it is trusted.
+    fn sampled(&self, min_coherence: f64, value: impl Fn(f64) -> f64) -> impl Iterator<Item = f64> {
+        let (low, high) = self.log_range;
+        (0..=200)
+            .map(move |i| 10f64.powf(low + (high - low) * i as f64 / 200.0))
+            .filter(move |&hz| self.trusted(hz, min_coherence))
+            .map(value)
+    }
+}
+
+/// The group delay per bin in ms, −dφ/dω, from the response as complex values `re` and `im`
+/// on bins `bin_width` Hz apart. The phase step between two bins is the angle of one times the
+/// conjugate of the other, so it needs no unwrapping. Central differences keep it on the bins.
+fn group_delay_ms(re: &[f64], im: &[f64], bin_width: f64) -> Vec<f64> {
+    let len = re.len().min(im.len());
+    if len < 2 {
+        return vec![0.0; len];
+    }
+    // the phase turn from bin a to bin b, in radians
+    let step = |a: usize, b: usize| {
+        // H_b · conj(H_a)
+        let (x, y) = (re[b] * re[a] + im[b] * im[a], im[b] * re[a] - re[b] * im[a]);
+        y.atan2(x)
+    };
+    let ms_per_radian = 1000.0 / (std::f64::consts::TAU * bin_width);
+    (0..len)
+        .map(|k| {
+            let (a, b) = (k.saturating_sub(1), (k + 1).min(len - 1));
+            -step(a, b) / (b - a) as f64 * ms_per_radian
+        })
+        .collect()
 }
 
 /// The impulse response over time in ms since the start of the recording, so the delays
@@ -237,6 +303,38 @@ mod tests {
         }
         let (low, high) = curves.magnitude_extent(0.5);
         assert!(low > -0.1 && high < 0.1);
+    }
+
+    #[test]
+    fn group_delay_of_a_delay_is_flat() {
+        // the impulse lies 10 samples in
+        let expected = 10.0 / 48.0;
+        // smoothing bends it a little at the lowest bins, where the window holds only a few
+        for (smoothing, tolerance) in [(None, 1e-9), (Some(6.0), 1e-3)] {
+            let curves = Curves::new(&impulse_response(), None, (20.0, 20_000.0), smoothing);
+            for hz in [20.0, 31.4, 1000.0, 12_345.0, 19_999.0] {
+                let ms = curves.group_delay_ms(hz);
+                assert!(
+                    (ms - expected).abs() < tolerance,
+                    "{smoothing:?} {hz}: {ms}"
+                );
+            }
+            let (low, high) = curves.group_delay_extent(0.5);
+            assert!((low - expected).abs() < tolerance && (high - expected).abs() < tolerance);
+        }
+    }
+
+    #[test]
+    fn group_delay_steps_need_no_unwrapping() {
+        // 0.2 ms on bins 1 kHz apart: a fifth of a turn per bin, wrapping every few bins
+        let (bins, delay) = (100, 0.2);
+        // −2π · f · τ, with f = k · 1000 Hz and τ in s
+        let angle = |k: usize| -std::f64::consts::TAU * (k as f64 * 1000.0) * (delay / 1000.0);
+        let re: Vec<f64> = (0..bins).map(|k| angle(k).cos()).collect();
+        let im: Vec<f64> = (0..bins).map(|k| angle(k).sin()).collect();
+        for ms in group_delay_ms(&re, &im, 1000.0) {
+            assert!((ms - delay).abs() < 1e-9, "{ms}");
+        }
     }
 
     #[test]

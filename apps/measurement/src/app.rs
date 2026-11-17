@@ -45,6 +45,7 @@ actions!(
         NewMeasurement,
         ShowMagnitude,
         ShowPhase,
+        ShowGroupDelay,
         ShowImpulse,
         ShowRoom,
         OpenSession,
@@ -60,8 +61,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-n", NewMeasurement, None),
         KeyBinding::new("alt-1", ShowMagnitude, None),
         KeyBinding::new("alt-2", ShowPhase, None),
-        KeyBinding::new("alt-3", ShowImpulse, None),
-        KeyBinding::new("alt-4", ShowRoom, None),
+        KeyBinding::new("alt-3", ShowGroupDelay, None),
+        KeyBinding::new("alt-4", ShowImpulse, None),
+        KeyBinding::new("alt-5", ShowRoom, None),
         KeyBinding::new("ctrl-o", OpenSession, None),
         KeyBinding::new("ctrl-s", SaveSession, None),
         KeyBinding::new("ctrl-shift-s", SaveSessionAs, None),
@@ -83,18 +85,26 @@ enum SideBar {
 enum Tab {
     Magnitude,
     Phase,
+    GroupDelay,
     Impulse,
     /// A room acoustics parameter per octave band.
     Room,
 }
 
 impl Tab {
-    const ALL: [Tab; 4] = [Tab::Magnitude, Tab::Phase, Tab::Impulse, Tab::Room];
+    const ALL: [Tab; 5] = [
+        Tab::Magnitude,
+        Tab::Phase,
+        Tab::GroupDelay,
+        Tab::Impulse,
+        Tab::Room,
+    ];
 
     fn title(self) -> &'static str {
         match self {
             Tab::Magnitude => "Magnitude",
             Tab::Phase => "Phase",
+            Tab::GroupDelay => "Group delay",
             Tab::Impulse => "Impulse response",
             Tab::Room => "Room acoustics",
         }
@@ -104,18 +114,108 @@ impl Tab {
         self.frequency_index().is_some()
     }
 
-    /// Which of the two frequency plots it is, for their settings: magnitude 0, phase 1.
+    /// Which of the [`FREQUENCY_PLOTS`] it is, for their settings: magnitude 0, phase 1,
+    /// group delay 2.
     fn frequency_index(self) -> Option<usize> {
         match self {
             Tab::Magnitude => Some(0),
             Tab::Phase => Some(1),
+            Tab::GroupDelay => Some(2),
             Tab::Impulse | Tab::Room => None,
         }
     }
+
+    /// What the plot shows, in easy words, for its info button.
+    fn description(self) -> &'static str {
+        match self {
+            Tab::Magnitude => {
+                "How loud each frequency arrives at the microphone, from deep bass on the left \
+                 to high treble on the right, in dB. A flat line means all frequencies are \
+                 equally loud; peaks are too loud, dips are missing. Smoothing averages over a \
+                 part of an octave, closer to how the ear hears it."
+            }
+            Tab::Phase => {
+                "How far each frequency is shifted in its cycle, from -180° to +180°, once the \
+                 time the sound took to reach the microphone is taken out (up to the impulse \
+                 response's peak). A flat line at 0° means all frequencies arrive together. The \
+                 jumps at ±180° are only where the curve wraps round, not a change in the sound."
+            }
+            Tab::GroupDelay => {
+                "How much later each frequency arrives than the impulse response's peak, in ms: \
+                 the slope of the phase. A flat line at 0 means all frequencies arrive together. \
+                 The bass usually comes later, from the speaker, a subwoofer or the room. Spikes \
+                 at deep dips aren't real delays: there the sound cancels and the phase jumps."
+            }
+            Tab::Impulse => {
+                "What the microphone picks up when the speaker plays a single, very short click, \
+                 over the time since the recording started. The tall first peak is the direct \
+                 sound, the smaller ones after it are reflections from walls, floor and ceiling, \
+                 and then the reverb dies away."
+            }
+            Tab::Room => "",
+        }
+    }
+
+    /// When to look at the plot, in easy words, for its info button.
+    fn when_to_use(self) -> &'static str {
+        match self {
+            Tab::Magnitude => {
+                "Start here: it is what most people mean by frequency response. Use it to find \
+                 room modes (narrow peaks and dips in the bass), to compare speakers or \
+                 positions, and to check a crossover or EQ. Smooth with 1/3 to 1/6 octave to \
+                 judge the tonal balance, little or not at all to find narrow problems."
+            }
+            Tab::Phase => {
+                "Use it to match speakers and subwoofers at the crossover: where both play, \
+                 their phase should be close, else they partly cancel. A speaker wired the wrong \
+                 way round is 180° off. Read it with the magnitude: where the level is low, the \
+                 phase is mostly noise. Power and dB averages have no phase and aren't shown."
+            }
+            Tab::GroupDelay => {
+                "Use it to see whether the bass is late or keeps ringing, e.g. from a bass \
+                 reflex port, a subwoofer or room modes. Small delays are hard to hear; tens of \
+                 ms in the bass can sound slow or boomy. Smooth with 1/6 octave or more, else \
+                 the room makes it very noisy. Each curve is relative to its own peak: compare \
+                 arrival times in the impulse response."
+            }
+            Tab::Impulse => {
+                "Use it to see when the sound arrives and to compare the delays between \
+                 speakers, to find strong early reflections (spikes a few ms after the peak) \
+                 and to see how long the room rings. A first peak pointing down means the \
+                 polarity is inverted. Power and dB averages have none and aren't shown."
+            }
+            Tab::Room => "",
+        }
+    }
+
+    /// The id of its info button.
+    fn info_id(self) -> &'static str {
+        match self {
+            Tab::Magnitude => "magnitude-info",
+            Tab::Phase => "phase-info",
+            Tab::GroupDelay => "group-delay-info",
+            Tab::Impulse => "impulse-info",
+            Tab::Room => "room-parameter-info",
+        }
+    }
+
+    /// Whether it needs a phase: power and dB averages have none.
+    fn needs_phase(self) -> bool {
+        matches!(self, Tab::Phase | Tab::GroupDelay | Tab::Impulse)
+    }
+}
+
+/// How many frequency plots there are, with a smoothing each: magnitude, phase and group
+/// delay.
+const FREQUENCY_PLOTS: usize = 3;
+
+/// The other frequency plots than `plot`, by [`Tab::frequency_index`].
+fn other_frequency_plots(plot: usize) -> impl Iterator<Item = usize> {
+    (0..FREQUENCY_PLOTS).filter(move |&other| other != plot)
 }
 
 /// The tabs whose plots run over frequency, whose axes can be linked.
-const FREQUENCY_AXIS_TABS: [Tab; 3] = [Tab::Magnitude, Tab::Phase, Tab::Room];
+const FREQUENCY_AXIS_TABS: [Tab; 4] = [Tab::Magnitude, Tab::Phase, Tab::GroupDelay, Tab::Room];
 
 /// How a frequency plot is smoothed.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -356,22 +456,23 @@ pub struct MeasurementApp {
     splits: u32,
     /// The measurements under the mouse in the list, highlighted in the plots.
     highlight: Rc<[u64]>,
-    /// The smoothing of the magnitude and of the phase plot, by
+    /// The smoothing of the magnitude, phase and group delay plot, by
     /// [`Tab::frequency_index`].
-    smoothing: [Smoothing; 2],
-    /// Whether the magnitude and phase plot are smoothed alike.
+    smoothing: [Smoothing; FREQUENCY_PLOTS],
+    /// Whether the magnitude, phase and group delay plot are smoothed alike.
     link_smoothing: bool,
     /// The frequency plot whose smoothing was changed last, by [`Tab::frequency_index`]:
-    /// linking smooths the other one like it.
+    /// linking smooths the others like it.
     last_smoothing_plot: usize,
-    /// Whether the plots over frequency (magnitude, phase, room acoustics) show the same
+    /// Whether the plots over frequency (magnitude, phase, group delay, room acoustics) show the
+    /// same
     /// frequencies.
     link_frequency: bool,
     /// The plot over frequency that was moved or zoomed last: linking shows its frequencies
     /// in the others.
     last_frequency_plot: Tab,
     /// One per frequency plot, in its toolbar.
-    smoothing_sliders: [Entity<SliderState>; 2],
+    smoothing_sliders: [Entity<SliderState>; FREQUENCY_PLOTS],
     /// What the room acoustics tab shows.
     room_parameter: Parameter,
     theme_select: Entity<SelectState<ThemeList>>,
@@ -379,6 +480,7 @@ pub struct MeasurementApp {
     setup: Entity<Setup>,
     magnitude: Entity<Plot>,
     phase: Entity<Plot>,
+    group_delay: Entity<Plot>,
     impulse: Entity<Plot>,
     room: Entity<Plot>,
     job: Option<Job>,
@@ -391,7 +493,7 @@ pub struct MeasurementApp {
     min_coherence: f64,
     /// One per frequency plot, like [`smoothing_sliders`](Self::smoothing_sliders); they
     /// always show the same value.
-    coherence_sliders: [Entity<SliderState>; 2],
+    coherence_sliders: [Entity<SliderState>; FREQUENCY_PLOTS],
     _ticker: Option<Task<()>>,
     /// Problems with single responses of the last measurement.
     warnings: Vec<String>,
@@ -406,7 +508,7 @@ impl MeasurementApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let setup = cx.new(|cx| Setup::new(window, cx));
         let smoothing = 6.0;
-        let smoothing_sliders = [(); 2].map(|_| {
+        let smoothing_sliders = [(); FREQUENCY_PLOTS].map(|_| {
             cx.new(|_| {
                 SliderState::new()
                     .min(1.0)
@@ -417,7 +519,7 @@ impl MeasurementApp {
             })
         });
         let min_coherence = 0.5;
-        let coherence_sliders = [(); 2].map(|_| {
+        let coherence_sliders = [(); FREQUENCY_PLOTS].map(|_| {
             cx.new(|_| {
                 SliderState::new()
                     .min(0.0)
@@ -436,8 +538,8 @@ impl MeasurementApp {
         });
         let magnitude = cx.new(|_| Plot::new(PlotKind::Magnitude));
         let phase = cx.new(|_| Plot::new(PlotKind::Phase));
+        let group_delay = cx.new(|_| Plot::new(PlotKind::GroupDelay));
         let mut subscriptions = vec![
-            // magnitude and phase always show the same frequencies
             cx.subscribe(&theme_select, |_, _, event: &SelectEvent<_>, cx| {
                 if let SelectEvent::Confirm(Some(name)) = event {
                     theme::select(name, cx);
@@ -463,10 +565,13 @@ impl MeasurementApp {
         let room = cx.new(|_| Plot::new(PlotKind::Room(Parameter::T30)));
         // the axes start linked, so all start at the frequencies of the magnitude
         let x = magnitude.read(cx).frequency();
-        room.update(cx, |room, cx| room.link_frequency(x, cx));
+        for plot in [&group_delay, &room] {
+            plot.update(cx, |plot, cx| plot.link_frequency(x, cx));
+        }
         for (tab, plot) in [
             (Tab::Magnitude, &magnitude),
             (Tab::Phase, &phase),
+            (Tab::GroupDelay, &group_delay),
             (Tab::Room, &room),
         ] {
             subscriptions.push(cx.subscribe(plot, move |this, _, FrequencyChanged(x), cx| {
@@ -484,8 +589,7 @@ impl MeasurementApp {
                 },
             ));
         }
-        for plot in 0..2 {
-            let other = 1 - plot;
+        for plot in 0..FREQUENCY_PLOTS {
             subscriptions.push(cx.subscribe_in(
                 &coherence_sliders[plot],
                 window,
@@ -494,8 +598,11 @@ impl MeasurementApp {
                     let value = f64::from(value.start());
                     if value != this.min_coherence {
                         this.min_coherence = value;
-                        this.coherence_sliders[other]
-                            .update(cx, |slider, cx| slider.set_value(value as f32, window, cx));
+                        for other in other_frequency_plots(plot) {
+                            this.coherence_sliders[other].update(cx, |slider, cx| {
+                                slider.set_value(value as f32, window, cx)
+                            });
+                        }
                         this.refresh_plots(cx);
                     }
                 },
@@ -510,10 +617,12 @@ impl MeasurementApp {
                         this.smoothing[plot].fractions = value;
                         this.last_smoothing_plot = plot;
                         if this.link_smoothing {
-                            this.smoothing[other].fractions = value;
-                            this.smoothing_sliders[other].update(cx, |slider, cx| {
-                                slider.set_value(value as f32, window, cx)
-                            });
+                            for other in other_frequency_plots(plot) {
+                                this.smoothing[other].fractions = value;
+                                this.smoothing_sliders[other].update(cx, |slider, cx| {
+                                    slider.set_value(value as f32, window, cx)
+                                });
+                            }
                         }
                         this.refresh_plots(cx);
                     }
@@ -524,7 +633,7 @@ impl MeasurementApp {
         window.focus(&focus_handle, cx);
         let (link_frequency, link_smoothing) = (true, true);
         Self::show_links(
-            [&magnitude, &phase, &room],
+            [&magnitude, &phase, &group_delay, &room],
             link_frequency,
             link_smoothing,
             cx,
@@ -542,7 +651,7 @@ impl MeasurementApp {
             smoothing: [Smoothing {
                 enabled: true,
                 fractions: smoothing,
-            }; 2],
+            }; FREQUENCY_PLOTS],
             link_smoothing,
             last_smoothing_plot: 0,
             link_frequency,
@@ -554,6 +663,7 @@ impl MeasurementApp {
             setup,
             magnitude,
             phase,
+            group_delay,
             impulse: cx.new(|_| Plot::new(PlotKind::Impulse)),
             room,
             job: None,
@@ -578,25 +688,26 @@ impl MeasurementApp {
             .and_then(|index| self.smoothing[index].get())
     }
 
-    /// The smoothings of the frequency plots: one if they agree, else two.
+    /// The smoothings of the frequency plots, each once.
     fn smoothings(&self) -> Vec<Option<f64>> {
-        let [magnitude, phase] = self.smoothing.map(Smoothing::get);
-        if magnitude == phase {
-            vec![magnitude]
-        } else {
-            vec![magnitude, phase]
+        let mut smoothings = Vec::new();
+        for smoothing in self.smoothing.map(Smoothing::get) {
+            if !smoothings.contains(&smoothing) {
+                smoothings.push(smoothing);
+            }
         }
+        smoothings
     }
 
     /// Shows in the right-click menus of the plots over frequency what is linked: magnitude,
-    /// phase and room acoustics in that order. Only magnitude and phase are smoothed.
+    /// phase, group delay and room acoustics in that order. Room acoustics aren't smoothed.
     fn show_links(
-        plots: [&Entity<Plot>; 3],
+        plots: [&Entity<Plot>; FREQUENCY_AXIS_TABS.len()],
         frequency: bool,
         smoothing: bool,
         cx: &mut Context<Self>,
     ) {
-        for (plot, smoothed) in plots.into_iter().zip([true, true, false]) {
+        for (plot, smoothed) in plots.into_iter().zip([true, true, true, false]) {
             let links = Links {
                 frequency,
                 smoothing: smoothed.then_some(smoothing),
@@ -607,25 +718,26 @@ impl MeasurementApp {
 
     fn update_links(&self, cx: &mut Context<Self>) {
         Self::show_links(
-            [&self.magnitude, &self.phase, &self.room],
+            [&self.magnitude, &self.phase, &self.group_delay, &self.room],
             self.link_frequency,
             self.link_smoothing,
             cx,
         );
     }
 
-    /// Links or unlinks the smoothing of the magnitude and phase plot. Linking smooths both
-    /// like the one changed last.
+    /// Links or unlinks the smoothing of the magnitude, phase and group delay plot. Linking
+    /// smooths all like the one changed last.
     fn set_link_smoothing(&mut self, link: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.link_smoothing = link;
         self.update_links(cx);
         if link {
             let from = self.last_smoothing_plot;
-            let other = 1 - from;
-            self.smoothing[other] = self.smoothing[from];
             let value = self.smoothing[from].fractions as f32;
-            self.smoothing_sliders[other]
-                .update(cx, |slider, cx| slider.set_value(value, window, cx));
+            for other in other_frequency_plots(from) {
+                self.smoothing[other] = self.smoothing[from];
+                self.smoothing_sliders[other]
+                    .update(cx, |slider, cx| slider.set_value(value, window, cx));
+            }
             self.refresh_plots(cx);
         }
         cx.notify();
@@ -1894,7 +2006,13 @@ impl MeasurementApp {
             return;
         };
         self.highlight = highlight.clone();
-        for plot in [&self.magnitude, &self.phase, &self.impulse, &self.room] {
+        for plot in [
+            &self.magnitude,
+            &self.phase,
+            &self.group_delay,
+            &self.impulse,
+            &self.room,
+        ] {
             plot.update(cx, |plot, cx| plot.set_highlight(highlight.clone(), cx));
         }
         // hidden ones among them are shown while the mouse is over them
@@ -1998,7 +2116,7 @@ impl MeasurementApp {
             let shown = |m: &&mut Measurement| m.visible || highlight.contains(&m.id);
             for m in group.measurements.iter_mut().filter(shown) {
                 // power and dB averages have a magnitude only
-                if matches!(tab, Tab::Phase | Tab::Impulse) && !m.response.origin.has_phase() {
+                if tab.needs_phase() && !m.response.origin.has_phase() {
                     continue;
                 }
                 let preview = !m.visible;
@@ -2060,6 +2178,7 @@ impl MeasurementApp {
         match tab {
             Tab::Magnitude => &self.magnitude,
             Tab::Phase => &self.phase,
+            Tab::GroupDelay => &self.group_delay,
             Tab::Impulse => &self.impulse,
             Tab::Room => &self.room,
         }
@@ -3206,7 +3325,20 @@ impl MeasurementApp {
                 ),
             );
         }
-        let plot = tab.frequency_index()?;
+        // what the plot shows, at the right end
+        let info = || {
+            div().ml_auto().child(explainer(
+                tab.info_id(),
+                tab.title(),
+                "What it shows",
+                tab.description(),
+                tab.when_to_use(),
+                cx,
+            ))
+        };
+        let Some(plot) = tab.frequency_index() else {
+            return Some(toolbar.child(info()));
+        };
         let smoothing = self.smoothing[plot];
         // only live measurements and their snapshots know their coherence
         let coherence = self
@@ -3226,7 +3358,9 @@ impl MeasurementApp {
                                 this.smoothing[plot].enabled = *checked;
                                 this.last_smoothing_plot = plot;
                                 if this.link_smoothing {
-                                    this.smoothing[1 - plot].enabled = *checked;
+                                    for other in other_frequency_plots(plot) {
+                                        this.smoothing[other].enabled = *checked;
+                                    }
                                 }
                                 this.refresh_plots(cx);
                             })),
@@ -3271,7 +3405,8 @@ impl MeasurementApp {
                         .text_color(palette::text_muted(cx))
                         .child(format!("{:.2}", self.min_coherence)),
                 )
-            });
+            })
+            .child(info());
         Some(toolbar)
     }
 
@@ -3452,6 +3587,9 @@ impl Render for MeasurementApp {
                 cx.listener(|this, _: &ShowMagnitude, _, cx| this.set_tab(Tab::Magnitude, cx)),
             )
             .on_action(cx.listener(|this, _: &ShowPhase, _, cx| this.set_tab(Tab::Phase, cx)))
+            .on_action(
+                cx.listener(|this, _: &ShowGroupDelay, _, cx| this.set_tab(Tab::GroupDelay, cx)),
+            )
             .on_action(cx.listener(|this, _: &ShowImpulse, _, cx| this.set_tab(Tab::Impulse, cx)))
             .on_action(cx.listener(|this, _: &ShowRoom, _, cx| this.set_tab(Tab::Room, cx)))
             .on_action(
