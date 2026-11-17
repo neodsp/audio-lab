@@ -1,4 +1,5 @@
-//! The plots of the tabs: magnitude and phase over log frequency, impulse responses over time.
+//! The plots of the tabs: magnitude, phase and group delay over log frequency, impulse
+//! responses over time.
 //!
 //! Like in Figma or Excalidraw, scrolling (two fingers on a touchpad) moves the view and
 //! Ctrl+scroll or a pinch zooms around the mouse; Ctrl+Alt+scroll zooms only the time or
@@ -45,6 +46,8 @@ const MAX_READOUT: usize = 12;
 pub enum PlotKind {
     Magnitude,
     Phase,
+    /// In ms, relative to the delay taken out of the phase.
+    GroupDelay,
     Impulse,
     /// A room acoustics parameter per octave band: points over log frequency.
     Room(Parameter),
@@ -76,6 +79,7 @@ impl PlotKind {
         match self {
             Self::Magnitude => format!("{} dB", format_number(y, step)),
             Self::Phase => format!("{y:.0}°"),
+            Self::GroupDelay => format!("{} ms", format_number(y, step)),
             Self::Impulse => format_number(y, step),
             Self::Room(parameter) => format!("{} {}", format_number(y, step), parameter.unit()),
         }
@@ -85,6 +89,7 @@ impl PlotKind {
         match self {
             Self::Magnitude => format!("{y:.1} dB"),
             Self::Phase => format!("{y:.1}°"),
+            Self::GroupDelay => format!("{y:.2} ms"),
             Self::Impulse => format!("{y:.4}"),
             Self::Room(parameter) => parameter.format(y),
         }
@@ -94,7 +99,7 @@ impl PlotKind {
 /// What a trace draws.
 #[derive(Clone)]
 pub enum Series {
-    /// The magnitude or phase, depending on the plot.
+    /// The magnitude, phase or group delay, depending on the plot.
     Frequency(Rc<Curves>),
     /// Points sorted by x.
     Points(Rc<Vec<(f64, f64)>>),
@@ -126,10 +131,7 @@ impl Trace {
                 if !curves.trusted(hz, self.min_coherence) {
                     return None;
                 }
-                Some(match kind {
-                    PlotKind::Phase => curves.phase_degrees(hz),
-                    _ => curves.magnitude_db(hz),
-                })
+                Some(curves.value(kind, hz)).filter(|y| y.is_finite())
             }
             Series::Points(points) => {
                 let first = points.first()?.0;
@@ -166,7 +168,8 @@ enum Drag {
 }
 
 /// The user moved or zoomed a frequency plot: the frequencies it shows now, in log10 Hz.
-/// Magnitude and phase pass it on to each other, so they always show the same frequencies.
+/// While linked, the plots over frequency pass it on to each other, so they show the same
+/// frequencies.
 pub struct FrequencyChanged(pub (f64, f64));
 
 /// What a plot over frequency shares with the others, shown in its right-click menu.
@@ -174,7 +177,8 @@ pub struct FrequencyChanged(pub (f64, f64));
 pub struct Links {
     /// Whether the plots over frequency show the same frequencies.
     pub frequency: bool,
-    /// Whether magnitude and phase are smoothed alike; `None` for a plot without smoothing.
+    /// Whether magnitude, phase and group delay are smoothed alike; `None` for a plot without
+    /// smoothing.
     pub smoothing: Option<bool>,
 }
 
@@ -353,6 +357,7 @@ impl Plot {
         let (x_name, x_unit, y_name, y_unit) = match kind {
             PlotKind::Magnitude => ("Frequency", "Hz", "Level", "dB"),
             PlotKind::Phase => ("Frequency", "Hz", "Phase", "°"),
+            PlotKind::GroupDelay => ("Frequency", "Hz", "Group delay", "ms"),
             PlotKind::Impulse => ("Time", "ms", "Amplitude", ""),
             PlotKind::Room(parameter) => ("Frequency", "Hz", parameter.label(), parameter.unit()),
         };
@@ -507,6 +512,27 @@ impl Plot {
                 x: self.data_x,
                 y: default_view(self.kind).y,
             },
+            PlotKind::GroupDelay => {
+                let (low, high) = self
+                    .fitted()
+                    .filter_map(|trace| match &trace.series {
+                        Series::Frequency(curves) => {
+                            Some(curves.group_delay_extent(trace.min_coherence))
+                        }
+                        Series::Points(_) => None,
+                    })
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), (low, high)| {
+                        (a.min(low), b.max(high))
+                    });
+                let y = if low <= high {
+                    // some room around it, and at least a few ms around a flat one
+                    let pad = ((high - low) * 0.1).max(1.0);
+                    (low - pad, high + pad)
+                } else {
+                    default_view(self.kind).y
+                };
+                View { x: self.data_x, y }
+            }
             PlotKind::Room(parameter) => {
                 let (low, high) = self
                     .fitted()
@@ -713,6 +739,7 @@ impl Render for Plot {
             .id(match self.kind {
                 PlotKind::Magnitude => "magnitude-plot",
                 PlotKind::Phase => "phase-plot",
+                PlotKind::GroupDelay => "group-delay-plot",
                 PlotKind::Impulse => "impulse-plot",
                 PlotKind::Room(_) => "room-plot",
             })
@@ -1049,10 +1076,7 @@ impl Scene {
                         }
                         continue;
                     }
-                    let y = match self.kind {
-                        PlotKind::Phase => curves.phase_degrees(hz),
-                        _ => curves.magnitude_db(hz),
-                    };
+                    let y = curves.value(self.kind, hz);
                     runs.last_mut().expect("starts with one").push((x, y));
                 }
                 if self.kind == PlotKind::Phase {
@@ -1336,6 +1360,10 @@ fn default_view(kind: PlotKind) -> View {
         PlotKind::Phase => View {
             x: AUDIO_RANGE,
             y: (-180.0, 180.0),
+        },
+        PlotKind::GroupDelay => View {
+            x: AUDIO_RANGE,
+            y: (-5.0, 20.0),
         },
         PlotKind::Impulse => View {
             x: (0.0, 500.0),
